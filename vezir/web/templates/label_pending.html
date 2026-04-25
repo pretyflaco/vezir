@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}vezir — not ready for labeling{% endblock %}
+{% block content %}
+<p><a href="/s/{{ row.id }}">&larr; session</a></p>
+<h1>Not ready for labeling yet</h1>
+<p>
+  Session is in status <span class="badge {{ row.status }}">{{ row.status }}</span>.
+  Reload this page once it transitions to <code>needs_labeling</code>.
+</p>
+{% endblock %}

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vezir"
+version = "0.0.1"
+description = "Internal scribe service that wraps meetscribe for team-scale meeting capture, transcription, summarization, and speaker labeling"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Blink"}]
+keywords = [
+    "meeting",
+    "transcription",
+    "scribe",
+    "team",
+    "self-hosted",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "click>=8.0",
+    "httpx>=0.27",
+    "jinja2>=3.1",
+    "ulid-py>=1.1",
+]
+
+[project.scripts]
+vezir = "vezir.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/blink/vezir"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vezir*"]
+
+[tool.setuptools.package-data]
+vezir = ["web/templates/*.html", "web/static/*"]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest", "pytest-asyncio"]

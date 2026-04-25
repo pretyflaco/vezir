@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}vezir — label speakers{% endblock %}
+{% block content %}
+<p><a href="/s/{{ row.id }}">&larr; back to session</a></p>
+<h1>Label speakers</h1>
+<p class="muted">
+  Session: {{ row.title or row.id }} · scribed by {{ row.github }}
+</p>
+<p>
+  Listen to each clip and assign a name (use a Blink GitHub handle for
+  team members). Leave blank to keep the auto-assigned label.
+</p>
+
+<form method="post" action="/label/{{ row.id }}">
+  <table class="speakers">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Channel</th>
+        <th>Sample text</th>
+        <th>Audio</th>
+        <th>Label</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sp in speakers %}
+      <tr>
+        <td><code>{{ sp.id }}</code></td>
+        <td>{{ sp.channel }}</td>
+        <td class="sample">{{ sp.sample_text }}</td>
+        <td>
+          <audio controls preload="none"
+                 src="/label/{{ row.id }}/clip/{{ sp.id }}"></audio>
+        </td>
+        <td>
+          <input type="text" name="label_{{ sp.id }}"
+                 list="team-handles"
+                 placeholder="github-handle or name"
+                 autocomplete="off">
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <datalist id="team-handles">
+    {% for handle in team %}
+      <option value="{{ handle }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <p>
+    <button type="submit" class="cta">Save labels and sync</button>
+  </p>
+</form>
+{% endblock %}

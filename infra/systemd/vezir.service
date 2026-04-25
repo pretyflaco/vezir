@@ -1,0 +1,21 @@
+[Unit]
+Description=vezir — internal scribe service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust this to your venv install location
+ExecStart=%h/models/vezir/.venv/bin/vezir serve
+WorkingDirectory=%h/models/vezir
+Environment=VEZIR_DATA=%h/vezir-data
+Environment=VEZIR_HOST=0.0.0.0
+Environment=VEZIR_PORT=8000
+# Forward HF_TOKEN, OPENROUTER_API_KEY etc. from the user environment.
+# Easiest: write them in ~/.config/environment.d/vezir.conf and reference here.
+EnvironmentFile=-%h/.config/environment.d/vezir.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}vezir — sessions{% endblock %}
+{% block content %}
+<h1>Recent sessions</h1>
+{% if not rows %}
+  <p class="muted">No sessions yet. Run <code>vezir scribe</code> on your laptop.</p>
+{% else %}
+<table class="sessions">
+  <thead>
+    <tr>
+      <th>Started</th>
+      <th>Scribe</th>
+      <th>Title</th>
+      <th>Status</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr class="status-{{ row.status }}">
+      <td class="ts">{{ row.created_at }}</td>
+      <td>{{ row.github }}</td>
+      <td>{{ row.title or '—' }}</td>
+      <td>
+        <span class="badge {{ row.status }}">{{ row.status }}</span>
+        {% if row.error %}<div class="err">{{ row.error }}</div>{% endif %}
+      </td>
+      <td>
+        <a href="/s/{{ row.id }}">details</a>
+        {% if row.status == 'needs_labeling' %}
+          · <a href="/label/{{ row.id }}" class="cta">label speakers</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

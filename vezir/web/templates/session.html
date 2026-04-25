@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}vezir — session {{ row.id }}{% endblock %}
+{% block content %}
+<p><a href="/">&larr; all sessions</a></p>
+<h1>{{ row.title or row.id }}</h1>
+<p class="muted">scribed by <strong>{{ row.github }}</strong> at {{ row.created_at }}</p>
+
+<p>
+  Status:
+  <span class="badge {{ row.status }}">{{ row.status }}</span>
+</p>
+
+{% if row.status == 'needs_labeling' %}
+  <p><a href="/label/{{ row.id }}" class="cta">Label speakers</a></p>
+{% endif %}
+
+{% if row.error %}
+<div class="error-block">
+  <h3>Error</h3>
+  <pre>{{ row.error }}</pre>
+</div>
+{% endif %}
+
+{% if row.artifacts_dict %}
+<h2>Artifacts</h2>
+<ul>
+  {% for kind, name in row.artifacts_dict.items() %}
+    <li><a href="/artifact/{{ row.id }}/{{ name }}">{{ kind }}</a> — {{ name }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

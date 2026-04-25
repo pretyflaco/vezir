@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Vezir runtime data should never be committed
+data/team.json
+data/tokens.json
+data/*.sqlite
+data/sessions/
+data/jobs/
+data/logs/
+
+# Local config
+.env
+*.local.json
