@@ -26,11 +26,18 @@ def upload(
     url = server_url.rstrip("/") + "/upload"
     headers = {"Authorization": f"Bearer {token}"}
 
+    # Pick a content-type matching the file extension.
+    ext = audio_path.suffix.lower()
+    content_type = {
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+    }.get(ext, "application/octet-stream")
+
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
             with audio_path.open("rb") as f:
-                files = {"audio": (audio_path.name, f, "audio/wav")}
+                files = {"audio": (audio_path.name, f, content_type)}
                 data = {}
                 if title:
                     data["title"] = title

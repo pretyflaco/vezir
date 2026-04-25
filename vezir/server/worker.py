@@ -17,6 +17,7 @@ Pipeline per job:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -28,6 +29,24 @@ from . import meet_runner, queue, voiceprints
 log = logging.getLogger("vezir.worker")
 
 POLL_INTERVAL_SEC = 2.0
+
+
+def _skip_sync() -> bool:
+    """If VEZIR_SKIP_SYNC is set to a truthy value, skip the meet sync step.
+
+    Useful for early dogfood / pilot when no team-wide sync target has been
+    decided yet. The artifacts remain in ~/vezir-data/sessions/<id>/.
+    """
+    return os.environ.get("VEZIR_SKIP_SYNC", "").lower() in ("1", "true", "yes")
+
+
+def _delete_audio_enabled() -> bool:
+    """Per pilot policy, audio deletion is OFF by default.
+
+    Set VEZIR_DELETE_AUDIO=1 once the pilot is stable to enforce the
+    'delete after artifacts produced' storage policy.
+    """
+    return os.environ.get("VEZIR_DELETE_AUDIO", "").lower() in ("1", "true", "yes")
 
 
 def _session_dir(session_id: str) -> Path:
@@ -98,13 +117,20 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
 
 
 def _delete_audio(session_dir: Path) -> None:
-    """Per storage policy, delete WAV after artifacts are produced."""
-    for wav in session_dir.glob("*.wav"):
-        try:
-            wav.unlink()
-            log.info("deleted audio: %s", wav)
-        except Exception as exc:
-            log.warning("could not delete %s: %s", wav, exc)
+    """Optionally delete audio (.wav, .ogg) after artifacts are produced.
+
+    Disabled by default during the pilot (see _delete_audio_enabled()).
+    """
+    if not _delete_audio_enabled():
+        log.debug("audio deletion disabled (VEZIR_DELETE_AUDIO not set)")
+        return
+    for pattern in ("*.wav", "*.ogg"):
+        for f in session_dir.glob(pattern):
+            try:
+                f.unlink()
+                log.info("deleted audio: %s", f)
+            except Exception as exc:
+                log.warning("could not delete %s: %s", f, exc)
 
 
 def process_one(job: dict) -> None:
@@ -135,18 +161,21 @@ def process_one(job: dict) -> None:
             log.info("job %s needs labeling", job_id)
             return
 
-        # 4. sync to git
-        queue.update_status(job_id, "syncing", artifacts=artifacts)
-        rc = meet_runner.sync(sd, job_id, log_path)
-        if rc != 0:
-            queue.update_status(
-                job_id, "error",
-                error=f"meet sync exited {rc}",
-                artifacts=artifacts,
-            )
-            return
+        # 4. sync to git (unless VEZIR_SKIP_SYNC is set)
+        if _skip_sync():
+            log.info("job %s: VEZIR_SKIP_SYNC set, skipping meet sync", job_id)
+        else:
+            queue.update_status(job_id, "syncing", artifacts=artifacts)
+            rc = meet_runner.sync(sd, job_id, log_path)
+            if rc != 0:
+                queue.update_status(
+                    job_id, "error",
+                    error=f"meet sync exited {rc}",
+                    artifacts=artifacts,
+                )
+                return
 
-        # 5. cleanup
+        # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1)
         _delete_audio(sd)
         queue.update_status(job_id, "done", artifacts=artifacts)
         log.info("job %s done", job_id)
@@ -211,13 +240,19 @@ def finalize_after_labeling(session_id: str) -> None:
         # vezir's web UI applies labels via meetscribe's apply_labels()
         # directly (see labels.py), the artifacts are already regenerated.
         # All that remains is sync.
-        queue.update_status(session_id, "syncing")
-        rc = meet_runner.sync(sd, session_id, log_path)
-        if rc != 0:
-            queue.update_status(
-                session_id, "error", error=f"meet sync exited {rc}"
+        if _skip_sync():
+            log.info(
+                "post-labeling: VEZIR_SKIP_SYNC set, skipping meet sync for %s",
+                session_id,
             )
-            return
+        else:
+            queue.update_status(session_id, "syncing")
+            rc = meet_runner.sync(sd, session_id, log_path)
+            if rc != 0:
+                queue.update_status(
+                    session_id, "error", error=f"meet sync exited {rc}"
+                )
+                return
         artifacts = _find_artifacts(sd)
         _delete_audio(sd)
         queue.update_status(session_id, "done", artifacts=artifacts)

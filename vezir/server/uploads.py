@@ -30,6 +30,25 @@ router = APIRouter()
 
 CHUNK_BYTES = 4 * 1024 * 1024  # 4 MB
 
+# Audio extensions vezir accepts. Meetscribe handles both WAV and OGG natively
+# (see meet/cli.py:389-390 and meet/label.py:66-70).
+ACCEPTED_EXTS = {".wav", ".ogg"}
+
+
+def _pick_extension(upload_filename: str | None, content_type: str | None) -> str:
+    """Choose the on-disk extension based on the uploaded filename / mime."""
+    if upload_filename:
+        ext = Path(upload_filename).suffix.lower()
+        if ext in ACCEPTED_EXTS:
+            return ext
+    if content_type:
+        ct = content_type.lower()
+        if "ogg" in ct:
+            return ".ogg"
+        if "wav" in ct or "wave" in ct:
+            return ".wav"
+    return ".wav"  # default fallback
+
 
 @router.post("/upload")
 async def upload(
@@ -42,7 +61,9 @@ async def upload(
     session_id = ulid.new().str
     sdir = config.sessions_dir() / session_id
     sdir.mkdir(parents=True, exist_ok=True)
-    out = sdir / f"{session_id}.wav"
+
+    ext = _pick_extension(audio.filename, audio.content_type)
+    out = sdir / f"{session_id}{ext}"
 
     bytes_written = 0
     with out.open("wb") as f:
@@ -54,8 +75,8 @@ async def upload(
             bytes_written += len(chunk)
 
     log.info(
-        "upload accepted: session=%s github=%s bytes=%d title=%r",
-        session_id, github, bytes_written, title,
+        "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r",
+        session_id, github, bytes_written, ext, title,
     )
 
     queue.enqueue(session_id, github=github, title=title)

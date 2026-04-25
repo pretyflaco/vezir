@@ -56,8 +56,19 @@ def _ensure_clips_dir(session_id: str) -> Path:
 
 
 def _find_wav(session_dir: Path) -> Path | None:
+    """Locate session audio. Prefers WAV, falls back to OGG.
+
+    Key name is `wav` for back-compat with meetscribe's _find_session_files
+    (which uses the same convention). Meetscribe's extract_speaker_clip
+    handles both formats via its ffmpeg fallback.
+    """
     wavs = sorted(session_dir.glob("*.wav"))
-    return wavs[0] if wavs else None
+    if wavs:
+        return wavs[0]
+    oggs = sorted(session_dir.glob("*.ogg"))
+    if oggs:
+        return oggs[0]
+    return None
 
 
 def _get_speakers(session_id: str):

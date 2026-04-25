@@ -116,10 +116,11 @@ def run_scribe(
         raise RuntimeError(
             f"could not locate a session directory under {output_dir} from this run"
         )
-    wavs = sorted(sdir.glob("*.wav"))
-    if not wavs:
-        raise RuntimeError(f"no .wav file found in {sdir}")
-    wav = wavs[0]
+    # Prefer WAV (what `meet record` writes), fall back to OGG (post-archive).
+    audio_files = sorted(sdir.glob("*.wav")) or sorted(sdir.glob("*.ogg"))
+    if not audio_files:
+        raise RuntimeError(f"no .wav or .ogg file found in {sdir}")
+    wav = audio_files[0]
     print(f"vezir: recording captured: {wav} ({wav.stat().st_size:,} bytes)", flush=True)
 
     print(f"vezir: uploading to {server_url} ...", flush=True)
