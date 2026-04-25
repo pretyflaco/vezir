@@ -86,6 +86,40 @@ def _sync_log_indicates_failure(log_path: Path) -> str | None:
     return None
 
 
+# How many trailing log bytes to capture into the queue's `error` field
+# when a `meet ...` subprocess fails. Helps debugging from the dashboard.
+_ERROR_TAIL_BYTES = 2048
+
+
+def _last_log_lines(log_path: Path, n_bytes: int = _ERROR_TAIL_BYTES) -> str:
+    """Return the last ~n_bytes of a log file, line-aligned.
+
+    Used to decorate the `error` field with the actual failure message
+    (e.g. ValueError, traceback summary) instead of just an exit code.
+    """
+    if not log_path.exists():
+        return ""
+    try:
+        size = log_path.stat().st_size
+        with log_path.open("rb") as f:
+            f.seek(max(0, size - n_bytes))
+            tail = f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    # Drop a possibly-truncated leading line.
+    if "\n" in tail and len(tail) >= n_bytes:
+        tail = tail.split("\n", 1)[1]
+    # Trim trailing whitespace / blank lines.
+    return tail.strip()
+
+
+def _error_with_tail(prefix: str, log_path: Path) -> str:
+    tail = _last_log_lines(log_path)
+    if not tail:
+        return prefix
+    return f"{prefix}\n--- last lines of log ---\n{tail}"
+
+
 def _session_dir(session_id: str) -> Path:
     return config.sessions_dir() / session_id
 
@@ -180,7 +214,10 @@ def process_one(job: dict) -> None:
         # 1. transcribe
         rc = meet_runner.transcribe(sd, job_id, log_path)
         if rc != 0:
-            queue.update_status(job_id, "error", error=f"meet transcribe exited {rc}")
+            queue.update_status(
+                job_id, "error",
+                error=_error_with_tail(f"meet transcribe exited {rc}", log_path),
+            )
             return
 
         # 2. label --auto against central voiceprint DB
@@ -207,7 +244,7 @@ def process_one(job: dict) -> None:
             if rc != 0:
                 queue.update_status(
                     job_id, "error",
-                    error=f"meet sync exited {rc}",
+                    error=_error_with_tail(f"meet sync exited {rc}", log_path),
                     artifacts=artifacts,
                 )
                 return
@@ -219,7 +256,9 @@ def process_one(job: dict) -> None:
                 log.warning("job %s: sync silent failure: %s", job_id, failure)
                 queue.update_status(
                     job_id, "error",
-                    error=f"meet sync failed silently: {failure}",
+                    error=_error_with_tail(
+                        f"meet sync failed silently: {failure}", log_path,
+                    ),
                     artifacts=artifacts,
                 )
                 return
@@ -299,14 +338,19 @@ def finalize_after_labeling(session_id: str) -> None:
             rc = meet_runner.sync(sd, session_id, log_path)
             if rc != 0:
                 queue.update_status(
-                    session_id, "error", error=f"meet sync exited {rc}"
+                    session_id, "error",
+                    error=_error_with_tail(
+                        f"meet sync exited {rc}", log_path,
+                    ),
                 )
                 return
             failure = _sync_log_indicates_failure(log_path)
             if failure:
                 queue.update_status(
                     session_id, "error",
-                    error=f"meet sync failed silently: {failure}",
+                    error=_error_with_tail(
+                        f"meet sync failed silently: {failure}", log_path,
+                    ),
                 )
                 return
         artifacts = _find_artifacts(sd)

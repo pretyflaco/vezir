@@ -67,9 +67,11 @@ mkdir -p ~/vezir-data
 vezir voiceprints seed --from ~/.config/meet/speaker_profiles.json
 
 # Sync target — sandbox repo for development.
-# vezir's worker invokes `meet sync --force --meeting-type sandbox` which
-# bypasses meetscribe's schedule and team-presence gates, so every
-# successful job lands in meetings/<date>_sandbox/ on the configured repo.
+# vezir's worker invokes `meet sync --force --meeting-type sandbox-<HHMMSSZ>-<rand>`
+# which bypasses meetscribe's schedule and team-presence gates and
+# guarantees a unique per-session folder. Every successful job lands in
+# meetings/<date>_sandbox-<HHMMSSZ>-<rand>/ on the configured repo
+# (e.g. meetings/2026-04-25_sandbox-194051Z-VZJJ3P/).
 cat > ~/vezir-data/sync_config.json <<'EOF'
 {
   "repo_url": "https://github.com/pretyflaco/vezir-meetings.git",

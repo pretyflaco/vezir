@@ -23,7 +23,7 @@
       <td>{{ row.title or '—' }}</td>
       <td>
         <span class="badge {{ row.status }}">{{ row.status }}</span>
-        {% if row.error %}<div class="err">{{ row.error }}</div>{% endif %}
+        {% if row.error %}<div class="err" title="{{ row.error }}">{{ row.error.splitlines()[0] }}</div>{% endif %}
       </td>
       <td>
         <a href="/s/{{ row.id }}">details</a>

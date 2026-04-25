@@ -181,18 +181,91 @@ def label_auto(session_dir: Path, job_id: str, log_path: Path) -> int:
     )
 
 
+def _ulid_to_utc_datetime(ulid_str: str):
+    """Decode a ULID's embedded timestamp to a UTC datetime, or None."""
+    try:
+        import ulid as _ulid
+        u = _ulid.from_str(ulid_str)
+        return u.timestamp().datetime  # tz-aware UTC
+    except Exception:
+        return None
+
+
+def ensure_session_json(session_dir: Path, session_id: str) -> Path:
+    """Inject a `<session_id>.session.json` if one is not present.
+
+    Meetscribe's `_date_from_session` (meet/sync.py:321) checks first the
+    directory name (which for vezir is a bare ULID, no date prefix) and
+    falls back to reading `*.session.json` for `started_at`. Without an
+    injected session.json, meetscribe falls all the way through to
+    datetime.now() at sync time, which is wrong (it's the worker's clock,
+    not the meeting's start). For a vezir-uploaded session, the closest
+    proxy for "meeting started" is the ULID's embedded timestamp.
+
+    Returns the session.json path, creating it from the ULID if needed.
+    """
+    sj = session_dir / f"{session_id}.session.json"
+    if sj.exists():
+        return sj
+    dt = _ulid_to_utc_datetime(session_id)
+    if dt is None:
+        from datetime import datetime, timezone
+        dt = datetime.now(timezone.utc)
+    payload = {
+        "started_at": dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        "source": "vezir",
+        "session_id": session_id,
+        "_note": "Injected by vezir to satisfy meet/sync.py:_date_from_session.",
+    }
+    import json as _json
+    sj.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+    return sj
+
+
+def _meeting_type_for(session_id: str, base: str = "sandbox") -> str:
+    """Build a unique meeting-type string per session.
+
+    Format: `{base}-HHMMSSZ-<rand>` where HHMMSS is UTC time from the
+    ULID timestamp and `rand` is 6 chars from the ULID's random suffix
+    (positions 20-26 — the trailing portion that's pure entropy, not
+    timestamp).
+
+    A naive prefix (`session_id[:8]`) collides for multiple sessions
+    minted in the same millisecond, e.g. four back-to-back uploads from
+    one client process all share the same timestamp prefix. The random
+    suffix avoids that.
+    """
+    dt = _ulid_to_utc_datetime(session_id)
+    if dt is None:
+        from datetime import datetime, timezone
+        dt = datetime.now(timezone.utc)
+    hms = dt.strftime("%H%M%S")
+    # ULID is 26 chars: positions 0-9 = 48 bits of timestamp,
+    # 10-25 = 80 bits of randomness. Take 6 random-region chars.
+    rand = session_id[-6:] if len(session_id) >= 26 else "noulid"
+    return f"{base}-{hms}Z-{rand}"
+
+
 def sync(session_dir: Path, job_id: str, log_path: Path) -> int:
     """Push session to vezir's configured meetscribe sync target.
 
-    During the sandbox phase, vezir uses --force with a fixed meeting type
-    so every successfully-processed session lands in `sandbox/` regardless
-    of when it was recorded. This bypasses the schedule + team-presence
-    gating that the meetscribe CLI applies for the personal flow.
+    During the sandbox phase, vezir uses --force with a per-session
+    meeting type derived from the session ULID, so each session gets a
+    unique folder under `meetings/` regardless of when it was recorded.
+    This bypasses the schedule + team-presence gating that the meetscribe
+    CLI applies for the personal flow.
 
-    The meeting type is configurable via VEZIR_SYNC_MEETING_TYPE
-    (default 'sandbox').
+    Resulting layout in the sync repo:
+        meetings/{date}_{base}-{HHMMSSZ}-{id8}/
+            summary.md
+            transcript.{txt,srt,json,pdf}
+
+    The base is configurable via VEZIR_SYNC_MEETING_TYPE (default 'sandbox').
     """
-    meeting_type = os.environ.get("VEZIR_SYNC_MEETING_TYPE", "sandbox")
+    base = os.environ.get("VEZIR_SYNC_MEETING_TYPE", "sandbox")
+    # Ensure meetscribe can extract the meeting date from the session.
+    ensure_session_json(session_dir, job_id)
+    meeting_type = _meeting_type_for(job_id, base=base)
     return run_meet(
         [
             "sync",

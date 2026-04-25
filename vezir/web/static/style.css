@@ -132,3 +132,15 @@ audio { width: 14rem; }
   border-radius: 4px;
   margin: 1rem 0;
 }
+.error-block pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 28rem;
+  overflow-y: auto;
+  margin: 0;
+  font-size: 0.85em;
+  background: #fff;
+  border: 1px solid #f0d0d0;
+  padding: 0.5rem;
+  border-radius: 3px;
+}
