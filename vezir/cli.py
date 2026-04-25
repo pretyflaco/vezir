@@ -72,6 +72,23 @@ def scribe(server_url, token, title, output_dir, record_args):
         sys.exit(1)
 
 
+# ── gui ───────────────────────────────────────────────────────────────────────
+
+@main.command()
+def gui():
+    """Launch the scribe GUI widget (always-on-top, Tkinter)."""
+    try:
+        from .client.gui import launch
+    except ImportError as exc:
+        click.echo(
+            f"vezir gui requires Tkinter, which is not available: {exc}\n"
+            "On Debian/Ubuntu: sudo apt install python3-tk",
+            err=True,
+        )
+        sys.exit(1)
+    sys.exit(launch())
+
+
 # ── token ─────────────────────────────────────────────────────────────────────
 
 @main.group()

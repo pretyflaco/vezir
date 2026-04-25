@@ -55,12 +55,24 @@ vezir/
 
 Runtime data lives **outside** the repo at `~/vezir-data/`.
 
+## Install profiles
+
+| Role | Install command | Footprint |
+|---|---|---|
+| **Scribe client only** (record + upload, GUI optional) | `pip install --user vezir` (or `pip install --user 'vezir[gui]'` if you also want `apt install python3-tk`) | ~30 MB |
+| **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB (pulls meetscribe-offline = whisperx + torch + pyannote) |
+
+The split is enforced by `pyproject.toml`'s `[project.optional-dependencies]`:
+the base install uses [meetscribe-record](https://github.com/pretyflaco/meetscribe-record)
+(capture only). The `[server]` extra adds [meetscribe-offline](https://github.com/pretyflaco/meetscribe)
+for the heavy transcription/diarization/summarization pipeline.
+
 ## Quick start (server, on kasita)
 
 ```bash
 cd /home/kasita/models/vezir
-pip install --user -e . --no-deps   # vezir uses /usr/bin/python3 on kasita
-                                    # (deps already present from meetscribe)
+pip install --user -e '.[server]' --no-deps   # vezir uses /usr/bin/python3 on kasita
+                                              # (deps already present from meetscribe)
 
 # Seed voiceprints from existing meetscribe profile DB
 mkdir -p ~/vezir-data
@@ -115,11 +127,22 @@ decide what to push.
 ## Quick start (scribe client)
 
 ```bash
-pip install -e /path/to/vezir   # or pip install vezir once published
-export VEZIR_URL=http://kasita.<tailnet>.ts.net:8000
-export VEZIR_TOKEN=<token-from-server>
+# Install vezir + meetscribe-record (lightweight; ~30 MB).
+pip install --user vezir
 
-vezir scribe                # records, uploads on Ctrl+C
+# Optional: GUI widget (Tkinter); on Debian/Ubuntu:
+sudo apt install python3-tk
+
+# Configure (one-time)
+export VEZIR_URL=http://muscle:8000
+export VEZIR_TOKEN=<token-issued-on-server>
+
+# CLI scribe
+vezir scribe --title "what this meeting is about"
+# Talk; Ctrl+C when done.
+
+# Or GUI scribe (always-on-top widget)
+vezir gui
 ```
 
 ## Environment variables
