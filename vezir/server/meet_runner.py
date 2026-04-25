@@ -81,14 +81,16 @@ def build_home_shim(job_id: str) -> Path:
             (shim_config / entry.name).symlink_to(entry)
 
     # 3. .config/meet: materialize as a real dir; symlink every file
-    #    EXCEPT speaker_profiles.json which is redirected to vezir's
-    #    central DB.
+    #    EXCEPT speaker_profiles.json (redirected to vezir's central DB)
+    #    and sync_config.json (redirected to vezir's sandbox config when
+    #    one exists in VEZIR_DATA, else falls back to the real one).
     real_meet = real_config / "meet"
     shim_meet = shim_config / "meet"
     shim_meet.mkdir(parents=True, exist_ok=True)
+    OVERRIDDEN = {"speaker_profiles.json", "sync_config.json"}
     if real_meet.is_dir():
         for entry in real_meet.iterdir():
-            if entry.name == "speaker_profiles.json":
+            if entry.name in OVERRIDDEN:
                 continue
             (shim_meet / entry.name).symlink_to(entry)
 
@@ -98,6 +100,17 @@ def build_home_shim(job_id: str) -> Path:
     if not central.exists():
         central.write_text("{}", encoding="utf-8")
     (shim_meet / "speaker_profiles.json").symlink_to(central)
+
+    # 5. Override: sync_config.json. If vezir has its own at
+    #    VEZIR_DATA/sync_config.json, use that. Else fall back to the
+    #    real ~/.config/meet/sync_config.json (preserves prior behavior
+    #    when vezir hasn't been configured for sync yet).
+    vezir_sync = config.data_dir() / "sync_config.json"
+    real_sync = real_meet / "sync_config.json"
+    if vezir_sync.exists():
+        (shim_meet / "sync_config.json").symlink_to(vezir_sync)
+    elif real_sync.exists():
+        (shim_meet / "sync_config.json").symlink_to(real_sync)
 
     return shim
 
@@ -169,9 +182,24 @@ def label_auto(session_dir: Path, job_id: str, log_path: Path) -> int:
 
 
 def sync(session_dir: Path, job_id: str, log_path: Path) -> int:
-    """Push session to the configured meetscribe sync target."""
+    """Push session to vezir's configured meetscribe sync target.
+
+    During the sandbox phase, vezir uses --force with a fixed meeting type
+    so every successfully-processed session lands in `sandbox/` regardless
+    of when it was recorded. This bypasses the schedule + team-presence
+    gating that the meetscribe CLI applies for the personal flow.
+
+    The meeting type is configurable via VEZIR_SYNC_MEETING_TYPE
+    (default 'sandbox').
+    """
+    meeting_type = os.environ.get("VEZIR_SYNC_MEETING_TYPE", "sandbox")
     return run_meet(
-        ["sync", str(session_dir)],
+        [
+            "sync",
+            "--force",
+            "--meeting-type", meeting_type,
+            str(session_dir),
+        ],
         job_id=job_id,
         log_path=log_path,
     )

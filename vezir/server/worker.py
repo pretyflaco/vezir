@@ -49,6 +49,43 @@ def _delete_audio_enabled() -> bool:
     return os.environ.get("VEZIR_DELETE_AUDIO", "").lower() in ("1", "true", "yes")
 
 
+# `meet sync` exits 0 even on git clone/push failures (it catches the
+# RuntimeError and just prints a warning). Vezir scans the log tail for
+# these markers to detect silent failures.
+_SYNC_FAILURE_MARKERS = (
+    "fatal:",
+    "Could not resolve host",
+    "Authentication failed",
+    "Sync failed",
+    "Command failed: git",
+    "Permission denied",
+)
+
+
+def _sync_log_indicates_failure(log_path: Path) -> str | None:
+    """Scan the most recent `meet sync` block of the log for failure markers.
+
+    Only inspects lines after the most recent '--- ... meet sync' marker,
+    so prior stanzas (transcribe, label) don't bleed in.
+
+    Returns the matched marker line if a failure was found, else None.
+    """
+    if not log_path.exists():
+        return None
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    # Find last sync block
+    idx = text.rfind("meet sync ")
+    tail = text[idx:] if idx >= 0 else text
+    for line in tail.splitlines():
+        for marker in _SYNC_FAILURE_MARKERS:
+            if marker in line:
+                return line.strip()
+    return None
+
+
 def _session_dir(session_id: str) -> Path:
     return config.sessions_dir() / session_id
 
@@ -174,6 +211,18 @@ def process_one(job: dict) -> None:
                     artifacts=artifacts,
                 )
                 return
+            # `meet sync` may exit 0 even when git clone/push failed.
+            # Inspect the log for failure markers; if found, mark error
+            # so the operator can retry.
+            failure = _sync_log_indicates_failure(log_path)
+            if failure:
+                log.warning("job %s: sync silent failure: %s", job_id, failure)
+                queue.update_status(
+                    job_id, "error",
+                    error=f"meet sync failed silently: {failure}",
+                    artifacts=artifacts,
+                )
+                return
 
         # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1)
         _delete_audio(sd)
@@ -251,6 +300,13 @@ def finalize_after_labeling(session_id: str) -> None:
             if rc != 0:
                 queue.update_status(
                     session_id, "error", error=f"meet sync exited {rc}"
+                )
+                return
+            failure = _sync_log_indicates_failure(log_path)
+            if failure:
+                queue.update_status(
+                    session_id, "error",
+                    error=f"meet sync failed silently: {failure}",
                 )
                 return
         artifacts = _find_artifacts(sd)
