@@ -1,6 +1,6 @@
 # vezir
 
-Internal scribe service for team-scale meeting capture. Vezir wraps
+Self-hosted scribe service for team-scale meeting capture. Vezir wraps
 [meetscribe](https://github.com/pretyflaco/meetscribe) and turns it into a
 multi-user, Tailscale-hosted service: a designated scribe records a meeting
 on their laptop, the audio uploads to a central GPU-equipped box, and the
@@ -9,14 +9,16 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha. Local-only, single-tenant (Blink team), Linux + macOS clients,
-no remote git push. See `docs/PLAN.md` for the active roadmap.
+Alpha (0.1.0). Designed for small teams that want to keep meeting audio
+inside their own infrastructure: one Tailscale tailnet + one GPU-equipped
+box. Currently dogfooded by the Blink team. Linux clients fully supported,
+macOS thin client deferred.
 
 ## Architecture
 
 ```
-[Scribe laptop]                       [kasita / GPU server]
-  vezir scribe        ──upload──▶     vezir serve (FastAPI)
+[Scribe laptop]                       [GPU server]
+  vezir scribe / gui  ──upload──▶     vezir serve (FastAPI)
    (wraps meet record)                  │
                                         ├── sqlite job queue
                                         │
@@ -34,7 +36,7 @@ no remote git push. See `docs/PLAN.md` for the active roadmap.
 ```
 
 Meetscribe is invoked as an unmodified subprocess. Vezir owns its own
-job queue, voiceprint database, and team roster.
+job queue, voiceprint database, team roster, and browser auth.
 
 ## Repo layout
 
@@ -67,12 +69,12 @@ the base install uses [meetscribe-record](https://github.com/pretyflaco/meetscri
 (capture only). The `[server]` extra adds [meetscribe-offline](https://github.com/pretyflaco/meetscribe)
 for the heavy transcription/diarization/summarization pipeline.
 
-## Quick start (server, on kasita)
+## Quick start (server, on a GPU box reachable over Tailscale)
 
 ```bash
-cd /home/kasita/models/vezir
-pip install --user -e '.[server]' --no-deps   # vezir uses /usr/bin/python3 on kasita
-                                              # (deps already present from meetscribe)
+git clone https://github.com/pretyflaco/vezir.git
+cd vezir
+pip install --user -e '.[server]'
 
 # Seed voiceprints from existing meetscribe profile DB
 mkdir -p ~/vezir-data
@@ -133,8 +135,8 @@ pip install --user vezir
 # Optional: GUI widget (Tkinter); on Debian/Ubuntu:
 sudo apt install python3-tk
 
-# Configure (one-time)
-export VEZIR_URL=http://muscle:8000
+# Configure (one-time): server URL = Tailscale name of your vezir server
+export VEZIR_URL=http://your-vezir-server:8000
 export VEZIR_TOKEN=<token-issued-on-server>
 
 # CLI scribe
@@ -144,6 +146,12 @@ vezir scribe --title "what this meeting is about"
 # Or GUI scribe (always-on-top widget)
 vezir gui
 ```
+
+When the recording is uploaded, vezir prints a dashboard URL. Open it in
+your browser; the GUI's "Open dashboard" button does this for you. The
+URL flows through `/login?token=...` so the browser is signed in via
+HttpOnly cookie before it lands on the session page; subsequent access
+from the same browser does not require re-passing the token.
 
 ## Environment variables
 
