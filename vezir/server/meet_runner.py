@@ -20,29 +20,85 @@ from .. import config
 log = logging.getLogger("vezir.meet_runner")
 
 
+def _real_home() -> Path:
+    """Resolve the real $HOME, ignoring any HOME override applied to vezir."""
+    # pwd is more authoritative than $HOME (which we may have overridden).
+    import pwd
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
 def build_home_shim(job_id: str) -> Path:
-    """Create a per-job HOME shim with voiceprint symlink.
+    """Create a per-job HOME shim used as $HOME when invoking meetscribe.
+
+    The shim is a directory whose top-level entries are symlinks back to
+    the real user's home. Only meetscribe's voiceprint database is
+    redirected to vezir's central DB. Everything else (.local site
+    packages, .cache model downloads, .bashrc, etc.) is transparently
+    available to the subprocess, so `meet` and its transitive deps work
+    exactly as if invoked normally.
+
+    The shim layout:
+        <shim>/<entry>                                 -> ~/<entry>     (for every top-level entry)
+        <shim>/.config/                                MATERIALIZED dir
+        <shim>/.config/<entry>                         -> ~/.config/<entry>  (for every entry except 'meet')
+        <shim>/.config/meet/                           MATERIALIZED dir
+        <shim>/.config/meet/<file>                     -> ~/.config/meet/<file>  (for every file except 'speaker_profiles.json')
+        <shim>/.config/meet/speaker_profiles.json      -> central vezir DB
+
+    This avoids forwarding-list creep -- new files in real HOME or
+    ~/.config/meet/ become visible automatically without code changes,
+    and only the single file we explicitly override is replaced.
 
     Returns the path to use as HOME when invoking `meet`.
     """
     shim = config.jobs_dir() / job_id / "HOME"
-    meet_cfg = shim / ".config" / "meet"
-    meet_cfg.mkdir(parents=True, exist_ok=True)
+    if shim.exists():
+        # Stale shim from a prior crashed job: nuke it.
+        shutil.rmtree(shim, ignore_errors=True)
+    shim.mkdir(parents=True, exist_ok=True)
 
-    # Symlink the central voiceprint DB into the shim.
+    real_home = _real_home()
+
+    # 1. Top-level: symlink every entry in real home into the shim,
+    #    EXCEPT '.config' which we materialize so we can override one
+    #    file inside it.
+    if real_home.is_dir():
+        for entry in real_home.iterdir():
+            if entry.name == ".config":
+                continue
+            (shim / entry.name).symlink_to(entry)
+
+    # 2. .config: materialize as a real dir; symlink every child entry,
+    #    EXCEPT 'meet' which we materialize so we can override one file
+    #    inside it.
+    real_config = real_home / ".config"
+    shim_config = shim / ".config"
+    shim_config.mkdir(parents=True, exist_ok=True)
+    if real_config.is_dir():
+        for entry in real_config.iterdir():
+            if entry.name == "meet":
+                continue
+            (shim_config / entry.name).symlink_to(entry)
+
+    # 3. .config/meet: materialize as a real dir; symlink every file
+    #    EXCEPT speaker_profiles.json which is redirected to vezir's
+    #    central DB.
+    real_meet = real_config / "meet"
+    shim_meet = shim_config / "meet"
+    shim_meet.mkdir(parents=True, exist_ok=True)
+    if real_meet.is_dir():
+        for entry in real_meet.iterdir():
+            if entry.name == "speaker_profiles.json":
+                continue
+            (shim_meet / entry.name).symlink_to(entry)
+
+    # 4. Override: speaker_profiles.json -> central vezir DB.
     central = config.speaker_profiles_path()
     central.parent.mkdir(parents=True, exist_ok=True)
     if not central.exists():
-        # Create empty profile file so meetscribe sees a valid (empty) DB.
         central.write_text("{}", encoding="utf-8")
+    (shim_meet / "speaker_profiles.json").symlink_to(central)
 
-    link = meet_cfg / "speaker_profiles.json"
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(central)
-
-    # Forward HF_TOKEN-related and other meetscribe config files if any.
-    # For v0 we rely on env-var passthrough only.
     return shim
 
 
