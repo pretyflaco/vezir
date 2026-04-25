@@ -37,7 +37,7 @@ def _decorate(row: dict) -> dict:
 
 
 @router.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, github: str = Depends(auth.require_bearer)):
+def dashboard(request: Request, github: str = Depends(auth.require_bearer_or_cookie)):
     rows = [_decorate(r) for r in queue.list_recent(limit=50)]
     return templates.TemplateResponse(
         "dashboard.html",
@@ -49,7 +49,7 @@ def dashboard(request: Request, github: str = Depends(auth.require_bearer)):
 def session_detail(
     request: Request,
     session_id: str,
-    github: str = Depends(auth.require_bearer),
+    github: str = Depends(auth.require_bearer_or_cookie),
 ):
     row = queue.get(session_id)
     if not row:
@@ -83,7 +83,7 @@ def api_session(
 def artifact(
     session_id: str,
     name: str,
-    github: str = Depends(auth.require_bearer),
+    github: str = Depends(auth.require_bearer_or_cookie),
 ):
     sdir = config.sessions_dir() / session_id
     if not sdir.exists():

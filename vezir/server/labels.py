@@ -81,7 +81,7 @@ def _get_speakers(session_id: str):
 def label_page(
     request: Request,
     session_id: str,
-    github: str = Depends(auth.require_bearer),
+    github: str = Depends(auth.require_bearer_or_cookie),
 ):
     row = queue.get(session_id)
     if not row:
@@ -109,7 +109,7 @@ def label_page(
 def label_clip(
     session_id: str,
     speaker_id: str,
-    github: str = Depends(auth.require_bearer),
+    github: str = Depends(auth.require_bearer_or_cookie),
 ):
     """Return an audio clip for a speaker. Generates and caches on first hit."""
     if not re.match(r"^[A-Za-z0-9_]+$", speaker_id):
@@ -143,7 +143,7 @@ def label_clip(
 async def submit_labels(
     request: Request,
     session_id: str,
-    github: str = Depends(auth.require_bearer),
+    github: str = Depends(auth.require_bearer_or_cookie),
 ):
     """Apply user-assigned labels and trigger sync.
 

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}vezir — sign in{% endblock %}
+{% block content %}
+<h1>Sign in</h1>
+<p class="muted">
+  Paste your <code>VEZIR_TOKEN</code> below. Your scribe client (CLI or
+  GUI) was given this token when it was issued. Tokens are not recoverable;
+  if you've lost it, ask the operator to issue a new one.
+</p>
+
+{% if error %}
+<div class="error-block">
+  <pre>{{ error }}</pre>
+</div>
+{% endif %}
+
+<form method="post" action="/login" class="login-form">
+  <input type="hidden" name="next" value="{{ next }}">
+  <label>
+    Token
+    <input type="password" name="token" autocomplete="off" autofocus
+           placeholder="vzr_..." required>
+  </label>
+  <p>
+    <button type="submit" class="cta">Sign in</button>
+  </p>
+</form>
+{% endblock %}

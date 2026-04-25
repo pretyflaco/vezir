@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, config
-from . import labels, queue as _queue, sessions, uploads, voiceprints, worker
+from . import labels, login, queue as _queue, sessions, uploads, voiceprints, worker
 
 
 def create_app() -> FastAPI:
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
             "data_dir": str(config.data_dir()),
         }
 
+    app.include_router(login.router)
     app.include_router(uploads.router)
     app.include_router(sessions.router)
     app.include_router(labels.router)

@@ -133,6 +133,10 @@ class RecordingState:
     wav_path: Path | None = None
     session_id: str | None = None
     dashboard_url: str | None = None
+    # Browser-targeted URL that hands off the bearer token through /login
+    # so the browser picks up a session cookie. Distinct from dashboard_url
+    # which is the canonical (header-auth) path.
+    dashboard_login_url: str | None = None
     error_message: str = ""
 
 
@@ -468,6 +472,12 @@ class ScribeWindow:
             data = payload
             self.state.session_id = data.get("session_id")
             self.state.dashboard_url = data.get("dashboard_url")
+            # Prefer the /login hand-off URL when the server provides it
+            # (vezir 0.0.2+); fall back to bare dashboard_url for older
+            # servers (browser then prompts for token via /login form).
+            self.state.dashboard_login_url = (
+                data.get("dashboard_login_url") or data.get("dashboard_url")
+            )
             self._set_status("queued")
             self.action_btn.config(state="normal")
             self._start_status_polling()
@@ -515,8 +525,12 @@ class ScribeWindow:
         self.status_lbl.config(text=status, fg=colour)
 
     def _open_dashboard(self):
-        if self.state.dashboard_url:
-            webbrowser.open_new_tab(self.state.dashboard_url)
+        # Prefer the /login hand-off URL so the browser picks up the cookie
+        # and lands on a clean URL. Falls back to the canonical dashboard
+        # URL if the server didn't provide a login URL.
+        url = self.state.dashboard_login_url or self.state.dashboard_url
+        if url:
+            webbrowser.open_new_tab(url)
 
     def _on_close(self):
         # Kill any in-flight recording before closing.

@@ -41,6 +41,35 @@ header {
   font-size: 0.9em;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
+.me a.logout {
+  color: #aaa;
+  text-decoration: underline;
+}
+.me a.logout:hover {
+  color: #fff;
+}
+
+.login-form {
+  max-width: 32rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1rem 1.25rem;
+}
+.login-form label {
+  display: block;
+  font-size: 0.9em;
+  color: #444;
+  margin-bottom: 0.4rem;
+}
+.login-form input[type=password] {
+  width: 100%;
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
 
 main {
   max-width: 980px;

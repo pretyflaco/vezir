@@ -15,13 +15,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import time
 from pathlib import Path
 
-from fastapi import Header, HTTPException, status
+from fastapi import Cookie, Header, HTTPException, status
 
 from .. import config
+
+log = logging.getLogger("vezir.auth")
+
+# Cookie used by the browser hand-off flow (see server.login). Value is the
+# plaintext bearer token; HttpOnly + SameSite=Lax. Equivalent risk profile
+# to the bearer header (which also carries plaintext) — the network surface
+# is Tailscale-only either way.
+COOKIE_NAME = "vezir_session"
 
 
 def _hash(token: str) -> str:
@@ -79,18 +88,31 @@ def lookup(token: str) -> str | None:
     return None
 
 
+def _token_from_authorization(authorization: str | None) -> str | None:
+    """Extract the bearer token from an `Authorization` header, or None."""
+    if not authorization:
+        return None
+    if not authorization.lower().startswith("bearer "):
+        return None
+    return authorization.split(None, 1)[1].strip()
+
+
 def require_bearer(authorization: str | None = Header(default=None)) -> str:
     """FastAPI dependency: validates Authorization: Bearer <token>.
 
     Returns the GitHub handle of the authenticated scribe.
+
+    Use for JSON / programmatic endpoints (e.g. /api/..., /upload). For
+    browser-facing routes prefer `require_bearer_or_cookie` so users can
+    click links from the GUI's dashboard URL.
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
+    token = _token_from_authorization(authorization)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization.split(None, 1)[1].strip()
     github = lookup(token)
     if not github:
         raise HTTPException(
@@ -98,4 +120,44 @@ def require_bearer(authorization: str | None = Header(default=None)) -> str:
             detail="invalid bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return github
+
+
+def require_bearer_or_cookie(
+    authorization: str | None = Header(default=None),
+    vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> str:
+    """FastAPI dependency: accept either Authorization: Bearer or session cookie.
+
+    Used for browser-facing routes (dashboard, session detail, label page,
+    artifact downloads). The cookie is set via /login?token=...&next=...
+    and contains the bearer token plaintext (see server.login).
+
+    Returns the GitHub handle of the authenticated scribe.
+    """
+    # Prefer the explicit Authorization header when present (programmatic
+    # access, e.g. curl/httpx tooling).
+    token = _token_from_authorization(authorization)
+    via = "header"
+    if not token:
+        token = (vezir_session or "").strip() or None
+        via = "cookie"
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "not signed in. Open the dashboard via vezir gui's "
+                "'Open dashboard' button, or visit /login to sign in."
+            ),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    github = lookup(token)
+    if not github:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    log.debug("auth: %s via %s", github, via)
     return github

@@ -9,7 +9,9 @@
 <body>
   <header>
     <a href="/" class="brand">vezir</a>
-    <span class="me">{{ me }}</span>
+    <span class="me">
+      {% if me %}{{ me }} · <a href="/logout" class="logout">logout</a>{% endif %}
+    </span>
   </header>
   <main>
     {% block content %}{% endblock %}

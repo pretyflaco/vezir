@@ -82,8 +82,24 @@ async def upload(
     queue.enqueue(session_id, github=github, title=title)
 
     base = str(request.base_url).rstrip("/")
+    # `dashboard_url` is the canonical session detail path; clients with a
+    # bearer-token-aware HTTP client can fetch it directly.
+    # `dashboard_login_url` is the same destination wrapped through /login
+    # so a browser opened to it picks up a session cookie before being
+    # redirected. Vezir's GUI uses this for its "Open dashboard" button.
+    from urllib.parse import quote
+    auth_token = request.headers.get("authorization", "")
+    if auth_token.lower().startswith("bearer "):
+        plaintext = auth_token.split(None, 1)[1].strip()
+        login_url = (
+            f"{base}/login?token={quote(plaintext, safe='')}"
+            f"&next=%2Fs%2F{session_id}"
+        )
+    else:
+        login_url = f"{base}/login?next=%2Fs%2F{session_id}"
     return {
         "session_id": session_id,
         "bytes": bytes_written,
         "dashboard_url": f"{base}/s/{session_id}",
+        "dashboard_login_url": login_url,
     }
