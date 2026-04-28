@@ -9,7 +9,7 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.0). Designed for small teams that want to keep meeting audio
+Alpha (0.1.1). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one Tailscale tailnet + one GPU-equipped
 box. Currently dogfooded by the Blink team. Linux clients fully supported,
 macOS thin client deferred.
@@ -18,7 +18,7 @@ macOS thin client deferred.
 
 ```
 [Scribe laptop]                       [GPU server]
-  vezir scribe / gui  ──upload──▶     vezir serve (FastAPI)
+  vezir scribe / gui / upload ──▶     vezir serve (FastAPI)
    (wraps meet record)                  │
                                         ├── sqlite job queue
                                         │
@@ -43,7 +43,7 @@ job queue, voiceprint database, team roster, and browser auth.
 ```
 vezir/
   vezir/                    # python package
-    cli.py                  # serve, scribe, token issue
+    cli.py                  # serve, scribe, upload, token issue
     config.py               # paths, env
     server/                 # FastAPI app, queue, worker, meet_runner
     client/                 # vezir scribe (wraps meet record + uploads)
@@ -135,7 +135,8 @@ pip install --user vezir
 # Optional: GUI widget (Tkinter); on Debian/Ubuntu:
 sudo apt install python3-tk
 
-# Configure (one-time): server URL = Tailscale name of your vezir server
+# Configure (one-time): server URL = Tailscale name of your vezir server.
+# If MagicDNS is unavailable, use the server's Tailscale IP instead.
 export VEZIR_URL=http://your-vezir-server:8000
 export VEZIR_TOKEN=<token-issued-on-server>
 
@@ -145,6 +146,9 @@ vezir scribe --title "what this meeting is about"
 
 # Or GUI scribe (always-on-top widget)
 vezir gui
+
+# Or upload an existing recording (WAV/OGG)
+vezir upload ./previous-meeting.wav --title "previous meeting"
 ```
 
 When the recording is uploaded, vezir prints a dashboard URL. Open it in
@@ -152,6 +156,16 @@ your browser; the GUI's "Open dashboard" button does this for you. The
 URL flows through `/login?token=...` so the browser is signed in via
 HttpOnly cookie before it lands on the session page; subsequent access
 from the same browser does not require re-passing the token.
+
+Live client recordings remain on the scribe machine under
+`~/meet-recordings/` by default. `vezir status` is a server-side/local
+diagnostic command; on a thin client it inspects that machine's local
+`~/vezir-data` and does not query the remote server.
+
+Standalone uploads currently accept `.wav` and `.ogg`, matching what the
+server-side meetscribe pipeline consumes from session folders. Other formats
+such as `.mp3`, `.m4a`, and `.webm` should be transcoded to WAV/OGG first
+until server-side transcoding is added.
 
 ## Environment variables
 
@@ -167,6 +181,11 @@ from the same browser does not require re-passing the token.
 | `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |
+| `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
+
+Runtime directories are created private (`0700`) and sensitive runtime files
+are written private (`0600`). The systemd unit also sets `UMask=0077` so
+artifacts created by subprocesses inherit private defaults.
 
 ## License
 

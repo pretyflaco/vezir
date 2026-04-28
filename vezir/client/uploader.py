@@ -9,6 +9,26 @@ import httpx
 
 log = logging.getLogger("vezir.client.uploader")
 
+ACCEPTED_AUDIO_EXTS = {".wav", ".ogg"}
+CONTENT_TYPES = {
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+}
+
+
+def validate_audio_path(audio_path: Path) -> Path:
+    """Validate a user-selected upload path and return it as a Path."""
+    audio_path = Path(audio_path)
+    if not audio_path.exists():
+        raise FileNotFoundError(f"audio file not found: {audio_path}")
+    if not audio_path.is_file():
+        raise ValueError(f"audio path is not a file: {audio_path}")
+    ext = audio_path.suffix.lower()
+    if ext not in ACCEPTED_AUDIO_EXTS:
+        allowed = ", ".join(sorted(ACCEPTED_AUDIO_EXTS))
+        raise ValueError(f"unsupported audio type {ext or '(none)'}; expected {allowed}")
+    return audio_path
+
 
 def upload(
     server_url: str,
@@ -26,12 +46,11 @@ def upload(
     url = server_url.rstrip("/") + "/upload"
     headers = {"Authorization": f"Bearer {token}"}
 
+    audio_path = validate_audio_path(audio_path)
+
     # Pick a content-type matching the file extension.
     ext = audio_path.suffix.lower()
-    content_type = {
-        ".wav": "audio/wav",
-        ".ogg": "audio/ogg",
-    }.get(ext, "application/octet-stream")
+    content_type = CONTENT_TYPES[ext]
 
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):

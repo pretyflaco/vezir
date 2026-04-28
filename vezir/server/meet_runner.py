@@ -55,7 +55,8 @@ def build_home_shim(job_id: str) -> Path:
     if shim.exists():
         # Stale shim from a prior crashed job: nuke it.
         shutil.rmtree(shim, ignore_errors=True)
-    shim.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(shim.parent)
+    config.secure_mkdir(shim)
 
     real_home = _real_home()
 
@@ -73,7 +74,7 @@ def build_home_shim(job_id: str) -> Path:
     #    inside it.
     real_config = real_home / ".config"
     shim_config = shim / ".config"
-    shim_config.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(shim_config)
     if real_config.is_dir():
         for entry in real_config.iterdir():
             if entry.name == "meet":
@@ -86,7 +87,7 @@ def build_home_shim(job_id: str) -> Path:
     #    one exists in VEZIR_DATA, else falls back to the real one).
     real_meet = real_config / "meet"
     shim_meet = shim_config / "meet"
-    shim_meet.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(shim_meet)
     OVERRIDDEN = {"speaker_profiles.json", "sync_config.json"}
     if real_meet.is_dir():
         for entry in real_meet.iterdir():
@@ -96,9 +97,11 @@ def build_home_shim(job_id: str) -> Path:
 
     # 4. Override: speaker_profiles.json -> central vezir DB.
     central = config.speaker_profiles_path()
-    central.parent.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(central.parent)
     if not central.exists():
-        central.write_text("{}", encoding="utf-8")
+        config.secure_write_text(central, "{}")
+    else:
+        config.secure_chmod_file(central)
     (shim_meet / "speaker_profiles.json").symlink_to(central)
 
     # 5. Override: sync_config.json. If vezir has its own at
@@ -141,8 +144,9 @@ def run_meet(args: list[str], job_id: str, log_path: Path | None = None) -> int:
     log.info("running: HOME=%s %s", home, " ".join(cmd))
 
     if log_path:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        config.secure_mkdir(log_path.parent)
         with log_path.open("ab") as f:
+            config.secure_chmod_file(log_path)
             f.write(f"\n--- {' '.join(cmd)}\n".encode("utf-8"))
             f.flush()
             proc = subprocess.run(cmd, env=env, stdout=f, stderr=f)
@@ -218,7 +222,7 @@ def ensure_session_json(session_dir: Path, session_id: str) -> Path:
         "_note": "Injected by vezir to satisfy meet/sync.py:_date_from_session.",
     }
     import json as _json
-    sj.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+    config.secure_write_text(sj, _json.dumps(payload, indent=2))
     return sj
 
 

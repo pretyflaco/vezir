@@ -70,8 +70,7 @@ def _load_client_config() -> dict:
 
 def _save_client_config(data: dict) -> None:
     p = _client_config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    config.secure_write_text(p, json.dumps(data, indent=2))
 
 
 def _resolve_url_and_token() -> tuple[str | None, str | None]:

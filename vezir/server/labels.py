@@ -51,7 +51,7 @@ def _session_dir(session_id: str) -> Path:
 
 def _ensure_clips_dir(session_id: str) -> Path:
     d = _session_dir(session_id) / "clips"
-    d.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(d)
     return d
 
 
@@ -136,6 +136,7 @@ def label_clip(
     from meet.label import extract_speaker_clip
     tmp = extract_speaker_clip(wav, sp)
     shutil.move(str(tmp), str(cached))
+    config.secure_chmod_file(cached)
     return FileResponse(cached, media_type="audio/wav")
 
 

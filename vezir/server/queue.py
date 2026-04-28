@@ -68,6 +68,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
     db_path = config.queue_db_path()
     with _LOCK:
         conn = sqlite3.connect(str(db_path))
+        config.secure_chmod_file(db_path)
         conn.row_factory = sqlite3.Row
         try:
             conn.executescript(SCHEMA)

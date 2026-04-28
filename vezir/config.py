@@ -10,11 +10,13 @@ Environment variables:
     VEZIR_PORT          Port for `vezir serve` (default 8000)
     VEZIR_MEET_BIN      Path to meetscribe `meet` binary (default: from PATH)
     VEZIR_LOG_LEVEL     Logging level (default INFO)
+    VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
 """
 from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 
@@ -87,7 +89,60 @@ def client_token() -> str | None:
     return os.environ.get("VEZIR_TOKEN")
 
 
+def max_upload_bytes() -> int:
+    """Maximum accepted upload size in bytes (default: 2 GiB)."""
+    raw = os.environ.get("VEZIR_MAX_UPLOAD_BYTES")
+    if raw is None:
+        return 2 * 1024 * 1024 * 1024
+    return int(raw)
+
+
+def secure_mkdir(path: Path) -> Path:
+    """Create a private runtime directory and enforce mode 0700."""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except PermissionError:
+        # Best effort for unusual filesystems; systemd UMask still helps.
+        pass
+    return path
+
+
+def secure_chmod_file(path: Path) -> Path:
+    """Enforce mode 0600 on a sensitive runtime file if it exists."""
+    if path.exists():
+        try:
+            path.chmod(0o600)
+        except PermissionError:
+            pass
+    return path
+
+
+def secure_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """Write a sensitive text file with mode 0600 via same-dir replace."""
+    secure_mkdir(path.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(text)
+        tmp.chmod(0o600)
+        tmp.replace(path)
+        secure_chmod_file(path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def harden_umask() -> None:
+    """Ensure newly created runtime files default to private permissions."""
+    os.umask(0o077)
+
+
 def ensure_dirs() -> None:
     """Create runtime directories if they don't exist."""
     for d in (data_dir(), sessions_dir(), jobs_dir(), logs_dir()):
-        d.mkdir(parents=True, exist_ok=True)
+        secure_mkdir(d)

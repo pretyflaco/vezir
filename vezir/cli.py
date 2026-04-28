@@ -72,6 +72,46 @@ def scribe(server_url, token, title, output_dir, record_args):
         sys.exit(1)
 
 
+# ── upload ────────────────────────────────────────────────────────────────────
+
+@main.command("upload")
+@click.option("--server", "server_url", default=None,
+              help="Server URL (default $VEZIR_URL)")
+@click.option("--token", default=None,
+              help="Bearer token (default $VEZIR_TOKEN)")
+@click.option("--title", default=None,
+              help="Optional meeting title")
+@click.argument(
+    "audio_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+def upload_cmd(server_url, token, title, audio_file):
+    """Upload an existing WAV/OGG recording to vezir."""
+    from .client import uploader
+
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
+        sys.exit(1)
+
+    try:
+        audio_file = uploader.validate_audio_path(audio_file)
+        click.echo(f"vezir: uploading {audio_file} to {server_url} ...")
+        result = uploader.upload(server_url, token, audio_file, title=title)
+    except Exception as exc:
+        click.echo(f"vezir: error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"vezir: uploaded as session {result['session_id']}")
+    if "bytes" in result:
+        click.echo(f"vezir: bytes uploaded: {result['bytes']:,}")
+    if result.get("dashboard_url"):
+        click.echo(f"vezir: dashboard: {result['dashboard_url']}")
+    if result.get("dashboard_login_url"):
+        click.echo(f"vezir: open in browser: {result['dashboard_login_url']}")
+
+
 # ── gui ───────────────────────────────────────────────────────────────────────
 
 @main.command()

@@ -15,6 +15,7 @@ from . import labels, login, queue as _queue, sessions, uploads, voiceprints, wo
 
 
 def create_app() -> FastAPI:
+    config.harden_umask()
     logging.basicConfig(
         level=getattr(logging, config.log_level(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

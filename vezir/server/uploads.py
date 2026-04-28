@@ -2,7 +2,7 @@
 
 POST /upload
     multipart/form-data with:
-        audio: the .wav file produced by `meet record`
+        audio: the .wav/.ogg file produced by `meet record` or `vezir upload`
         title: optional meeting title
 
     Returns: { "session_id": "<ulid>", "dashboard_url": "..." }
@@ -14,11 +14,10 @@ worker to process.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 import ulid
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from .. import config
 from . import auth, queue
@@ -33,21 +32,44 @@ CHUNK_BYTES = 4 * 1024 * 1024  # 4 MB
 # Audio extensions vezir accepts. Meetscribe handles both WAV and OGG natively
 # (see meet/cli.py:389-390 and meet/label.py:66-70).
 ACCEPTED_EXTS = {".wav", ".ogg"}
+CONTENT_TYPE_EXTS = {
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/vnd.wave": ".wav",
+    "audio/ogg": ".ogg",
+    "application/ogg": ".ogg",
+}
 
 
 def _pick_extension(upload_filename: str | None, content_type: str | None) -> str:
-    """Choose the on-disk extension based on the uploaded filename / mime."""
+    """Choose the on-disk extension based on filename/MIME or reject."""
     if upload_filename:
         ext = Path(upload_filename).suffix.lower()
         if ext in ACCEPTED_EXTS:
             return ext
     if content_type:
-        ct = content_type.lower()
-        if "ogg" in ct:
-            return ".ogg"
-        if "wav" in ct or "wave" in ct:
-            return ".wav"
-    return ".wav"  # default fallback
+        ct = content_type.split(";", 1)[0].strip().lower()
+        if ct in CONTENT_TYPE_EXTS:
+            return CONTENT_TYPE_EXTS[ct]
+    allowed = ", ".join(sorted(ACCEPTED_EXTS))
+    raise HTTPException(
+        status_code=415,
+        detail=f"unsupported audio type; expected {allowed}",
+    )
+
+
+def _validate_magic(ext: str, chunk: bytes) -> None:
+    """Reject obvious filename/MIME spoofing for WAV and OGG uploads."""
+    if not chunk:
+        return
+    ok = False
+    if ext == ".wav":
+        ok = len(chunk) >= 12 and chunk[:4] == b"RIFF" and chunk[8:12] == b"WAVE"
+    elif ext == ".ogg":
+        ok = chunk.startswith(b"OggS")
+    if not ok:
+        raise HTTPException(status_code=415, detail=f"invalid {ext} audio header")
 
 
 @router.post("/upload")
@@ -58,21 +80,45 @@ async def upload(
     github: str = Depends(auth.require_bearer),
 ):
     config.ensure_dirs()
-    session_id = ulid.new().str
-    sdir = config.sessions_dir() / session_id
-    sdir.mkdir(parents=True, exist_ok=True)
+    max_bytes = config.max_upload_bytes()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="upload too large")
+        except ValueError:
+            pass
 
     ext = _pick_extension(audio.filename, audio.content_type)
+    session_id = ulid.new().str
+    sdir = config.sessions_dir() / session_id
+    config.secure_mkdir(sdir)
     out = sdir / f"{session_id}{ext}"
 
     bytes_written = 0
-    with out.open("wb") as f:
-        while True:
-            chunk = await audio.read(CHUNK_BYTES)
-            if not chunk:
-                break
-            f.write(chunk)
-            bytes_written += len(chunk)
+    try:
+        with out.open("wb") as f:
+            config.secure_chmod_file(out)
+            first_chunk = True
+            while True:
+                chunk = await audio.read(CHUNK_BYTES)
+                if not chunk:
+                    break
+                if first_chunk:
+                    _validate_magic(ext, chunk)
+                    first_chunk = False
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise HTTPException(status_code=413, detail="upload too large")
+                f.write(chunk)
+        config.secure_chmod_file(out)
+    except HTTPException:
+        out.unlink(missing_ok=True)
+        try:
+            sdir.rmdir()
+        except OSError:
+            pass
+        raise
 
     log.info(
         "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r",

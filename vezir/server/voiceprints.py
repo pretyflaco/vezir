@@ -19,9 +19,11 @@ from .. import config
 def ensure_db_exists() -> Path:
     """Create an empty profile DB file if not present. Returns its path."""
     p = config.speaker_profiles_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(p.parent)
     if not p.exists():
-        p.write_text("{}", encoding="utf-8")
+        config.secure_write_text(p, "{}")
+    else:
+        config.secure_chmod_file(p)
     return p
 
 
@@ -50,10 +52,10 @@ def seed_from(source: Path) -> int:
             raise FileExistsError(
                 f"central profile DB already populated at {target}"
             )
-    target.parent.mkdir(parents=True, exist_ok=True)
+    config.secure_mkdir(target.parent)
     data = json.loads(source.read_text(encoding="utf-8"))
-    target.write_text(
+    config.secure_write_text(
+        target,
         json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
     )
     return len(data)

@@ -19,6 +19,7 @@ Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 # Secrets (HF_TOKEN, OPENROUTER_API_KEY, MEETSCRIBE_SUMMARY_BACKEND).
 # File is mode 0600. Leading '-' means it is optional.
 EnvironmentFile=-%h/.config/environment.d/vezir.conf
+UMask=0077
 Restart=on-failure
 RestartSec=5
 

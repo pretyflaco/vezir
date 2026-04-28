@@ -46,8 +46,7 @@ def _load_tokens() -> dict:
 
 def _save_tokens(data: dict) -> None:
     p = config.tokens_json_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    config.secure_write_text(p, json.dumps(data, indent=2))
 
 
 def issue(github: str) -> str:
