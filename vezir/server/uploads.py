@@ -77,6 +77,7 @@ async def upload(
     request: Request,
     audio: UploadFile = File(...),
     title: str | None = Form(default=None),
+    audio_bytes: int | None = Form(default=None),
     github: str = Depends(auth.require_bearer),
 ):
     config.ensure_dirs()
@@ -111,6 +112,14 @@ async def upload(
                 if bytes_written > max_bytes:
                     raise HTTPException(status_code=413, detail="upload too large")
                 f.write(chunk)
+        if audio_bytes is not None and bytes_written != audio_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"upload incomplete: received {bytes_written} bytes, "
+                    f"expected {audio_bytes}"
+                ),
+            )
         config.secure_chmod_file(out)
     except HTTPException:
         out.unlink(missing_ok=True)

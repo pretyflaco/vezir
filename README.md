@@ -9,7 +9,7 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.1). Designed for small teams that want to keep meeting audio
+Alpha (0.1.2). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one Tailscale tailnet + one GPU-equipped
 box. Currently dogfooded by the Blink team. Linux clients fully supported,
 macOS thin client deferred.
@@ -143,12 +143,17 @@ export VEZIR_TOKEN=<token-issued-on-server>
 # CLI scribe
 vezir scribe --title "what this meeting is about"
 # Talk; Ctrl+C when done.
+# By default, the recorded WAV is compressed to OGG/Opus before upload.
+# Use --no-compress to upload the raw WAV instead.
 
 # Or GUI scribe (always-on-top widget)
 vezir gui
 
 # Or upload an existing recording (WAV/OGG)
 vezir upload ./previous-meeting.wav --title "previous meeting"
+
+# Compress an existing WAV before uploading it
+vezir upload ./previous-meeting.wav --compress --title "previous meeting"
 ```
 
 When the recording is uploaded, vezir prints a dashboard URL. Open it in
@@ -163,9 +168,14 @@ diagnostic command; on a thin client it inspects that machine's local
 `~/vezir-data` and does not query the remote server.
 
 Standalone uploads currently accept `.wav` and `.ogg`, matching what the
-server-side meetscribe pipeline consumes from session folders. Other formats
-such as `.mp3`, `.m4a`, and `.webm` should be transcoded to WAV/OGG first
-until server-side transcoding is added.
+server-side meetscribe pipeline consumes from session folders. Use
+`vezir upload --compress file.wav` to compress a WAV to OGG/Opus before
+uploading. Other formats such as `.mp3`, `.m4a`, and `.webm` should be
+transcoded to WAV/OGG first until server-side transcoding is added.
+
+The client reports upload progress, retries from byte 0 after transient
+connection failures, and sends the expected audio byte count so the server can
+reject incomplete uploads instead of processing partial meetings.
 
 ## Environment variables
 

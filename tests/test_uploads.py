@@ -118,6 +118,21 @@ def test_upload_rejects_oversized_body(monkeypatch, client_and_token):
     assert list((tmp_data / "sessions").iterdir()) == []
 
 
+def test_upload_rejects_incomplete_body_by_expected_size(client_and_token):
+    client, token, tmp_data = client_and_token
+    body = _wav_bytes()
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        data={"audio_bytes": str(len(body) + 1)},
+        files={"audio": ("foo.wav", body, "audio/wav")},
+    )
+
+    assert resp.status_code == 400
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
 def test_cli_upload_existing_file(monkeypatch, tmp_path):
     from click.testing import CliRunner
     from vezir import cli
@@ -126,11 +141,13 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
     audio = tmp_path / "prior.wav"
     audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
 
-    def fake_upload(server_url, token, audio_path, title=None):
+    def fake_upload(server_url, token, audio_path, title=None, progress=None, on_retry=None):
         assert server_url == "http://server.test"
         assert token == "vzr_test"
         assert audio_path == audio
         assert title == "prior meeting"
+        assert progress is not None
+        assert on_retry is not None
         return {
             "session_id": "01TEST",
             "bytes": 12,
@@ -155,3 +172,46 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "uploaded as session 01TEST" in result.output
+
+
+def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from vezir import cli
+    from vezir.client import uploader
+
+    wav = tmp_path / "prior.wav"
+    ogg = tmp_path / "prior.ogg"
+    wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE" + b"x" * 100)
+    ogg.write_bytes(b"OggS" + b"y" * 10)
+
+    def fake_compress(audio_path, keep_wav=True, bitrate="48k"):
+        assert audio_path == wav
+        assert keep_wav is True
+        return ogg
+
+    def fake_upload(server_url, token, audio_path, title=None, progress=None, on_retry=None):
+        assert audio_path == ogg
+        return {
+            "session_id": "01TEST",
+            "bytes": ogg.stat().st_size,
+            "dashboard_url": "http://server.test/s/01TEST",
+            "dashboard_login_url": "http://server.test/login?next=%2Fs%2F01TEST",
+        }
+
+    monkeypatch.setattr(uploader, "compress_wav_for_upload", fake_compress)
+    monkeypatch.setattr(uploader, "upload", fake_upload)
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "upload",
+            str(wav),
+            "--compress",
+            "--server",
+            "http://server.test",
+            "--token",
+            "vzr_test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "compressing WAV" in result.output

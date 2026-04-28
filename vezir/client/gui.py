@@ -126,7 +126,7 @@ def _default_output_dir() -> Path:
 @dataclass
 class RecordingState:
     """Tracked client-side state."""
-    status: str = "ready"   # ready, recording, draining, uploading, queued,
+    status: str = "ready"   # ready, recording, draining, compressing, uploading, queued,
                             # transcribing, syncing, done, error, needs_labeling
     started_at: float = 0.0
     wav_path: Path | None = None
@@ -385,13 +385,42 @@ class ScribeWindow:
 
     def _start_upload(self, wav_path: Path):
         self.state.wav_path = wav_path
-        self._set_status("uploading")
+        self._set_status("compressing" if wav_path.suffix.lower() == ".wav" else "uploading")
 
         def _upload():
             try:
-                from .uploader import upload as do_upload
+                from .uploader import compress_wav_for_upload, upload as do_upload
                 title = self.title_var.get().strip() or None
-                result = do_upload(self.url, self.token, wav_path, title=title)
+                audio_path = wav_path
+                if audio_path.suffix.lower() == ".wav":
+                    before = audio_path.stat().st_size
+                    audio_path = compress_wav_for_upload(audio_path, keep_wav=True)
+                    after = audio_path.stat().st_size
+                    ratio = before / after if after else 0
+                    self._gui_queue.put((
+                        "status",
+                        f"compressed {_fmt_size(before)} -> {_fmt_size(after)} ({ratio:.1f}x)",
+                    ))
+
+                def progress(sent: int, total: int, elapsed: float) -> None:
+                    pct = (sent / total * 100) if total else 0.0
+                    self._gui_queue.put(("upload_progress", pct))
+
+                def on_retry(attempt: int, retries: int, exc: Exception) -> None:
+                    self._gui_queue.put((
+                        "status",
+                        f"upload attempt {attempt}/{retries} failed; retrying from byte 0",
+                    ))
+
+                self._gui_queue.put(("status", "uploading"))
+                result = do_upload(
+                    self.url,
+                    self.token,
+                    audio_path,
+                    title=title,
+                    progress=progress,
+                    on_retry=on_retry,
+                )
                 self._gui_queue.put(("uploaded", result))
             except Exception as exc:
                 self._gui_queue.put(("error", f"upload failed: {exc}"))
@@ -504,8 +533,13 @@ class ScribeWindow:
             self.rec_btn.config(state="normal", text="● Record", bg="#e0e0e0")
             self.title_entry.config(state="normal")
         elif kind == "status":
-            # transient, low-priority message; show briefly
-            pass
+            msg = str(payload)
+            if msg in {"uploading", "compressing"}:
+                self._set_status(msg)
+            else:
+                self.err_lbl.config(text=msg, fg="#666")
+        elif kind == "upload_progress":
+            self._set_status(f"uploading {float(payload):.0f}%")
 
     def _set_status(self, status: str):
         self.state.status = status
@@ -513,6 +547,7 @@ class ScribeWindow:
             "ready": "#444",
             "recording": "#117733",
             "draining": "#876600",
+            "compressing": "#1a4488",
             "uploading": "#1a4488",
             "queued": "#666666",
             "transcribing": "#876600",

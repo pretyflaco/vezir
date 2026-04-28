@@ -48,8 +48,10 @@ def serve(host, port, reload):
               help="Optional meeting title")
 @click.option("-o", "--output-dir", default=None, type=click.Path(),
               help="Where `meet record` writes audio (default ~/meet-recordings)")
+@click.option("--compress/--no-compress", default=True,
+              help="Compress recorded WAV to OGG/Opus before upload (default: on)")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
-def scribe(server_url, token, title, output_dir, record_args):
+def scribe(server_url, token, title, output_dir, compress, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
@@ -63,6 +65,7 @@ def scribe(server_url, token, title, output_dir, record_args):
             title=title,
             output_dir=Path(output_dir) if output_dir else None,
             extra_record_args=list(record_args) if record_args else None,
+            compress=compress,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)
@@ -81,13 +84,41 @@ def scribe(server_url, token, title, output_dir, record_args):
               help="Bearer token (default $VEZIR_TOKEN)")
 @click.option("--title", default=None,
               help="Optional meeting title")
+@click.option("--compress", is_flag=True,
+              help="Compress WAV input to OGG/Opus before upload")
 @click.argument(
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_cmd(server_url, token, title, audio_file):
+def upload_cmd(server_url, token, title, compress, audio_file):
     """Upload an existing WAV/OGG recording to vezir."""
     from .client import uploader
+
+    def fmt_bytes(nbytes: int) -> str:
+        if nbytes < 1024:
+            return f"{nbytes} B"
+        if nbytes < 1024 * 1024:
+            return f"{nbytes / 1024:.1f} KiB"
+        if nbytes < 1024 * 1024 * 1024:
+            return f"{nbytes / (1024 * 1024):.1f} MiB"
+        return f"{nbytes / (1024 * 1024 * 1024):.1f} GiB"
+
+    def progress(sent: int, total: int, elapsed: float) -> None:
+        pct = (sent / total * 100) if total else 0.0
+        rate = sent / elapsed if elapsed > 0 else 0.0
+        remaining = max(total - sent, 0)
+        eta = remaining / rate if rate > 0 else 0.0
+        click.echo(
+            f"\rupload: {pct:5.1f}%  {fmt_bytes(sent)}/{fmt_bytes(total)}  "
+            f"{fmt_bytes(int(rate))}/s  ETA {int(eta)}s",
+            nl=False,
+        )
+
+    def on_retry(attempt: int, retries: int, exc: Exception) -> None:
+        click.echo(
+            f"\nvezir: upload attempt {attempt}/{retries} failed; "
+            f"retrying from byte 0: {exc}"
+        )
 
     server_url = server_url or config.server_url()
     token = token or config.client_token()
@@ -97,8 +128,26 @@ def upload_cmd(server_url, token, title, audio_file):
 
     try:
         audio_file = uploader.validate_audio_path(audio_file)
+        if compress and audio_file.suffix.lower() == ".wav":
+            before = audio_file.stat().st_size
+            click.echo("vezir: compressing WAV to OGG/Opus before upload ...")
+            audio_file = uploader.compress_wav_for_upload(audio_file, keep_wav=True)
+            after = audio_file.stat().st_size
+            ratio = before / after if after else 0
+            click.echo(
+                f"vezir: compressed {fmt_bytes(before)} -> {fmt_bytes(after)} "
+                f"({ratio:.1f}x smaller)"
+            )
         click.echo(f"vezir: uploading {audio_file} to {server_url} ...")
-        result = uploader.upload(server_url, token, audio_file, title=title)
+        result = uploader.upload(
+            server_url,
+            token,
+            audio_file,
+            title=title,
+            progress=progress,
+            on_retry=on_retry,
+        )
+        click.echo()
     except Exception as exc:
         click.echo(f"vezir: error: {exc}", err=True)
         sys.exit(1)

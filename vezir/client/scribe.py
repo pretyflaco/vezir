@@ -65,12 +65,44 @@ def _find_latest_session(output_dir: Path, before: float) -> Path | None:
     return candidates[-1][1]
 
 
+def _fmt_bytes(nbytes: int) -> str:
+    if nbytes < 1024:
+        return f"{nbytes} B"
+    if nbytes < 1024 * 1024:
+        return f"{nbytes / 1024:.1f} KiB"
+    if nbytes < 1024 * 1024 * 1024:
+        return f"{nbytes / (1024 * 1024):.1f} MiB"
+    return f"{nbytes / (1024 * 1024 * 1024):.1f} GiB"
+
+
+def _progress_line(sent: int, total: int, elapsed: float) -> None:
+    pct = (sent / total * 100) if total else 0.0
+    rate = sent / elapsed if elapsed > 0 else 0.0
+    remaining = max(total - sent, 0)
+    eta = remaining / rate if rate > 0 else 0.0
+    print(
+        f"\rupload: {pct:5.1f}%  {_fmt_bytes(sent)}/{_fmt_bytes(total)}  "
+        f"{_fmt_bytes(int(rate))}/s  ETA {int(eta)}s",
+        end="",
+        flush=True,
+    )
+
+
+def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
+    print(
+        f"\nvezir: upload attempt {attempt}/{retries} failed; "
+        f"retrying from byte 0: {exc}",
+        flush=True,
+    )
+
+
 def run_scribe(
     server_url: str | None = None,
     token: str | None = None,
     title: str | None = None,
     output_dir: Path | None = None,
     extra_record_args: list[str] | None = None,
+    compress: bool = True,
 ) -> dict:
     """Record locally, then upload. Returns the upload response dict."""
     server_url = server_url or config.server_url()
@@ -120,11 +152,34 @@ def run_scribe(
     audio_files = sorted(sdir.glob("*.wav")) or sorted(sdir.glob("*.ogg"))
     if not audio_files:
         raise RuntimeError(f"no .wav or .ogg file found in {sdir}")
-    wav = audio_files[0]
-    print(f"vezir: recording captured: {wav} ({wav.stat().st_size:,} bytes)", flush=True)
+    audio = audio_files[0]
+    print(
+        f"vezir: recording captured: {audio} ({_fmt_bytes(audio.stat().st_size)})",
+        flush=True,
+    )
+
+    if compress and audio.suffix.lower() == ".wav":
+        before = audio.stat().st_size
+        print("vezir: compressing WAV to OGG/Opus before upload ...", flush=True)
+        audio = uploader.compress_wav_for_upload(audio, keep_wav=True)
+        after = audio.stat().st_size
+        ratio = before / after if after else 0
+        print(
+            f"vezir: compressed {_fmt_bytes(before)} -> {_fmt_bytes(after)} "
+            f"({ratio:.1f}x smaller)",
+            flush=True,
+        )
 
     print(f"vezir: uploading to {server_url} ...", flush=True)
-    result = uploader.upload(server_url, token, wav, title=title)
+    result = uploader.upload(
+        server_url,
+        token,
+        audio,
+        title=title,
+        progress=_progress_line,
+        on_retry=_retry_line,
+    )
+    print(flush=True)
     print(f"vezir: uploaded as session {result['session_id']}", flush=True)
     print(f"vezir: track at {result['dashboard_url']}", flush=True)
     return result
