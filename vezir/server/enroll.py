@@ -74,9 +74,9 @@ def _render_qr_svg(payload: str) -> str:
     """Render a QR code as inline SVG. Caller embeds the SVG directly."""
     qr = segno.make(payload, error="m")
     # svg_inline() returns a self-contained <svg> string with no XML
-    # declaration, safe to drop into the HTML body. svgns=True keeps
-    # xmlns on the root element so the SVG is also valid stand-alone.
-    return qr.svg_inline(scale=8, border=2, svgns=True)
+    # declaration, safe to drop into the HTML body. It internally forces
+    # svgns=False, so we don't pass it ourselves (would collide).
+    return qr.svg_inline(scale=8, border=2)
 
 
 def _default_server_url(request: Request) -> str:
