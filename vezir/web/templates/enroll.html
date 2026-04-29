@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}vezir — enroll device{% endblock %}
+{% block content %}
+<h1>Enroll a device</h1>
+<p class="muted">
+  Use this page to enroll a new client (such as the Android app) by issuing
+  a token on the server and showing a QR code that encodes
+  <code>{ "v": 1, "url": ..., "token": ... }</code>.
+</p>
+
+<div class="error-block" style="background:#fff8e6; border-color:#f0d9a0;">
+  <strong>Heads up:</strong> the plaintext token is rendered on this page so
+  it can be scanned. Scan it now from the device, then close this tab.
+  Tokens are not recoverable once lost; if a device's token is compromised,
+  revoke it with <code>vezir token revoke --github &lt;handle&gt;</code> and
+  issue a new one.
+</div>
+
+{% if error %}
+<div class="error-block">
+  <pre>{{ error }}</pre>
+</div>
+{% endif %}
+
+<h2>Step 1 — issue a token (on the server)</h2>
+<pre style="background:#f5f5f5; padding:0.6rem 0.8rem; border-radius:3px;">vezir token issue --github &lt;handle&gt;</pre>
+<p class="muted">
+  Or use <code>vezir token enroll --github &lt;handle&gt; --server &lt;url&gt;</code>
+  to issue a token <em>and</em> print this page's URL pre-filled.
+</p>
+
+<h2>Step 2 — paste below</h2>
+<form method="post" action="/admin/enroll" class="login-form" style="max-width:40rem;">
+  <label>
+    Server URL (what the device should connect to)
+    <input type="text" name="url" autocomplete="off"
+           value="{{ default_url }}" required style="width:100%; font-family: ui-monospace, Menlo, monospace;">
+  </label>
+  <label style="margin-top:0.75rem;">
+    Token (the <code>vzr_...</code> string printed by <code>vezir token issue</code>)
+    <input type="password" name="token" autocomplete="off" autofocus
+           value="{{ token }}" placeholder="vzr_..." required>
+  </label>
+  <p>
+    <button type="submit" class="cta">Generate QR</button>
+  </p>
+</form>
+
+{% if qr_svg %}
+<h2>Step 3 — scan with the device</h2>
+<div style="background:#fff; border:1px solid var(--border); border-radius:4px;
+            padding:1rem; display:inline-block;">
+  {{ qr_svg | safe }}
+</div>
+
+<details style="margin-top:0.75rem; max-width:40rem;">
+  <summary>Manual entry / payload</summary>
+  <p class="muted">
+    If the device cannot scan QR codes, paste this JSON into the app's
+    "manual paste" field:
+  </p>
+  <pre style="background:#f5f5f5; padding:0.6rem 0.8rem; border-radius:3px;
+              white-space:pre-wrap; word-break:break-all;">{{ payload }}</pre>
+</details>
+{% endif %}
+{% endblock %}

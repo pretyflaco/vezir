@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, config
-from . import labels, login, queue as _queue, sessions, uploads, voiceprints, worker
+from . import enroll, labels, login, queue as _queue, sessions, uploads, voiceprints, worker
 
 
 def create_app() -> FastAPI:
@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(sessions.router)
     app.include_router(labels.router)
+    app.include_router(enroll.router)
 
     static_dir = Path(__file__).resolve().parent.parent / "web" / "static"
     if static_dir.exists():

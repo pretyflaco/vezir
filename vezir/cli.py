@@ -205,6 +205,53 @@ def token_revoke(github):
     click.echo(f"Removed {n} token(s) for github={github}")
 
 
+@token.command("enroll")
+@click.option("--github", required=True, help="GitHub handle of the scribe")
+@click.option("--server", "server_url", default=None,
+              help="Server URL the device should connect to "
+                   "(default $VEZIR_URL or computed). Used only to print "
+                   "a convenience link; the token is also printed for paste.")
+def token_enroll(github, server_url):
+    """Issue a token and print enrollment instructions for a mobile device.
+
+    Convenience wrapper around `vezir token issue` that also prints a
+    pre-filled `/admin/enroll` URL the operator can open in their browser
+    to display a QR code for the Android app to scan.
+    """
+    from urllib.parse import quote
+    from .server import auth
+    plaintext = auth.issue(github)
+
+    # Best-effort server URL: explicit --server, then $VEZIR_URL, falling
+    # back to config.server_url()'s default. Operators can pass --server to
+    # override the default.
+    base = (server_url or config.server_url()).rstrip("/")
+    enroll_link = f"{base}/admin/enroll"
+
+    click.echo(f"Token issued for github={github}")
+    click.echo(f"  VEZIR_TOKEN={plaintext}")
+    click.echo()
+    click.echo("To enroll an Android (or other QR-friendly) device:")
+    click.echo(
+        f"  1. Open {enroll_link} in an authenticated browser tab on the "
+        "operator's machine."
+    )
+    click.echo(
+        "  2. Paste the server URL the device should connect to and the "
+        "token above."
+    )
+    click.echo(
+        "  3. Scan the QR with the Vezir Android app, or paste the JSON "
+        "payload manually."
+    )
+    click.echo("  4. Close the tab once enrollment finishes.")
+    click.echo()
+    click.echo(
+        "Avoid putting the token in the URL bar; use the form on the page."
+    )
+    click.echo("This token is not recoverable; revoke and re-issue if lost.")
+
+
 @token.command("list")
 def token_list():
     """List token entries (handles only; never the plaintext)."""

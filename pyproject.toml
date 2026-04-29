@@ -66,6 +66,9 @@ server = [
     "python-multipart>=0.0.9",
     "jinja2>=3.1",
     "meetscribe-offline>=0.5.0",
+    # Pure-Python QR generation (~76 KB) for the device enrollment page.
+    # See vezir/server/enroll.py.
+    "segno>=1.5",
 ]
 # GUI scribe widget (Tkinter). Tkinter ships with Python on most distros
 # but some (Debian/Ubuntu minimal) require `apt install python3-tk`.
