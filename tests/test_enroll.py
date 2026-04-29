@@ -129,7 +129,6 @@ def test_enroll_invalid_token_no_qr(client_and_token):
     "ftp://example.com",
     "javascript:alert(1)",
     "not-a-url",
-    "",
 ])
 def test_enroll_post_rejects_unsafe_url(client_and_token, bad_url):
     client, valid_token = client_and_token
@@ -140,9 +139,26 @@ def test_enroll_post_rejects_unsafe_url(client_and_token, bad_url):
     )
     assert resp.status_code == 200
     body = resp.text
-    # Either the explicit URL error or the missing-fields error is acceptable.
-    assert ("Server URL must be" in body) or ("required" in body)
+    # The explicit URL-shape error is what `_is_safe_server_url` emits.
+    assert "Server URL must be" in body
     assert "<svg" not in body
+
+
+def test_enroll_post_rejects_empty_url(client_and_token):
+    """Empty URL is caught by FastAPI's Form(...) required validation
+    layer before our handler runs, so the response is a 422 rather than
+    a 200 with our friendly error. Either layer rejecting it cleanly is
+    acceptable; the goal is just "no QR rendered for empty URL".
+    """
+    client, valid_token = client_and_token
+    resp = client.post(
+        "/admin/enroll",
+        headers=_bearer(valid_token),
+        data={"token": valid_token, "url": ""},
+    )
+    # Accept any 4xx status; the contract is "no QR rendered".
+    assert 400 <= resp.status_code < 500
+    assert "<svg" not in resp.text
 
 
 # ── payload schema is canonical ─────────────────────────────────────────────
