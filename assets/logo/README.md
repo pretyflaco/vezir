@@ -8,12 +8,30 @@ with a single coral accent, lowercase wordmark in Fira Mono Bold
 
 | File | Use it for | Notes |
 |---|---|---|
-| `vezir-mark.svg` | Anywhere you need just the symbol: web UI nav, slide corners, social avatars. | 256×256 viewBox, transparent. |
+| `vezir-mark.svg` | Mark only, on light backgrounds. | 256×256 viewBox, transparent, ink `#111111`. |
+| `vezir-mark-light.svg` | Mark only, on dark backgrounds. | Same geometry, white `#FFFFFF` ink. |
 | `vezir-mark-app.svg` | App icon source — light variant. iOS / macOS / Android / Windows. | 1024×1024 white rounded-square with ink mark. |
-| `vezir-mark-app-dark.svg` | Same as above, for dark-mode contexts. | 1024×1024 ink rounded-square with white mark. |
-| `vezir-logo.svg` | README header, GitHub social card, slide title pages — anywhere the wordmark needs to appear next to the mark. | Horizontal lockup, ~632×200. |
-| `vezir-logo-stacked.svg` | Square or near-square spaces: avatars with wordmark, hero blocks. | Vertical lockup, 400×420. |
+| `vezir-mark-app-dark.svg` | App icon source — dark variant. | 1024×1024 ink rounded-square with white mark. |
+| `vezir-logo.svg` | Horizontal lockup, on light backgrounds. README hero, GitHub social card, slide title pages. | ~632×200, ink mark + ink wordmark + coral dot. |
+| `vezir-logo-light.svg` | Horizontal lockup, on dark backgrounds. | Same geometry, white ink. Pair with `vezir-logo.svg` via `<picture>` for theme-aware GitHub READMEs. |
+| `vezir-logo-stacked.svg` | Vertical lockup for square contexts: avatars, hero blocks. | 400×420, ink. |
 | `favicon.svg` | Browser tab favicon. | Optimized for 16/32px; uses a simplified 3-peak coronet. |
+
+### Theme-aware embedding (GitHub README)
+
+GitHub READMEs render on a light or dark surface depending on the
+viewer's preference. Use a `<picture>` element to serve the right
+variant:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo/vezir-logo-light.svg">
+  <img src="assets/logo/vezir-logo.svg" alt="vezir" width="320">
+</picture>
+```
+
+The same pattern works for the mark-only files (`vezir-mark.svg` /
+`vezir-mark-light.svg`).
 
 ## Brand tokens
 

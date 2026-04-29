@@ -1,5 +1,8 @@
 <p align="left">
-  <img src="assets/logo/vezir-logo.svg" alt="vezir" width="320">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/vezir-logo-light.svg">
+    <img src="assets/logo/vezir-logo.svg" alt="vezir" width="320">
+  </picture>
 </p>
 
 Self-hosted scribe service for team-scale meeting capture. Vezir wraps
