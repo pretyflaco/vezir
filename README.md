@@ -1,4 +1,6 @@
-# vezir
+<p align="left">
+  <img src="assets/logo/vezir-logo.svg" alt="vezir" width="320">
+</p>
 
 Self-hosted scribe service for team-scale meeting capture. Vezir wraps
 [meetscribe](https://github.com/pretyflaco/meetscribe) and turns it into a

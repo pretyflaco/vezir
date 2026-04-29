@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="vezir app icon dark">
+  <rect width="1024" height="1024" rx="229" ry="229" fill="#111111"/>
+  <g transform="translate(112.63999999999999 112.63999999999999) scale(3.12)">
+    <g fill="#FFFFFF">
+      <path d="M 64 96 L 64 64 L 80 80 L 96 64 L 112 80 L 128 64 L 144 80 L 160 64 L 176 80 L 192 64 L 192 96 Z"/>
+      <path d="M 92 96 L 164 96 L 176 196 L 80 196 Z"/>
+      <rect x="48" y="196" width="160" height="28" rx="6" ry="6"/>
+    </g>
+    <circle cx="128" cy="36" r="12" fill="#FF6B35"/>
+  </g>
+</svg>
