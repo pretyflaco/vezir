@@ -162,10 +162,19 @@ def transcribe(session_dir: Path, job_id: str, log_path: Path) -> int:
     The session_dir must contain the .wav file produced by `meet record`
     (or by vezir's upload handler unpacking the upload).
     """
+    device = config.meet_device()
+    compute_type = config.meet_compute_type(device)
     # `meet transcribe` accepts either a .wav path or a session dir. We
     # pass the dir to keep the layout compatible with `meet sync` later.
     return run_meet(
-        ["transcribe", str(session_dir)],
+        [
+            "transcribe",
+            "--device",
+            device,
+            "--compute-type",
+            compute_type,
+            str(session_dir),
+        ],
         job_id=job_id,
         log_path=log_path,
     )

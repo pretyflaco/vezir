@@ -79,6 +79,7 @@ def login_get(request: Request, token: str | None = None, next: str | None = Non
             return _redirect_with_session(token, safe_next)
         # Token in URL was invalid; fall through to render an error form.
         return templates.TemplateResponse(
+            request,
             "login.html",
             {"request": request, "error": "Invalid token.", "next": safe_next},
             status_code=401,
@@ -86,6 +87,7 @@ def login_get(request: Request, token: str | None = None, next: str | None = Non
 
     # No token in URL → render the paste-token form.
     return templates.TemplateResponse(
+        request,
         "login.html",
         {"request": request, "error": None, "next": safe_next},
     )
@@ -103,6 +105,7 @@ def login_post(request: Request,
         log.info("login: invalid token via form, ip=%s",
                  request.client.host if request.client else "?")
         return templates.TemplateResponse(
+            request,
             "login.html",
             {"request": request, "error": "Invalid token.", "next": safe_next},
             status_code=401,

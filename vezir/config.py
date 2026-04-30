@@ -9,13 +9,19 @@ Environment variables:
     VEZIR_HOST          Bind address for `vezir serve` (default 0.0.0.0)
     VEZIR_PORT          Port for `vezir serve` (default 8000)
     VEZIR_MEET_BIN      Path to meetscribe `meet` binary (default: from PATH)
+    VEZIR_MEET_DEVICE   Device for `meet transcribe` (default: cpu on macOS,
+                        cuda elsewhere)
+    VEZIR_MEET_COMPUTE_TYPE Compute type for `meet transcribe` (default: int8
+                        on cpu, float16 on cuda)
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
 """
 from __future__ import annotations
 
 import os
+import platform
 import shutil
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -68,6 +74,11 @@ def meet_binary() -> str:
     explicit = os.environ.get("VEZIR_MEET_BIN")
     if explicit:
         return explicit
+    scripts_dir = sysconfig.get_path("scripts")
+    if scripts_dir:
+        candidate = Path(scripts_dir) / "meet"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     found = shutil.which("meet")
     if not found:
         raise RuntimeError(
@@ -75,6 +86,40 @@ def meet_binary() -> str:
             "Install meetscribe-offline or set VEZIR_MEET_BIN."
         )
     return found
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+    except Exception:
+        return False
+    try:
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def meet_device() -> str:
+    """Device to use for `meet transcribe`."""
+    explicit = os.environ.get("VEZIR_MEET_DEVICE")
+    if explicit:
+        return explicit
+    if platform.system() == "Darwin":
+        return "cpu"
+    if _cuda_available():
+        return "cuda"
+    return "cpu"
+
+
+def meet_compute_type(device: str | None = None) -> str:
+    """Compute type to use for `meet transcribe`."""
+    explicit = os.environ.get("VEZIR_MEET_COMPUTE_TYPE")
+    if explicit:
+        return explicit
+    resolved_device = device or meet_device()
+    if resolved_device == "cpu":
+        return "int8"
+    return "float16"
 
 
 def log_level() -> str:

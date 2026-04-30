@@ -193,6 +193,8 @@ reject incomplete uploads instead of processing partial meetings.
 | `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` clients |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
 | `VEZIR_MEET_BIN` | `$(which meet)` | Path to meetscribe `meet` binary |
+| `VEZIR_MEET_DEVICE` | `cpu` on macOS, `cuda` elsewhere | Device passed to `meet transcribe` |
+| `VEZIR_MEET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA | Compute type passed to `meet transcribe` |
 | `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |

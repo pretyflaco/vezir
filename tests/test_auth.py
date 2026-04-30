@@ -131,6 +131,18 @@ def test_dashboard_with_bearer(client_and_token):
     assert resp.status_code == 200
 
 
+def test_session_detail_with_bearer(client_and_token):
+    client, token = client_and_token
+
+    from vezir.server import queue
+
+    queue.enqueue("01TESTSESSION", "alice", "demo meeting")
+
+    resp = client.get("/s/01TESTSESSION", headers=_bearer(token))
+    assert resp.status_code == 200
+    assert "demo meeting" in resp.text
+
+
 def test_dashboard_no_auth_401(client_and_token):
     client, _ = client_and_token
     resp = client.get("/")

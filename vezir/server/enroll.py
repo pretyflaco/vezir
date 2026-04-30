@@ -107,6 +107,7 @@ def _render(
             qr_svg = _render_qr_svg(payload)
 
     return templates.TemplateResponse(
+        request,
         "enroll.html",
         {
             "request": request,
