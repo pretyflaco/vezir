@@ -9,10 +9,14 @@ Environment variables:
     VEZIR_HOST          Bind address for `vezir serve` (default 0.0.0.0)
     VEZIR_PORT          Port for `vezir serve` (default 8000)
     VEZIR_MEET_BIN      Path to meetscribe `meet` binary (default: from PATH)
-    VEZIR_MEET_DEVICE   Device for `meet transcribe` (default: cpu on macOS,
-                        cuda elsewhere)
+    VEZIR_MEET_DEVICE   Device for `meet transcribe` (default: mps on Apple
+                        Silicon when supported by the installed meetscribe
+                        stack, cuda when available elsewhere, otherwise cpu)
     VEZIR_MEET_COMPUTE_TYPE Compute type for `meet transcribe` (default: int8
-                        on cpu, float16 on cuda)
+                        on cpu, float16 on cuda, float32 on mps)
+    VEZIR_MEET_TORCH_DEVICE PyTorch device for meetscribe alignment/diarization
+                        when the installed `meet transcribe` supports a
+                        separate --torch-device option
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
 """
@@ -20,9 +24,12 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
+import subprocess
 import sysconfig
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -99,16 +106,119 @@ def _cuda_available() -> bool:
         return False
 
 
+def _apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine().lower() in {
+        "arm64",
+        "aarch64",
+    }
+
+
+def _mps_available() -> bool:
+    try:
+        import torch
+    except Exception:
+        return False
+    try:
+        return bool(torch.backends.mps.is_available())
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _meet_transcribe_help() -> str:
+    try:
+        meet = meet_binary()
+    except Exception:
+        return ""
+    try:
+        proc = subprocess.run(
+            [meet, "transcribe", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    return "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+
+
+def _meet_supports_device(device: str) -> bool:
+    """Return True if the installed meetscribe CLI accepts a device value."""
+    help_text = _meet_transcribe_help()
+    if not help_text:
+        return False
+    for line in help_text.splitlines():
+        if "--device" not in line:
+            continue
+        if re.search(rf"(?<![\w-]){re.escape(device)}(?![\w-])", line):
+            return True
+    return False
+
+
+def meet_supports_option(option: str) -> bool:
+    """Return True if `meet transcribe --help` advertises an option."""
+    help_text = _meet_transcribe_help()
+    if not help_text:
+        return False
+    return option in help_text.split()
+
+
+def _ctranslate2_supports_device(device: str) -> bool:
+    try:
+        import ctranslate2
+    except Exception:
+        return False
+    try:
+        ctranslate2.get_supported_compute_types(device)
+    except Exception:
+        return False
+    return True
+
+
+def _best_torch_device() -> str:
+    if _cuda_available():
+        return "cuda"
+    if _apple_silicon() and _mps_available():
+        return "mps"
+    return "cpu"
+
+
 def meet_device() -> str:
-    """Device to use for `meet transcribe`."""
+    """Primary ASR device to use for `meet transcribe`."""
     explicit = os.environ.get("VEZIR_MEET_DEVICE")
     if explicit:
         return explicit
-    if platform.system() == "Darwin":
-        return "cpu"
+    if (
+        _apple_silicon()
+        and _mps_available()
+        and _meet_supports_device("mps")
+        and _ctranslate2_supports_device("mps")
+    ):
+        return "mps"
     if _cuda_available():
         return "cuda"
     return "cpu"
+
+
+def meet_torch_device(primary_device: str | None = None) -> str | None:
+    """Optional PyTorch device for alignment/diarization in newer meetscribe.
+
+    The current meetscribe 0.5 CLI has one --device flag that feeds both
+    CTranslate2 ASR and PyTorch stages. That cannot use Apple MPS because
+    CTranslate2 does not support it. A newer meetscribe can expose a
+    separate --torch-device flag; when present, Vezir will keep ASR on the
+    primary device and move PyTorch work to the best available accelerator.
+    """
+    explicit = os.environ.get("VEZIR_MEET_TORCH_DEVICE")
+    if explicit:
+        return explicit
+    if not meet_supports_option("--torch-device"):
+        return None
+    resolved_primary = primary_device or meet_device()
+    torch_device = _best_torch_device()
+    if torch_device == resolved_primary:
+        return None
+    return torch_device
 
 
 def meet_compute_type(device: str | None = None) -> str:
@@ -119,6 +229,8 @@ def meet_compute_type(device: str | None = None) -> str:
     resolved_device = device or meet_device()
     if resolved_device == "cpu":
         return "int8"
+    if resolved_device == "mps":
+        return "float32"
     return "float16"
 
 

@@ -193,12 +193,51 @@ reject incomplete uploads instead of processing partial meetings.
 | `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` clients |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
 | `VEZIR_MEET_BIN` | `$(which meet)` | Path to meetscribe `meet` binary |
-| `VEZIR_MEET_DEVICE` | `cpu` on macOS, `cuda` elsewhere | Device passed to `meet transcribe` |
-| `VEZIR_MEET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA | Compute type passed to `meet transcribe` |
+| `VEZIR_MEET_DEVICE` | `mps` on Apple Silicon when supported by the installed meetscribe stack, `cuda` when CUDA is available elsewhere, otherwise `cpu` | Device passed to `meet transcribe` |
+| `VEZIR_MEET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA, `float32` on MPS | Compute type passed to `meet transcribe` |
+| `VEZIR_MEET_TORCH_DEVICE` | auto | PyTorch device passed to `meet transcribe --torch-device` when the installed meetscribe supports split ASR/PyTorch devices |
 | `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |
 | `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
+
+On Apple Silicon, vezir only auto-selects `mps` when PyTorch reports MPS
+support, the installed `meet transcribe --help` advertises `mps` as an accepted
+device, and the installed CTranslate2 backend accepts `mps`. Set
+`VEZIR_MEET_DEVICE=mps` to force the value for a custom meetscribe build.
+For the current faster-whisper/CTranslate2 pipeline, the efficient Apple
+Silicon route is split-device support in meetscribe: ASR stays on CPU while
+alignment/diarization use PyTorch MPS via `--torch-device mps`. When that
+option is present, vezir adds it automatically; `VEZIR_MEET_TORCH_DEVICE`
+overrides the auto-selected PyTorch device.
+
+## Performance expectations
+
+End-to-end processing time depends on audio quality, model size, language
+detection, diarization, summary generation, and whether alignment models are
+already cached. For a one-hour recording with the default large-v3-turbo-style
+pipeline, use these as rough operator estimates:
+
+| Runtime | ASR path | PyTorch alignment/diarization path | Expected time for 1h audio |
+|---|---|---|---|
+| NVIDIA CUDA GPU | CUDA, float16 | CUDA | ~5-20 min end-to-end |
+| Apple Silicon split mode | CPU, int8 via CTranslate2 | MPS | ~20-45 min end-to-end |
+| CPU only | CPU, int8 | CPU | ~1.5-10 hours end-to-end |
+
+ASR is automatic speech recognition: the stage that turns audio into text.
+In the current Apple Silicon path, ASR stays on CPU because the
+faster-whisper/CTranslate2 backend does not support MPS, while alignment and
+diarization can use PyTorch MPS when meetscribe exposes `--torch-device mps`.
+
+The most useful future improvements are:
+
+- Add an Apple-native MLX Whisper ASR backend in meetscribe so Apple Silicon can
+  run transcription on the GPU/Neural Engine instead of CPU.
+- Keep split-device execution for non-ASR stages, because PyTorch MPS is already
+  useful for alignment and diarization.
+- Add per-stage timing to worker logs so real deployments can compare ASR,
+  alignment, diarization, summary, and sync costs instead of relying on broad
+  estimates.
 
 Runtime directories are created private (`0700`) and sensitive runtime files
 are written private (`0600`). The systemd unit also sets `UMask=0077` so

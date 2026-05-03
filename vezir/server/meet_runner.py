@@ -164,17 +164,21 @@ def transcribe(session_dir: Path, job_id: str, log_path: Path) -> int:
     """
     device = config.meet_device()
     compute_type = config.meet_compute_type(device)
+    torch_device = config.meet_torch_device(device)
+    args = [
+        "transcribe",
+        "--device",
+        device,
+        "--compute-type",
+        compute_type,
+    ]
+    if torch_device:
+        args.extend(["--torch-device", torch_device])
+    args.append(str(session_dir))
     # `meet transcribe` accepts either a .wav path or a session dir. We
     # pass the dir to keep the layout compatible with `meet sync` later.
     return run_meet(
-        [
-            "transcribe",
-            "--device",
-            device,
-            "--compute-type",
-            compute_type,
-            str(session_dir),
-        ],
+        args,
         job_id=job_id,
         log_path=log_path,
     )
