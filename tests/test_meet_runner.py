@@ -17,6 +17,8 @@ def test_transcribe_passes_device_and_compute_type(monkeypatch, tmp_path):
         "meet_torch_device",
         lambda device=None: None,
     )
+    monkeypatch.setattr(meet_runner.config, "meet_asr_backend", lambda: None)
+    monkeypatch.setattr(meet_runner.config, "meet_mlx_model", lambda: None)
 
     def fake_run_meet(args, job_id, log_path=None):
         captured["args"] = args
@@ -53,6 +55,8 @@ def test_transcribe_uses_linux_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(meet_runner.config.platform, "system", lambda: "Linux")
     monkeypatch.setattr(meet_runner.config, "_cuda_available", lambda: True)
     monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda option: False)
+    monkeypatch.setattr(meet_runner.config, "meet_asr_backend", lambda: None)
+    monkeypatch.setattr(meet_runner.config, "meet_mlx_model", lambda: None)
 
     def fake_run_meet(args, job_id, log_path=None):
         captured["args"] = args
@@ -89,6 +93,8 @@ def test_transcribe_uses_cpu_without_linux_cuda(monkeypatch, tmp_path):
     monkeypatch.setattr(meet_runner.config.platform, "system", lambda: "Linux")
     monkeypatch.setattr(meet_runner.config, "_cuda_available", lambda: False)
     monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda option: False)
+    monkeypatch.setattr(meet_runner.config, "meet_asr_backend", lambda: None)
+    monkeypatch.setattr(meet_runner.config, "meet_mlx_model", lambda: None)
 
     def fake_run_meet(args, job_id, log_path=None):
         captured["args"] = args
@@ -136,6 +142,8 @@ def test_transcribe_uses_apple_silicon_mps_defaults(monkeypatch, tmp_path):
         lambda device: device == "mps",
     )
     monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda option: False)
+    monkeypatch.setattr(meet_runner.config, "meet_asr_backend", lambda: None)
+    monkeypatch.setattr(meet_runner.config, "meet_mlx_model", lambda: None)
 
     def fake_run_meet(args, job_id, log_path=None):
         captured["args"] = args
@@ -176,6 +184,8 @@ def test_transcribe_uses_split_apple_silicon_torch_device(monkeypatch, tmp_path)
     monkeypatch.setattr(meet_runner.config, "_cuda_available", lambda: False)
     monkeypatch.setattr(meet_runner.config, "_meet_supports_device", lambda device: False)
     monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda option: option == "--torch-device")
+    monkeypatch.setattr(meet_runner.config, "meet_asr_backend", lambda: None)
+    monkeypatch.setattr(meet_runner.config, "meet_mlx_model", lambda: None)
 
     def fake_run_meet(args, job_id, log_path=None):
         captured["args"] = args
@@ -203,4 +213,50 @@ def test_transcribe_uses_split_apple_silicon_torch_device(monkeypatch, tmp_path)
         str(session_dir),
     ]
     assert captured["job_id"] == "job-macos-split"
+    assert captured["log_path"] == log_path
+
+
+def test_transcribe_uses_mlx_asr_backend(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(meet_runner.config, "meet_device", lambda: "cpu")
+    monkeypatch.setattr(meet_runner.config, "meet_compute_type", lambda device=None: "int8")
+    monkeypatch.setattr(meet_runner.config, "meet_asr_backend", lambda: "mlx")
+    monkeypatch.setattr(
+        meet_runner.config,
+        "meet_mlx_model",
+        lambda: "mlx-community/whisper-tiny",
+    )
+    monkeypatch.setattr(meet_runner.config, "meet_torch_device", lambda device=None: "mps")
+
+    def fake_run_meet(args, job_id, log_path=None):
+        captured["args"] = args
+        captured["job_id"] = job_id
+        captured["log_path"] = log_path
+        return 0
+
+    monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    log_path = tmp_path / "worker.log"
+
+    rc = meet_runner.transcribe(session_dir, "job-macos-mlx", log_path)
+
+    assert rc == 0
+    assert captured["args"] == [
+        "transcribe",
+        "--device",
+        "cpu",
+        "--compute-type",
+        "int8",
+        "--asr-backend",
+        "mlx",
+        "--mlx-model",
+        "mlx-community/whisper-tiny",
+        "--torch-device",
+        "mps",
+        str(session_dir),
+    ]
+    assert captured["job_id"] == "job-macos-mlx"
     assert captured["log_path"] == log_path

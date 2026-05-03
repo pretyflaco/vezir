@@ -165,6 +165,8 @@ def transcribe(session_dir: Path, job_id: str, log_path: Path) -> int:
     device = config.meet_device()
     compute_type = config.meet_compute_type(device)
     torch_device = config.meet_torch_device(device)
+    asr_backend = config.meet_asr_backend()
+    mlx_model = config.meet_mlx_model()
     args = [
         "transcribe",
         "--device",
@@ -172,6 +174,10 @@ def transcribe(session_dir: Path, job_id: str, log_path: Path) -> int:
         "--compute-type",
         compute_type,
     ]
+    if asr_backend:
+        args.extend(["--asr-backend", asr_backend])
+    if mlx_model:
+        args.extend(["--mlx-model", mlx_model])
     if torch_device:
         args.extend(["--torch-device", torch_device])
     args.append(str(session_dir))

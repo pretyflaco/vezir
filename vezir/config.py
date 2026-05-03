@@ -17,6 +17,9 @@ Environment variables:
     VEZIR_MEET_TORCH_DEVICE PyTorch device for meetscribe alignment/diarization
                         when the installed `meet transcribe` supports a
                         separate --torch-device option
+    VEZIR_MEET_ASR_BACKEND ASR backend for `meet transcribe` when supported
+                        (auto-selects mlx on Apple Silicon when available)
+    VEZIR_MEET_MLX_MODEL MLX Whisper model path/repo when using mlx ASR
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
 """
@@ -29,6 +32,7 @@ import shutil
 import subprocess
 import sysconfig
 import tempfile
+import importlib.util
 from functools import lru_cache
 from pathlib import Path
 
@@ -120,6 +124,13 @@ def _mps_available() -> bool:
         return False
     try:
         return bool(torch.backends.mps.is_available())
+    except Exception:
+        return False
+
+
+def _mlx_whisper_available() -> bool:
+    try:
+        return importlib.util.find_spec("mlx_whisper") is not None
     except Exception:
         return False
 
@@ -232,6 +243,23 @@ def meet_compute_type(device: str | None = None) -> str:
     if resolved_device == "mps":
         return "float32"
     return "float16"
+
+
+def meet_asr_backend() -> str | None:
+    """Optional ASR backend for newer meetscribe."""
+    explicit = os.environ.get("VEZIR_MEET_ASR_BACKEND")
+    if explicit:
+        return explicit
+    if not meet_supports_option("--asr-backend"):
+        return None
+    if _apple_silicon() and _mlx_whisper_available():
+        return "mlx"
+    return None
+
+
+def meet_mlx_model() -> str | None:
+    """Optional MLX Whisper model path/repo for newer meetscribe."""
+    return os.environ.get("VEZIR_MEET_MLX_MODEL")
 
 
 def log_level() -> str:

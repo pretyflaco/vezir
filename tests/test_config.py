@@ -118,6 +118,39 @@ def test_meet_torch_device_allows_env_override(monkeypatch):
     assert config.meet_torch_device("cuda") == "cpu"
 
 
+def test_meet_asr_backend_defaults_to_none_without_meetscribe_option(monkeypatch):
+    _clear_config_caches()
+    monkeypatch.delenv("VEZIR_MEET_ASR_BACKEND", raising=False)
+    monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
+
+    assert config.meet_asr_backend() is None
+
+
+def test_meet_asr_backend_uses_mlx_on_apple_silicon(monkeypatch):
+    _clear_config_caches()
+    monkeypatch.delenv("VEZIR_MEET_ASR_BACKEND", raising=False)
+    monkeypatch.setattr(config, "meet_supports_option", lambda option: option == "--asr-backend")
+    monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(config, "_mlx_whisper_available", lambda: True)
+
+    assert config.meet_asr_backend() == "mlx"
+
+
+def test_meet_asr_backend_allows_env_override(monkeypatch):
+    _clear_config_caches()
+    monkeypatch.setenv("VEZIR_MEET_ASR_BACKEND", "whisperx")
+    monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
+
+    assert config.meet_asr_backend() == "whisperx"
+
+
+def test_meet_mlx_model_reads_env(monkeypatch):
+    monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+
+    assert config.meet_mlx_model() == "mlx-community/whisper-tiny"
+
+
 def test_meet_device_defaults_to_cuda_elsewhere(monkeypatch):
     _clear_config_caches()
     monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
