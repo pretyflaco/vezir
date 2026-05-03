@@ -156,6 +156,30 @@ def run_meet(args: list[str], job_id: str, log_path: Path | None = None) -> int:
     return proc.returncode
 
 
+def build_transcribe_args(session_dir: Path) -> list[str]:
+    """Build the `meet transcribe` argument list for a session directory."""
+    device = config.meet_device()
+    compute_type = config.meet_compute_type(device)
+    torch_device = config.meet_torch_device(device)
+    asr_backend = config.meet_asr_backend()
+    mlx_model = config.meet_mlx_model(asr_backend)
+    args = [
+        "transcribe",
+        "--device",
+        device,
+        "--compute-type",
+        compute_type,
+    ]
+    if asr_backend:
+        args.extend(["--asr-backend", asr_backend])
+    if mlx_model:
+        args.extend(["--mlx-model", mlx_model])
+    if torch_device:
+        args.extend(["--torch-device", torch_device])
+    args.append(str(session_dir))
+    return args
+
+
 def transcribe(session_dir: Path, job_id: str, log_path: Path) -> int:
     """Run `meet transcribe` on a session directory with --auto labeling.
 
@@ -165,7 +189,7 @@ def transcribe(session_dir: Path, job_id: str, log_path: Path) -> int:
     # `meet transcribe` accepts either a .wav path or a session dir. We
     # pass the dir to keep the layout compatible with `meet sync` later.
     return run_meet(
-        ["transcribe", str(session_dir)],
+        build_transcribe_args(session_dir),
         job_id=job_id,
         log_path=log_path,
     )

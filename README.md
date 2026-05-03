@@ -193,10 +193,51 @@ reject incomplete uploads instead of processing partial meetings.
 | `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` clients |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
 | `VEZIR_MEET_BIN` | `$(which meet)` | Path to meetscribe `meet` binary |
+| `VEZIR_MEET_DEVICE` | `mps` on Apple Silicon when supported by the installed meetscribe stack, `cuda` when CUDA is available elsewhere, otherwise `cpu` | Device passed to `meet transcribe` |
+| `VEZIR_MEET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA, `float32` on MPS | Compute type passed to `meet transcribe` |
+| `VEZIR_MEET_TORCH_DEVICE` | auto | PyTorch device passed to `meet transcribe --torch-device` when the installed meetscribe supports split ASR/PyTorch devices |
+| `VEZIR_MEET_ASR_BACKEND` | `mlx` on Apple Silicon when available | ASR backend passed to `meet transcribe --asr-backend` when supported |
+| `VEZIR_MEET_MLX_MODEL` | meetscribe default | MLX Whisper model path/repo passed to `meet transcribe --mlx-model` |
 | `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |
 | `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
+
+On Apple Silicon, vezir prefers meetscribe's MLX Whisper ASR backend when
+`mlx-whisper` is installed and the installed `meet transcribe` supports
+`--asr-backend`. Alignment and diarization still use PyTorch, so vezir also
+passes `--torch-device mps` when that option is available. If MLX ASR is not
+available, the fallback Apple Silicon route is CPU ASR via CTranslate2 plus
+PyTorch MPS for alignment/diarization. `VEZIR_MEET_ASR_BACKEND`,
+`VEZIR_MEET_MLX_MODEL`, and `VEZIR_MEET_TORCH_DEVICE` override the automatic
+selection.
+
+## Performance expectations
+
+End-to-end processing time depends on audio quality, model size, language
+detection, diarization, summary generation, and whether alignment models are
+already cached. For a one-hour recording with the default large-v3-turbo-style
+pipeline, use these as rough operator estimates:
+
+| Runtime | ASR path | PyTorch alignment/diarization path | Expected time for 1h audio |
+|---|---|---|---|
+| NVIDIA CUDA GPU | CUDA, float16 | CUDA | ~5-20 min end-to-end |
+| Apple Silicon MLX mode | MLX Whisper | MPS | ~10-30 min end-to-end |
+| Apple Silicon split mode | CPU, int8 via CTranslate2 | MPS | ~20-45 min end-to-end |
+| CPU only | CPU, int8 | CPU | ~1.5-10 hours end-to-end |
+
+ASR is automatic speech recognition: the stage that turns audio into text.
+In Apple Silicon MLX mode, ASR uses MLX Whisper on the Apple GPU while
+alignment and diarization use PyTorch MPS. The first run downloads the selected
+MLX model; subsequent runs use the local Hugging Face cache.
+
+The most useful future improvements are:
+
+- Add per-stage timing to worker logs so real deployments can compare ASR,
+  alignment, diarization, summary, and sync costs instead of relying on broad
+  estimates.
+- Benchmark `mlx-community/whisper-large-v3-turbo`, `-q4`, and `-4bit` variants
+  on representative meeting audio to choose the best speed/quality default.
 
 Runtime directories are created private (`0700`) and sensitive runtime files
 are written private (`0600`). The systemd unit also sets `UMask=0077` so
