@@ -175,7 +175,9 @@ def test_upload_response_includes_login_url(client_and_token):
     # tiny fake WAV
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
         w.writeframes(b"\x00\x00" * 16000)
     buf.seek(0)
 

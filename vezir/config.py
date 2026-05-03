@@ -25,6 +25,8 @@ Environment variables:
 """
 from __future__ import annotations
 
+import importlib.util
+import logging
 import os
 import platform
 import re
@@ -32,9 +34,14 @@ import shutil
 import subprocess
 import sysconfig
 import tempfile
-import importlib.util
 from functools import lru_cache
 from pathlib import Path
+
+log = logging.getLogger("vezir.config")
+
+_KNOWN_MEET_DEVICES = {"cpu", "cuda", "mps"}
+_KNOWN_MEET_COMPUTE_TYPES = {"int8", "float16", "float32"}
+_KNOWN_MEET_ASR_BACKENDS = {"whisperx", "mlx"}
 
 
 def data_dir() -> Path:
@@ -137,6 +144,12 @@ def _mlx_whisper_available() -> bool:
 
 @lru_cache(maxsize=1)
 def _meet_transcribe_help() -> str:
+    """Return cached `meet transcribe --help` output.
+
+    The cache assumes the `meet` binary and its supported options do not
+    change while the vezir process is running. Restart vezir after upgrading
+    meetscribe so option auto-detection sees the new CLI surface.
+    """
     try:
         meet = meet_binary()
     except Exception:
@@ -171,7 +184,22 @@ def meet_supports_option(option: str) -> bool:
     help_text = _meet_transcribe_help()
     if not help_text:
         return False
-    return option in help_text.split()
+    return any(
+        line.lstrip().startswith(option)
+        for line in help_text.splitlines()
+    )
+
+
+def _warn_unknown_env_choice(name: str, value: str, known: set[str]) -> None:
+    if value in known:
+        return
+    log.warning(
+        "%s=%r is not one of the known values: %s. Passing it through to "
+        "`meet transcribe`; check for typos if transcription fails.",
+        name,
+        value,
+        ", ".join(sorted(known)),
+    )
 
 
 def _ctranslate2_supports_device(device: str) -> bool:
@@ -198,6 +226,7 @@ def meet_device() -> str:
     """Primary ASR device to use for `meet transcribe`."""
     explicit = os.environ.get("VEZIR_MEET_DEVICE")
     if explicit:
+        _warn_unknown_env_choice("VEZIR_MEET_DEVICE", explicit, _KNOWN_MEET_DEVICES)
         return explicit
     if (
         _apple_silicon()
@@ -222,6 +251,11 @@ def meet_torch_device(primary_device: str | None = None) -> str | None:
     """
     explicit = os.environ.get("VEZIR_MEET_TORCH_DEVICE")
     if explicit:
+        _warn_unknown_env_choice(
+            "VEZIR_MEET_TORCH_DEVICE",
+            explicit,
+            _KNOWN_MEET_DEVICES,
+        )
         return explicit
     if not meet_supports_option("--torch-device"):
         return None
@@ -236,6 +270,11 @@ def meet_compute_type(device: str | None = None) -> str:
     """Compute type to use for `meet transcribe`."""
     explicit = os.environ.get("VEZIR_MEET_COMPUTE_TYPE")
     if explicit:
+        _warn_unknown_env_choice(
+            "VEZIR_MEET_COMPUTE_TYPE",
+            explicit,
+            _KNOWN_MEET_COMPUTE_TYPES,
+        )
         return explicit
     resolved_device = device or meet_device()
     if resolved_device == "cpu":
@@ -249,6 +288,11 @@ def meet_asr_backend() -> str | None:
     """Optional ASR backend for newer meetscribe."""
     explicit = os.environ.get("VEZIR_MEET_ASR_BACKEND")
     if explicit:
+        _warn_unknown_env_choice(
+            "VEZIR_MEET_ASR_BACKEND",
+            explicit,
+            _KNOWN_MEET_ASR_BACKENDS,
+        )
         return explicit
     if not meet_supports_option("--asr-backend"):
         return None
@@ -257,9 +301,17 @@ def meet_asr_backend() -> str | None:
     return None
 
 
-def meet_mlx_model() -> str | None:
+def meet_mlx_model(asr_backend: str | None = None) -> str | None:
     """Optional MLX Whisper model path/repo for newer meetscribe."""
-    return os.environ.get("VEZIR_MEET_MLX_MODEL")
+    explicit = os.environ.get("VEZIR_MEET_MLX_MODEL")
+    if not explicit:
+        return None
+    resolved_backend = asr_backend or meet_asr_backend()
+    if resolved_backend != "mlx":
+        return None
+    if not meet_supports_option("--mlx-model"):
+        return None
+    return explicit
 
 
 def log_level() -> str:

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse

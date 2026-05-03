@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+import logging
 
 from vezir import config
 
@@ -145,10 +145,33 @@ def test_meet_asr_backend_allows_env_override(monkeypatch):
     assert config.meet_asr_backend() == "whisperx"
 
 
-def test_meet_mlx_model_reads_env(monkeypatch):
+def test_meet_mlx_model_reads_env_for_supported_mlx_backend(monkeypatch):
     monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+    monkeypatch.setattr(
+        config,
+        "meet_supports_option",
+        lambda option: option == "--mlx-model",
+    )
 
-    assert config.meet_mlx_model() == "mlx-community/whisper-tiny"
+    assert config.meet_mlx_model("mlx") == "mlx-community/whisper-tiny"
+
+
+def test_meet_mlx_model_requires_mlx_backend(monkeypatch):
+    monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+    monkeypatch.setattr(
+        config,
+        "meet_supports_option",
+        lambda option: option == "--mlx-model",
+    )
+
+    assert config.meet_mlx_model("whisperx") is None
+
+
+def test_meet_mlx_model_requires_meetscribe_option(monkeypatch):
+    monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+    monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
+
+    assert config.meet_mlx_model("mlx") is None
 
 
 def test_meet_device_defaults_to_cuda_elsewhere(monkeypatch):
@@ -206,6 +229,17 @@ def test_meet_supports_option_parses_transcribe_help(monkeypatch):
     assert config.meet_supports_option("--mlx") is False
 
 
+def test_meet_supports_option_ignores_description_mentions(monkeypatch):
+    _clear_config_caches()
+    monkeypatch.setattr(
+        config,
+        "_meet_transcribe_help",
+        lambda: "  --device [cuda|cpu]  See --torch-device for split mode",
+    )
+
+    assert config.meet_supports_option("--torch-device") is False
+
+
 def test_ctranslate2_supports_device(monkeypatch):
     class FakeCTranslate2:
         @staticmethod
@@ -218,3 +252,24 @@ def test_ctranslate2_supports_device(monkeypatch):
 
     assert config._ctranslate2_supports_device("mps") is True
     assert config._ctranslate2_supports_device("metal") is False
+
+
+def test_meet_device_warns_for_unknown_env_override(monkeypatch, caplog):
+    monkeypatch.setenv("VEZIR_MEET_DEVICE", "gup")
+
+    with caplog.at_level(logging.WARNING, logger="vezir.config"):
+        assert config.meet_device() == "gup"
+
+    assert "VEZIR_MEET_DEVICE='gup' is not one of the known values" in caplog.text
+
+
+def test_meet_compute_type_warns_for_unknown_env_override(monkeypatch, caplog):
+    monkeypatch.setenv("VEZIR_MEET_COMPUTE_TYPE", "float9000")
+
+    with caplog.at_level(logging.WARNING, logger="vezir.config"):
+        assert config.meet_compute_type("cpu") == "float9000"
+
+    assert (
+        "VEZIR_MEET_COMPUTE_TYPE='float9000' is not one of the known values"
+        in caplog.text
+    )
