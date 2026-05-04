@@ -11,12 +11,16 @@ Environment variables:
     VEZIR_MEET_BIN      Path to meetscribe `meet` binary (default: from PATH)
     VEZIR_MEET_DEVICE   Device for `meet transcribe` (default: mps on Apple
                         Silicon when supported by the installed meetscribe
-                        stack, cuda when available elsewhere, otherwise cpu)
+                        stack, cuda when available elsewhere, otherwise cpu).
+                        meetscribe-offline >= 0.6.0 also auto-detects, so this
+                        env var is now optional even on Macs (still respected
+                        as an explicit override).
     VEZIR_MEET_COMPUTE_TYPE Compute type for `meet transcribe` (default: int8
                         on cpu, float16 on cuda, float32 on mps)
     VEZIR_MEET_TORCH_DEVICE PyTorch device for meetscribe alignment/diarization
                         when the installed `meet transcribe` supports a
-                        separate --torch-device option
+                        separate --torch-device option.  meetscribe-offline >=
+                        0.6.0 auto-defaults this to mps on Apple Silicon.
     VEZIR_MEET_ASR_BACKEND ASR backend for `meet transcribe` when supported
                         (auto-selects mlx on Apple Silicon when available)
     VEZIR_MEET_MLX_MODEL MLX Whisper model path/repo when using mlx ASR
