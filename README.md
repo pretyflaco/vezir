@@ -15,9 +15,12 @@ labels resolved to GitHub handles via a shared web UI.
 ## Status
 
 Alpha (0.1.2). Designed for small teams that want to keep meeting audio
-inside their own infrastructure: one Tailscale tailnet + one GPU-equipped
-box. Currently dogfooded by the Blink team. Linux clients fully supported,
-macOS thin client deferred.
+inside their own infrastructure: one Tailscale tailnet + one server (Linux
+GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
+Linux clients fully supported. macOS Apple Silicon is supported for both
+client and server roles; on Apple Silicon the server auto-selects MLX
+Whisper ASR + PyTorch MPS when available, falling back to CPU/MPS-split
+mode otherwise.
 
 ## Architecture
 
@@ -67,12 +70,18 @@ Runtime data lives **outside** the repo at `~/vezir-data/`.
 | Role | Install command | Footprint |
 |---|---|---|
 | **Scribe client only** (record + upload, GUI optional) | `pip install --user vezir` (or `pip install --user 'vezir[gui]'` if you also want `apt install python3-tk`) | ~30 MB |
-| **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB (pulls meetscribe-offline = whisperx + torch + pyannote) |
+| **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB on Linux/CUDA (meetscribe-offline = whisperx + torch + pyannote); on Apple Silicon also pulls `mlx-whisper` for the MLX ASR backend (~few hundred MB extra) |
 
 The split is enforced by `pyproject.toml`'s `[project.optional-dependencies]`:
 the base install uses [meetscribe-record](https://github.com/pretyflaco/meetscribe-record)
 (capture only). The `[server]` extra adds [meetscribe-offline](https://github.com/pretyflaco/meetscribe)
 for the heavy transcription/diarization/summarization pipeline.
+
+On Apple Silicon, the same `[server]` extra additionally installs
+`mlx-whisper` via a PEP 508 environment marker so the MLX ASR backend is
+available out of the box. Auto-detection selects it at runtime; see the
+env-var table below for overrides (`VEZIR_MEET_ASR_BACKEND`,
+`VEZIR_MEET_MLX_MODEL`).
 
 ## Quick start (server, on a GPU box reachable over Tailscale)
 
