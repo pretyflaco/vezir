@@ -14,13 +14,18 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.2). Designed for small teams that want to keep meeting audio
+Alpha (0.1.3). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one Tailscale tailnet + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
 Linux clients fully supported. macOS Apple Silicon is supported for both
 client and server roles; on Apple Silicon the server auto-selects MLX
 Whisper ASR + PyTorch MPS when available, falling back to CPU/MPS-split
 mode otherwise.
+
+Requires `meetscribe-offline >= 0.6.0` (pinned via the `[server]` extra)
+which adds matching auto-defaults for `--device` and `--torch-device`, so
+the `VEZIR_MEET_DEVICE` / `VEZIR_MEET_TORCH_DEVICE` env vars are now
+optional even on Macs (still respected as explicit overrides).
 
 ## Architecture
 

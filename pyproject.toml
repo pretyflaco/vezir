@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vezir"
-version = "0.1.2"
+version = "0.1.3"
 description = "Internal scribe service that wraps meetscribe for team-scale meeting capture, transcription, summarization, and speaker labeling"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -65,7 +65,7 @@ server = [
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
     "jinja2>=3.1",
-    "meetscribe-offline>=0.5.0",
+    "meetscribe-offline>=0.6.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
