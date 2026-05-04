@@ -69,6 +69,10 @@ server = [
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
+    # MLX Whisper ASR backend, auto-detected on Apple Silicon by
+    # vezir.config.meet_asr_backend(). Pulled only on Darwin/arm64;
+    # pip skips this line on Linux/Windows via the environment marker.
+    "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 # GUI scribe widget (Tkinter). Tkinter ships with Python on most distros
 # but some (Debian/Ubuntu minimal) require `apt install python3-tk`.
