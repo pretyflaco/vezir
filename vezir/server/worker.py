@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 from .. import config
-from . import meet_runner, queue, voiceprints
+from . import meet_runner, queue
 
 log = logging.getLogger("vezir.worker")
 

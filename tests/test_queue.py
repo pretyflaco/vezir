@@ -1,7 +1,6 @@
 """Basic unit tests for the sqlite queue."""
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 

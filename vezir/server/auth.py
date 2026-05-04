@@ -18,7 +18,6 @@ import json
 import logging
 import secrets
 import time
-from pathlib import Path
 
 from fastapi import Cookie, Header, HTTPException, status
 

@@ -218,7 +218,6 @@ def token_enroll(github, server_url):
     pre-filled `/admin/enroll` URL the operator can open in their browser
     to display a QR code for the Android app to scan.
     """
-    from urllib.parse import quote
     from .server import auth
     plaintext = auth.issue(github)
 

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 
 from .. import config
 

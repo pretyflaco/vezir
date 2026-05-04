@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -40,6 +39,7 @@ def _decorate(row: dict) -> dict:
 def dashboard(request: Request, github: str = Depends(auth.require_bearer_or_cookie)):
     rows = [_decorate(r) for r in queue.list_recent(limit=50)]
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {"request": request, "rows": rows, "me": github},
     )
@@ -55,6 +55,7 @@ def session_detail(
     if not row:
         raise HTTPException(404, "session not found")
     return templates.TemplateResponse(
+        request,
         "session.html",
         {"request": request, "row": _decorate(row), "me": github},
     )

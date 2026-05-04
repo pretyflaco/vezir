@@ -17,7 +17,7 @@ import re
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .. import config
@@ -88,12 +88,14 @@ def label_page(
         raise HTTPException(404, "session not found")
     if row["status"] not in ("needs_labeling", "done", "error"):
         return templates.TemplateResponse(
+            request,
             "label_pending.html",
             {"request": request, "row": row, "me": github},
         )
 
     speakers = _get_speakers(session_id)
     return templates.TemplateResponse(
+        request,
         "label.html",
         {
             "request": request,
