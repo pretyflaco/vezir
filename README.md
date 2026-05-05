@@ -165,6 +165,20 @@ vezir scribe --title "what this meeting is about"
 # By default, the recorded WAV is compressed to OGG/Opus before upload.
 # Use --no-compress to upload the raw WAV instead.
 
+# macOS light recorder (ffmpeg + BlackHole 2ch): captures the default
+# microphone and system output, then uploads the mixed WAV/OGG.
+brew install ffmpeg
+brew install --cask blackhole-2ch
+# Reboot after BlackHole installs; Homebrew's cask requires it.
+vezir record --recorder macos-light --list-devices
+vezir scribe --recorder macos-light \
+  --output-device "BlackHole 2ch" \
+  --title "what this meeting is about"
+
+# If no loopback/system-output device is configured yet, mic-only smoke tests
+# are allowed explicitly:
+vezir record --recorder macos-light --allow-mic-only --duration 5
+
 # Or GUI scribe (always-on-top widget)
 vezir gui
 
@@ -196,6 +210,102 @@ The client reports upload progress, retries from byte 0 after transient
 connection failures, and sends the expected audio byte count so the server can
 reject incomplete uploads instead of processing partial meetings.
 
+## macOS BlackHole setup
+
+The recommended open-source system-output capture path is
+[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). It is enough
+for meeting audio, is available through Homebrew, and works with Vezir's
+`macos-light` recorder.
+
+1. Install the tools:
+
+   ```bash
+   brew install ffmpeg
+   brew install --cask blackhole-2ch
+   ```
+
+   The BlackHole cask runs Apple's package installer with `sudo`, so run this
+   command in an interactive Terminal if password prompting is not available
+   through your automation shell. Homebrew prints: `You must reboot for the
+   installation of blackhole-2ch to take effect.`
+
+2. Reboot the Mac.
+
+   If you are iterating and know what you are doing, restarting CoreAudio can
+   sometimes be enough, but the supported Homebrew cask path is a full reboot.
+
+3. Grant microphone permission to the terminal app you use to run Vezir.
+
+   Open `System Settings` -> `Privacy & Security` -> `Microphone`, then allow
+   Terminal, iTerm, Cursor, VS Code, or whichever app launches `vezir`. If
+   ffmpeg cannot access any input devices, Vezir reports:
+
+   ```text
+   no AVFoundation audio devices are visible to ffmpeg
+   ```
+
+4. Create a Multi-Output Device so you can hear the meeting while Vezir records
+   system output.
+
+   Open `Audio MIDI Setup` -> `+` -> `Create Multi-Output Device`. Check your
+   real listening device, such as AirPods, headphones, or speakers, and check
+   `BlackHole 2ch`. Use your real listening device as the clock source when
+   possible, and enable drift correction for `BlackHole 2ch` if Audio MIDI
+   Setup offers it. Rename the device to something clear, for example
+   `Headphones + BlackHole`.
+
+5. Route meeting audio to that Multi-Output Device.
+
+   In `System Settings` -> `Sound` -> `Output`, choose the Multi-Output Device.
+   Alternatively, choose it as the output device inside Zoom, Google Meet's
+   browser/app, Slack huddles, or the app that plays the meeting audio.
+
+6. Verify what Vezir can see:
+
+   ```bash
+   vezir record --recorder macos-light --list-devices
+   ```
+
+   You should see a `BlackHole 2ch` device. If your microphone is not the
+   default input, pass it by name or index:
+
+   ```bash
+   vezir record --recorder macos-light \
+     --mic-device "MacBook Pro Microphone" \
+     --output-device "BlackHole 2ch" \
+     --duration 5
+   ```
+
+7. Run a short smoke test.
+
+   Play some audio and speak into the microphone:
+
+   ```bash
+   vezir record --recorder macos-light \
+     --output-device "BlackHole 2ch" \
+     --duration 10
+   ```
+
+   The WAV lands under `~/meet-recordings/meeting-.../`. If you only want to
+   verify microphone permission before setting up BlackHole routing, use:
+
+   ```bash
+   vezir record --recorder macos-light --allow-mic-only --duration 5
+   ```
+
+8. Record and upload a meeting:
+
+   ```bash
+   export VEZIR_URL=http://your-vezir-server:8000
+   export VEZIR_TOKEN=<token-issued-on-server>
+   vezir scribe --recorder macos-light \
+     --output-device "BlackHole 2ch" \
+     --title "team sync"
+   ```
+
+   Press `Ctrl+C` when the meeting ends. Vezir writes the local WAV, compresses
+   it to OGG/Opus by default, uploads it, and prints the session dashboard URL.
+
 ## Environment variables
 
 | Variable | Default | Effect |
@@ -212,6 +322,10 @@ reject incomplete uploads instead of processing partial meetings.
 | `VEZIR_MEET_TORCH_DEVICE` | auto | PyTorch device passed to `meet transcribe --torch-device` when the installed meetscribe supports split ASR/PyTorch devices |
 | `VEZIR_MEET_ASR_BACKEND` | `mlx` on Apple Silicon when available | ASR backend passed to `meet transcribe --asr-backend` when supported |
 | `VEZIR_MEET_MLX_MODEL` | meetscribe default | MLX Whisper model path/repo passed to `meet transcribe --mlx-model` |
+| `VEZIR_RECORDER` | `meet` | Client recorder backend: `meet`, `macos-light`, or `auto` |
+| `VEZIR_FFMPEG_BIN` | `$(which ffmpeg)` | ffmpeg binary for the macOS light recorder |
+| `VEZIR_MACOS_MIC_DEVICE` | `default` | macOS light recorder microphone device name/index |
+| `VEZIR_MACOS_OUTPUT_DEVICE` | `auto` | macOS light recorder loopback/system-output device name/index |
 | `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |

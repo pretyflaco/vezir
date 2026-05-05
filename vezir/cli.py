@@ -50,8 +50,31 @@ def serve(host, port, reload):
               help="Where `meet record` writes audio (default ~/meet-recordings)")
 @click.option("--compress/--no-compress", default=True,
               help="Compress recorded WAV to OGG/Opus before upload (default: on)")
+@click.option("--recorder", default=None,
+              type=click.Choice(["meet", "macos-light", "auto"]),
+              help="Recording backend (default $VEZIR_RECORDER or meet)")
+@click.option("--mic-device", default=None,
+              help="macos-light microphone device (default: current default input)")
+@click.option("--output-device", default=None,
+              help="macos-light output loopback device (default: auto-detect)")
+@click.option("--allow-mic-only", is_flag=True,
+              help="Allow macos-light to record without a system-output device")
+@click.option("--duration", default=None, type=float,
+              help="Stop macos-light recording after N seconds (test/smoke runs)")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
-def scribe(server_url, token, title, output_dir, compress, record_args):
+def scribe(
+    server_url,
+    token,
+    title,
+    output_dir,
+    compress,
+    recorder,
+    mic_device,
+    output_device,
+    allow_mic_only,
+    duration,
+    record_args,
+):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
@@ -66,6 +89,11 @@ def scribe(server_url, token, title, output_dir, compress, record_args):
             output_dir=Path(output_dir) if output_dir else None,
             extra_record_args=list(record_args) if record_args else None,
             compress=compress,
+            recorder=recorder,
+            mic_device=mic_device,
+            output_device=output_device,
+            allow_mic_only=allow_mic_only,
+            duration=duration,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)
@@ -73,6 +101,80 @@ def scribe(server_url, token, title, output_dir, compress, record_args):
     except Exception as exc:
         click.echo(f"vezir: error: {exc}", err=True)
         sys.exit(1)
+
+
+# ── record ───────────────────────────────────────────────────────────────────
+
+@main.command("record")
+@click.option("-o", "--output-dir", default=None, type=click.Path(),
+              help="Where recordings are written (default ~/meet-recordings)")
+@click.option("--title", default=None,
+              help="Optional title used in the local folder name")
+@click.option("--recorder", default=None,
+              type=click.Choice(["meet", "macos-light", "auto"]),
+              help="Recording backend (default $VEZIR_RECORDER or meet)")
+@click.option("--mic-device", default=None,
+              help="macos-light microphone device (default: current default input)")
+@click.option("--output-device", default=None,
+              help="macos-light output loopback device (default: auto-detect)")
+@click.option("--allow-mic-only", is_flag=True,
+              help="Allow macos-light to record without a system-output device")
+@click.option("--duration", default=None, type=float,
+              help="Stop recording after N seconds")
+@click.option("--list-devices", is_flag=True,
+              help="List macos-light AVFoundation audio devices and exit")
+def record_cmd(
+    output_dir,
+    title,
+    recorder,
+    mic_device,
+    output_device,
+    allow_mic_only,
+    duration,
+    list_devices,
+):
+    """Record locally without uploading."""
+    outdir = Path(output_dir) if output_dir else Path.home() / "meet-recordings"
+
+    if list_devices:
+        from .client.macos_recorder import list_audio_devices
+        try:
+            devices = list_audio_devices()
+        except Exception as exc:
+            click.echo(f"vezir: error: {exc}", err=True)
+            sys.exit(1)
+        if not devices:
+            click.echo("(no AVFoundation audio devices visible)")
+            return
+        for device in devices:
+            click.echo(f"{device.index}: {device.name}")
+        return
+
+    from .client.scribe import _record_with_macos_light, _record_with_meet, _resolve_recorder
+    try:
+        selected = _resolve_recorder(recorder)
+        click.echo(f"vezir: starting {selected} recording (output: {outdir})")
+        click.echo("vezir: press Ctrl+C to stop the recording")
+        if selected == "meet":
+            audio = _record_with_meet(output_dir=outdir)
+        elif selected == "macos-light":
+            audio = _record_with_macos_light(
+                output_dir=outdir,
+                title=title,
+                mic_device=mic_device,
+                output_device=output_device,
+                allow_mic_only=allow_mic_only,
+                duration=duration,
+            )
+        else:
+            raise RuntimeError(f"unknown recorder {selected!r}")
+    except KeyboardInterrupt:
+        click.echo("vezir: interrupted", err=True)
+        sys.exit(130)
+    except Exception as exc:
+        click.echo(f"vezir: error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"vezir: recorded {audio}")
 
 
 # ── upload ────────────────────────────────────────────────────────────────────

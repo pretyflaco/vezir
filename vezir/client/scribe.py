@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -88,38 +89,15 @@ def _progress_line(sent: int, total: int, elapsed: float) -> None:
     )
 
 
-def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
-    print(
-        f"\nvezir: upload attempt {attempt}/{retries} failed; "
-        f"retrying from byte 0: {exc}",
-        flush=True,
-    )
-
-
-def run_scribe(
-    server_url: str | None = None,
-    token: str | None = None,
-    title: str | None = None,
-    output_dir: Path | None = None,
+def _record_with_meet(
+    *,
+    output_dir: Path,
     extra_record_args: list[str] | None = None,
-    compress: bool = True,
-) -> dict:
-    """Record locally, then upload. Returns the upload response dict."""
-    server_url = server_url or config.server_url()
-    token = token or config.client_token()
-    if not token:
-        raise RuntimeError("VEZIR_TOKEN is not set; run `vezir token issue` on the server")
-
-    output_dir = output_dir or _default_output_dir()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+) -> Path:
     meet_bin = _meet_bin()
     cmd = [meet_bin, "record", "-o", str(output_dir)]
     if extra_record_args:
         cmd.extend(extra_record_args)
-
-    print(f"vezir: starting recording (output: {output_dir})", flush=True)
-    print("vezir: press Ctrl+C to stop the recording", flush=True)
 
     started = time.time()
     proc = subprocess.Popen(cmd)
@@ -148,11 +126,105 @@ def run_scribe(
         raise RuntimeError(
             f"could not locate a session directory under {output_dir} from this run"
         )
-    # Prefer WAV (what `meet record` writes), fall back to OGG (post-archive).
     audio_files = sorted(sdir.glob("*.wav")) or sorted(sdir.glob("*.ogg"))
     if not audio_files:
         raise RuntimeError(f"no .wav or .ogg file found in {sdir}")
-    audio = audio_files[0]
+    return audio_files[0]
+
+
+def _record_with_macos_light(
+    *,
+    output_dir: Path,
+    title: str | None = None,
+    mic_device: str | None = None,
+    output_device: str | None = None,
+    allow_mic_only: bool = False,
+    duration: float | None = None,
+) -> Path:
+    from .macos_recorder import MacOSRecorderConfig, record
+
+    return record(
+        MacOSRecorderConfig(
+            output_dir=output_dir,
+            title=title,
+            mic_device=mic_device or "default",
+            output_device=output_device or "auto",
+            require_output=not allow_mic_only,
+            duration=duration,
+        )
+    )
+
+
+def _resolve_recorder(recorder: str | None) -> str:
+    selected = recorder or os.environ.get("VEZIR_RECORDER") or "meet"
+    if selected == "auto":
+        if platform.system() == "Darwin" and shutil.which("meet") is None:
+            return "macos-light"
+        return "meet"
+    return selected
+
+
+def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
+    print(
+        f"\nvezir: upload attempt {attempt}/{retries} failed; "
+        f"retrying from byte 0: {exc}",
+        flush=True,
+    )
+
+
+def run_scribe(
+    server_url: str | None = None,
+    token: str | None = None,
+    title: str | None = None,
+    output_dir: Path | None = None,
+    extra_record_args: list[str] | None = None,
+    compress: bool = True,
+    recorder: str | None = None,
+    mic_device: str | None = None,
+    output_device: str | None = None,
+    allow_mic_only: bool = False,
+    duration: float | None = None,
+) -> dict:
+    """Record locally, then upload. Returns the upload response dict."""
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        raise RuntimeError("VEZIR_TOKEN is not set; run `vezir token issue` on the server")
+
+    output_dir = output_dir or _default_output_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    selected_recorder = _resolve_recorder(recorder)
+
+    print(
+        f"vezir: starting {selected_recorder} recording (output: {output_dir})",
+        flush=True,
+    )
+    print("vezir: press Ctrl+C to stop the recording", flush=True)
+
+    if selected_recorder == "meet":
+        audio = _record_with_meet(
+            output_dir=output_dir,
+            extra_record_args=extra_record_args,
+        )
+    elif selected_recorder == "macos-light":
+        if extra_record_args:
+            raise RuntimeError(
+                "record args after `--` are only supported with --recorder meet"
+            )
+        audio = _record_with_macos_light(
+            output_dir=output_dir,
+            title=title,
+            mic_device=mic_device,
+            output_device=output_device,
+            allow_mic_only=allow_mic_only,
+            duration=duration,
+        )
+    else:
+        raise RuntimeError(
+            f"unknown recorder {selected_recorder!r}; expected meet or macos-light"
+        )
+
     print(
         f"vezir: recording captured: {audio} ({_fmt_bytes(audio.stat().st_size)})",
         flush=True,
