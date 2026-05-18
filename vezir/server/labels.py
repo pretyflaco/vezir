@@ -190,12 +190,34 @@ async def submit_labels(
         )
 
         # Update the central voiceprint DB with confirmed labels.
+        # Fix for #8: the call was passing (session_dir, label_map) — two
+        # args — but the meetscribe-offline signature expects four:
+        # (audio_path, transcript_segments, confirmed_label_map, channel_map).
+        # Load the transcript and detect channel layout so the embeddings
+        # are stored with the correct channel provenance.
         try:
             from meet.voiceprint import update_profiles_from_confirmed_labels
-            update_profiles_from_confirmed_labels(
-                _session_dir(session_id),
-                label_map,
-            )
+            from meet.label import _load_transcript, _detect_speaker_channels
+
+            sdir = _session_dir(session_id)
+            wav_path = _find_wav(sdir)
+            tj_path = sdir / f"{sdir.name}.json"
+            if wav_path and tj_path.exists():
+                transcript = _load_transcript(tj_path)
+                channel_map = _detect_speaker_channels(
+                    wav_path, transcript.segments, transcript.speakers,
+                )
+                update_profiles_from_confirmed_labels(
+                    wav_path,
+                    transcript.segments,
+                    label_map,
+                    channel_map,
+                )
+            else:
+                log.warning(
+                    "session=%s: skipping voiceprint update (wav=%s, transcript=%s)",
+                    session_id, wav_path is not None, tj_path.exists(),
+                )
         except Exception:
             log.exception("could not update central voiceprint DB")
 
