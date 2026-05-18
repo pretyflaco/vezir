@@ -159,16 +159,17 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
 
     Uses the JSON transcript to inspect the actual speaker IDs after the
     --auto labeling pass.
+
+    Fix for #6: previously glob'd for ``*.json`` and skipped known
+    non-transcript suffixes, but ``.frontmatter.json`` (and any future
+    sidecar) slipped through and was treated as the transcript.
+    Now positively selects ``<session_dir.name>.json`` — the canonical
+    transcript filename that meetscribe produces.
     """
     import json as _json
 
-    tj = None
-    for p in sorted(session_dir.glob("*.json")):
-        if ".session." in p.name or ".summary." in p.name or ".translation." in p.name:
-            continue
-        tj = p
-        break
-    if tj is None:
+    tj = session_dir / f"{session_dir.name}.json"
+    if not tj.exists():
         return False  # no transcript yet; treat as resolved (caller will surface error)
 
     try:
