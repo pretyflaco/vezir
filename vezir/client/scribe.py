@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from .. import config
 from . import uploader
@@ -96,6 +97,84 @@ def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
     )
 
 
+_TERMINAL_STATUSES = {"done", "error", "needs_labeling"}
+_POLL_INTERVAL = 5.0  # seconds, matches GUI
+
+
+def _login_url(server_url: str, token: str, next_path: str) -> str:
+    """Build a /login?token=...&next=... URL for browser hand-off."""
+    base = server_url.rstrip("/")
+    return f"{base}/login?token={quote(token)}&next={quote(next_path)}"
+
+
+def poll_status(
+    server_url: str,
+    token: str,
+    session_id: str,
+    timeout: float = 600.0,
+) -> str | None:
+    """Poll server until a terminal status is reached. Returns final status.
+
+    Prints status transitions to stdout. On needs_labeling, prints a
+    browser-friendly URL to the labeling page. Returns None on timeout.
+    """
+    import httpx
+
+    base = server_url.rstrip("/")
+    url = f"{base}/api/sessions/{session_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    deadline = time.time() + timeout
+    last_status = ""
+
+    while time.time() < deadline:
+        try:
+            r = httpx.get(url, headers=headers, timeout=10)
+            if r.status_code != 200:
+                time.sleep(_POLL_INTERVAL)
+                continue
+            data = r.json()
+            status = data.get("status", "?")
+
+            if status != last_status:
+                last_status = status
+                if status == "needs_labeling":
+                    label_url = _login_url(
+                        server_url, token, f"/label/{session_id}",
+                    )
+                    print(
+                        f"vezir: status: {status} -- some speakers need labeling",
+                        flush=True,
+                    )
+                    print(f"vezir: label at {label_url}", flush=True)
+                    return status
+                elif status == "error":
+                    err = data.get("error", "unknown error")
+                    first_line = str(err).splitlines()[0][:200]
+                    print(
+                        f"vezir: status: error -- {first_line}",
+                        flush=True,
+                    )
+                    return status
+                elif status == "done":
+                    print("vezir: status: done -- transcript ready", flush=True)
+                    return status
+                else:
+                    print(f"vezir: status: {status}", flush=True)
+
+            if status in _TERMINAL_STATUSES:
+                return status
+        except KeyboardInterrupt:
+            print("\nvezir: polling interrupted", flush=True)
+            return last_status or None
+        except Exception as exc:
+            log.debug("poll error: %s", exc)
+
+        time.sleep(_POLL_INTERVAL)
+
+    print("vezir: timed out waiting for processing", flush=True)
+    return None
+
+
 def run_scribe(
     server_url: str | None = None,
     token: str | None = None,
@@ -103,6 +182,8 @@ def run_scribe(
     output_dir: Path | None = None,
     extra_record_args: list[str] | None = None,
     compress: bool = True,
+    wait: bool = True,
+    wait_timeout: float = 600.0,
 ) -> dict:
     """Record locally, then upload. Returns the upload response dict."""
     server_url = server_url or config.server_url()
@@ -181,5 +262,11 @@ def run_scribe(
     )
     print(flush=True)
     print(f"vezir: uploaded as session {result['session_id']}", flush=True)
-    print(f"vezir: track at {result['dashboard_url']}", flush=True)
+    track_url = result.get("dashboard_login_url") or result["dashboard_url"]
+    print(f"vezir: track at {track_url}", flush=True)
+
+    if wait:
+        print("vezir: waiting for processing ...", flush=True)
+        poll_status(server_url, token, result["session_id"], timeout=wait_timeout)
+
     return result

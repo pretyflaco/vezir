@@ -7,16 +7,22 @@
 
 Self-hosted scribe service for team-scale meeting capture. Vezir wraps
 [meetscribe](https://github.com/pretyflaco/meetscribe) and turns it into a
-multi-user, Tailscale-hosted service: a designated scribe records a meeting
+multi-user, VPN-hosted service: a designated scribe records a meeting
 on their laptop, the audio uploads to a central GPU-equipped box, and the
 team gets back a diarized transcript, AI summary, and PDF — with speaker
 labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.4). Designed for small teams that want to keep meeting audio
-inside their own infrastructure: one Tailscale tailnet + one server (Linux
+Alpha (0.1.5). Designed for small teams that want to keep meeting audio
+inside their own infrastructure: one private mesh VPN + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
+
+Supported VPN options:
+- [nostr-vpn](https://github.com/mmalmi/nostr-vpn) — decentralized,
+  no accounts or fees, Nostr keys for identity (see `infra/nvpn/README.md`)
+- [Tailscale](https://tailscale.com/) — established, easy setup,
+  requires third-party account
 Linux clients fully supported. macOS Apple Silicon is supported for both
 client and server roles; on Apple Silicon the server auto-selects MLX
 Whisper ASR + PyTorch MPS when available, falling back to CPU/MPS-split
@@ -88,7 +94,7 @@ available out of the box. Auto-detection selects it at runtime; see the
 env-var table below for overrides (`VEZIR_MEET_ASR_BACKEND`,
 `VEZIR_MEET_MLX_MODEL`).
 
-## Quick start (server, on a GPU box reachable over Tailscale)
+## Quick start (server, on a GPU box reachable over VPN)
 
 ```bash
 git clone https://github.com/pretyflaco/vezir.git
@@ -154,8 +160,9 @@ pip install --user vezir
 # Optional: GUI widget (Tkinter); on Debian/Ubuntu:
 sudo apt install python3-tk
 
-# Configure (one-time): server URL = Tailscale name of your vezir server.
-# If MagicDNS is unavailable, use the server's Tailscale IP instead.
+# Configure (one-time): server URL = your vezir server's VPN hostname or tunnel IP.
+# For nostr-vpn: use the server's tunnel IP (see infra/nvpn/README.md).
+# For Tailscale: use the MagicDNS name or Tailscale IP.
 export VEZIR_URL=http://your-vezir-server:8000
 export VEZIR_TOKEN=<token-issued-on-server>
 

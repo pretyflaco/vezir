@@ -50,8 +50,12 @@ def serve(host, port, reload):
               help="Where `meet record` writes audio (default ~/meet-recordings)")
 @click.option("--compress/--no-compress", default=True,
               help="Compress recorded WAV to OGG/Opus before upload (default: on)")
+@click.option("--wait/--no-wait", default=True,
+              help="Wait for server processing and report status (default: on)")
+@click.option("--wait-timeout", default=600, type=int,
+              help="Max seconds to wait for processing (default: 600)")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
-def scribe(server_url, token, title, output_dir, compress, record_args):
+def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
@@ -66,6 +70,8 @@ def scribe(server_url, token, title, output_dir, compress, record_args):
             output_dir=Path(output_dir) if output_dir else None,
             extra_record_args=list(record_args) if record_args else None,
             compress=compress,
+            wait=wait,
+            wait_timeout=float(wait_timeout),
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)
@@ -86,11 +92,15 @@ def scribe(server_url, token, title, output_dir, compress, record_args):
               help="Optional meeting title")
 @click.option("--compress", is_flag=True,
               help="Compress WAV input to OGG/Opus before upload")
+@click.option("--wait/--no-wait", default=False,
+              help="Wait for server processing and report status (default: off)")
+@click.option("--wait-timeout", default=600, type=int,
+              help="Max seconds to wait for processing (default: 600)")
 @click.argument(
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_cmd(server_url, token, title, compress, audio_file):
+def upload_cmd(server_url, token, title, compress, wait, wait_timeout, audio_file):
     """Upload an existing WAV/OGG recording to vezir."""
     from .client import uploader
 
@@ -159,6 +169,11 @@ def upload_cmd(server_url, token, title, compress, audio_file):
         click.echo(f"vezir: dashboard: {result['dashboard_url']}")
     if result.get("dashboard_login_url"):
         click.echo(f"vezir: open in browser: {result['dashboard_login_url']}")
+
+    if wait:
+        from .client.scribe import poll_status
+        click.echo("vezir: waiting for processing ...")
+        poll_status(server_url, token, result["session_id"], timeout=float(wait_timeout))
 
 
 # ── gui ───────────────────────────────────────────────────────────────────────

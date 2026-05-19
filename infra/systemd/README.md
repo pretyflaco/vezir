@@ -66,11 +66,17 @@ From the same host:
 curl -sS http://127.0.0.1:8000/health
 ```
 
-From another Tailscale peer (replace with your tailnet name):
+From another VPN peer (replace with your network's hostname/IP):
 
 ```bash
+# Tailscale
 curl -sS http://muscle.tail178bd.ts.net:8000/health
+
+# nostr-vpn (use the server's tunnel IP from `ip addr show utun100`)
+curl -sS http://<nvpn-tunnel-ip>:8000/health
 ```
+
+See `infra/nvpn/README.md` for nostr-vpn setup instructions.
 
 ## Common operations
 

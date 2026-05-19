@@ -35,7 +35,7 @@ _COOKIE_KWARGS = {
     "key": auth.COOKIE_NAME,
     "httponly": True,
     "samesite": "lax",
-    "secure": False,  # Tailscale-only HTTP for now; flip when TLS is added
+        "secure": False,  # VPN-only HTTP for now; flip when TLS is added
     "path": "/",
 }
 

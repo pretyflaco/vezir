@@ -56,7 +56,7 @@ def build_payload(server_url: str, token: str) -> str:
 
 def _is_safe_server_url(url: str) -> bool:
     """Reject obvious garbage. We don't enforce a scheme allow-list because
-    operators may want http:// over Tailscale.
+    operators may want http:// over an encrypted VPN (Tailscale, nostr-vpn).
     """
     if not url:
         return False

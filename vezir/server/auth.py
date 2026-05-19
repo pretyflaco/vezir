@@ -28,7 +28,7 @@ log = logging.getLogger("vezir.auth")
 # Cookie used by the browser hand-off flow (see server.login). Value is the
 # plaintext bearer token; HttpOnly + SameSite=Lax. Equivalent risk profile
 # to the bearer header (which also carries plaintext) — the network surface
-# is Tailscale-only either way.
+# is VPN-only (Tailscale or nostr-vpn) either way.
 COOKIE_NAME = "vezir_session"
 
 
@@ -145,8 +145,9 @@ def require_bearer_or_cookie(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
-                "not signed in. Open the dashboard via vezir gui's "
-                "'Open dashboard' button, or visit /login to sign in."
+                "not signed in. Visit /login and paste your token, "
+                "or use the URL from `vezir scribe` / `vezir upload` "
+                "output which signs you in automatically."
             ),
             headers={"WWW-Authenticate": "Bearer"},
         )
