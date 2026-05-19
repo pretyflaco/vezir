@@ -14,7 +14,7 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.3). Designed for small teams that want to keep meeting audio
+Alpha (0.1.4). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one Tailscale tailnet + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
 Linux clients fully supported. macOS Apple Silicon is supported for both
@@ -195,6 +195,30 @@ transcoded to WAV/OGG first until server-side transcoding is added.
 The client reports upload progress, retries from byte 0 after transient
 connection failures, and sends the expected audio byte count so the server can
 reject incomplete uploads instead of processing partial meetings.
+
+### macOS thin client (Apple Silicon)
+
+The same `pip install vezir` command works on macOS Apple Silicon. The base
+install pulls `meetscribe-record`, which ships a Swift sidecar binary
+(`meet-record-mac`) inside the macOS arm64 wheel. This binary captures mic +
+system audio via Apple's native APIs (AVAudioEngine + Core Audio Process Tap)
+— no virtual audio drivers, no reboot, no Audio MIDI Setup configuration.
+
+```bash
+pip install vezir                # ~31 MB total; no ML dependencies
+export VEZIR_URL=http://your-vezir-server:8000
+export VEZIR_TOKEN=<token-issued-on-server>
+vezir scribe --title "team sync"
+# Records mic + system audio via the Swift sidecar.
+# Ctrl+C to stop → compresses to OGG/Opus → uploads to server.
+```
+
+The server handles transcription, diarization, labeling, and sync. The Mac
+only needs to record and upload — total install footprint is ~31 MB vs ~5 GB
+for the full end-to-end (`meetscribe-offline[mlx]`) pipeline.
+
+For end-to-end local transcription on Apple Silicon (no server needed), see
+[meetscribe](https://github.com/pretyflaco/meetscribe) directly.
 
 ## Environment variables
 
