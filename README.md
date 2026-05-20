@@ -14,7 +14,7 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.5). Designed for small teams that want to keep meeting audio
+Alpha (0.1.6). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one private mesh VPN + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
 

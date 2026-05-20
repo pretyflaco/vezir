@@ -330,6 +330,68 @@ def client_token() -> str | None:
     return os.environ.get("VEZIR_TOKEN")
 
 
+_TOKEN_PREFIX = "vzr_"
+_TOKEN_EXPECTED_LEN = 47  # "vzr_" (4) + token_urlsafe(32) (43)
+_TOKEN_BODY_CHARS = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+)
+
+
+def validate_token_format(token: str) -> None:
+    """Warn on likely copy-paste errors in the bearer token.
+
+    Prints to stderr; never raises. Designed to catch the most common
+    mistakes (trailing backslash, whitespace, swapped secrets) before
+    the server returns a cryptic 401.
+    """
+    import sys
+
+    if not token.startswith(_TOKEN_PREFIX):
+        if token.startswith("nvpn://"):
+            print(
+                "vezir: WARNING: VEZIR_TOKEN looks like an nvpn invite, "
+                "not a vezir bearer token. The invite goes to "
+                "`nvpn import-invite`; VEZIR_TOKEN should start with 'vzr_'.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"vezir: WARNING: token does not start with '{_TOKEN_PREFIX}' "
+                "-- is this the right value for VEZIR_TOKEN?",
+                file=sys.stderr,
+                flush=True,
+            )
+        return  # further checks assume vzr_ prefix
+
+    if len(token) != _TOKEN_EXPECTED_LEN:
+        print(
+            f"vezir: WARNING: token length is {len(token)}, expected "
+            f"{_TOKEN_EXPECTED_LEN} -- check for trailing whitespace, "
+            "backslash, or truncation",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    body = token[len(_TOKEN_PREFIX):]
+    for i, ch in enumerate(body):
+        if ch not in _TOKEN_BODY_CHARS:
+            pos = len(_TOKEN_PREFIX) + i
+            if ch == "\\":
+                hint = "trailing backslash (common copy-paste artifact)"
+            elif ch in (" ", "\t", "\n", "\r"):
+                hint = "whitespace"
+            else:
+                hint = f"character {ch!r}"
+            print(
+                f"vezir: WARNING: token contains unexpected {hint} "
+                f"at position {pos} -- check for copy-paste artifacts",
+                file=sys.stderr,
+                flush=True,
+            )
+            break  # one warning is enough
+
+
 def max_upload_bytes() -> int:
     """Maximum accepted upload size in bytes (default: 2 GiB)."""
     raw = os.environ.get("VEZIR_MAX_UPLOAD_BYTES")

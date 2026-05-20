@@ -8,22 +8,28 @@ the network layer between scribe laptops and the vezir server.
 
 1. The vezir server runs `nvpn` and publishes an **invite link**.
 2. You install `nvpn`, import the invite, and start the daemon.
-3. Your machine joins the mesh — a direct encrypted tunnel forms
+3. Your machine joins the mesh -- a direct encrypted tunnel forms
    automatically (NAT traversal included, no port forwarding needed).
 4. You point `VEZIR_URL` at the server's tunnel IP and use vezir
    normally.
 
-## Prerequisites
+## Two secrets -- don't mix them up
 
-- Linux x86_64 or arm64, macOS Apple Silicon, or Windows x64
-- `~/.local/bin` in your `PATH` (Linux; check with `echo $PATH`)
-- `sudo` access (the daemon needs to create a tunnel interface)
-- An **invite string** from the vezir admin (starts with `nvpn://invite/...`)
-- A **vezir bearer token** from the admin (`vzr_...`)
+You'll receive two different secrets from the admin.  They serve
+different purposes and go in different places:
 
-## Step 1 — Install nvpn
+| Secret | Looks like | Purpose | Where it goes |
+|---|---|---|---|
+| nvpn invite | `nvpn://invite/eyJ2...` | Joins the VPN mesh | `nvpn import-invite` (or `open` on macOS) |
+| Vezir token | `vzr_Ab3x...` (47 chars) | Authenticates uploads | `VEZIR_TOKEN` env var |
 
-### Linux
+Do not paste the invite into `VEZIR_TOKEN` or vice versa.
+
+---
+
+## Linux setup
+
+### Step 1 -- Install nvpn
 
 ```bash
 curl -fsSL "https://github.com/mmalmi/nostr-vpn/releases/latest/download/nvpn-x86_64-unknown-linux-musl.tar.gz" \
@@ -31,38 +37,24 @@ curl -fsSL "https://github.com/mmalmi/nostr-vpn/releases/latest/download/nvpn-x8
 cd /tmp/nvpn && ./install.sh ~/.local/bin
 ```
 
-For arm64 replace `x86_64` with `aarch64` in the URL above.
+For arm64, replace `x86_64` with `aarch64` in the URL above.
 
-### macOS (Apple Silicon)
-
-```bash
-curl -fsSL "https://github.com/mmalmi/nostr-vpn/releases/latest/download/nvpn-aarch64-apple-darwin.tar.gz" \
-  | tar -xz -C /tmp
-cd /tmp/nvpn && ./install.sh
-```
-
-Or install via crates.io if you have Rust: `cargo install nvpn`.
-
-### Verify
+Verify:
 
 ```bash
 nvpn version
-# Expected: 4.x.x
 ```
 
-## Step 2 — Initialize
+### Step 2 -- Initialize
 
 ```bash
 nvpn init
 ```
 
-This creates `~/.config/nvpn/config.toml` and generates a Nostr
-keypair.  Note your `nostr_pubkey` (npub) — send it to the admin so
-they can approve your join request.
+Note your `nostr_pubkey` (npub) from the output and send it to the
+admin so they can approve your join request.
 
-## Step 3 — Import the invite
-
-Paste the invite string you received from the admin:
+### Step 3 -- Import the invite
 
 ```bash
 nvpn import-invite 'nvpn://invite/...'
@@ -70,14 +62,14 @@ nvpn import-invite 'nvpn://invite/...'
 
 You should see `invite_imported` and `join_request_queued=true`.
 
-## Step 4 — Install the system service and start
-
-The daemon needs root to create the tunnel interface.  Install it as a
-system service, then start:
+### Step 4 -- Install the system service
 
 ```bash
 sudo "$(which nvpn)" service install
 ```
+
+If `sudo` can't find `nvpn`, use the full path:
+`sudo ~/.local/bin/nvpn service install`
 
 **Important:** the service reads its config from `/root/.config/nvpn/`.
 Copy your user config there so the daemon picks it up:
@@ -91,39 +83,47 @@ sudo systemctl restart nvpn
 > Every time you change your nvpn config (e.g. import a new invite),
 > repeat the `sudo cp` + `sudo systemctl restart nvpn` step.
 
+> Do **not** use `nvpn start --daemon --connect` -- always start via
+> the systemd service so the daemon runs as root and can create the
+> tunnel interface.
+
 Check that the service is running:
 
 ```bash
 sudo systemctl status nvpn
 ```
 
-## Step 5 — Verify the tunnel
+### Step 5 -- Verify the tunnel
 
 ```bash
 ip addr show | grep -A3 utun
 # Should show a utun100 interface with a 10.44.x.x address
 ```
 
-Test connectivity to the vezir server (ask the admin for the server's
-tunnel IP):
+Test connectivity to the vezir server (ask the admin for the tunnel IP):
 
 ```bash
 curl -sS http://<SERVER_TUNNEL_IP>:8000/health
 # Expected: {"status":"ok","version":"...","data_dir":"..."}
 ```
 
-## Step 6 — Configure vezir
+### Step 6 -- Install/upgrade vezir and configure
 
-Add these to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
+```bash
+pip install --user --upgrade vezir
+vezir --version
+```
+
+Add to your `~/.bashrc`:
 
 ```bash
 export VEZIR_URL=http://<SERVER_TUNNEL_IP>:8000
-export VEZIR_TOKEN=<your-token>
+export VEZIR_TOKEN=<your-vzr-token>
 ```
 
-Then reload: `source ~/.bashrc` (or open a new terminal).
+Then reload: `source ~/.bashrc`
 
-## Step 7 — Test
+### Step 7 -- Test
 
 ```bash
 vezir scribe --title "test recording"
@@ -131,7 +131,133 @@ vezir scribe --title "test recording"
 # Should compress, upload, and show processing status
 ```
 
+---
+
+## macOS (Apple Silicon) setup
+
+### Step 1 -- Install nvpn
+
+**Option A: Native app (recommended)** -- download the `.dmg` from
+https://github.com/mmalmi/nostr-vpn/releases/latest and install
+normally.  The native app has a tray icon and manages the daemon
+automatically.
+
+**Option B: CLI only**
+
+```bash
+curl -fsSL "https://github.com/mmalmi/nostr-vpn/releases/latest/download/nvpn-aarch64-apple-darwin.tar.gz" \
+  | tar -xz -C /tmp
+cd /tmp/nvpn && ./install.sh
+```
+
+Verify:
+
+```bash
+nvpn version
+```
+
+### Step 2 -- Initialize
+
+```bash
+nvpn init
+```
+
+Note your `nostr_pubkey` (npub) from the output and send it to the
+admin.
+
+### Step 3 -- Import the invite
+
+**If using the native app:** run this from terminal -- it triggers the
+app's URL-scheme handler:
+
+```bash
+open 'nvpn://invite/...'
+```
+
+> Do **not** paste the invite into the "Add network" field in the app.
+> That creates a new empty local network instead of importing the
+> invite.
+
+**If using CLI only:**
+
+```bash
+nvpn import-invite 'nvpn://invite/...'
+```
+
+### Step 4 -- Start the service
+
+**If using the native app:** the app manages the daemon automatically.
+Skip to Step 5.
+
+**If using CLI only:**
+
+```bash
+sudo nvpn service install
+```
+
+The service reads config from root's home.  Copy your user config:
+
+```bash
+sudo mkdir -p "/var/root/Library/Application Support/nvpn"
+sudo cp ~/Library/Application\ Support/nvpn/config.toml \
+  "/var/root/Library/Application Support/nvpn/config.toml"
+```
+
+Start the service:
+
+```bash
+sudo launchctl kickstart -k system/nvpn
+```
+
+> Every time you change your nvpn config (e.g. import a new invite),
+> repeat the `sudo cp` + kickstart step.
+
+> Do **not** use `nvpn start --daemon --connect` -- always use the
+> system service so the daemon runs with the privileges it needs.
+
+### Step 5 -- Verify the tunnel
+
+```bash
+ifconfig | grep -A5 utun
+# Should show a utun interface with a 10.44.x.x address
+```
+
+Test connectivity to the vezir server:
+
+```bash
+curl -sS http://<SERVER_TUNNEL_IP>:8000/health
+# Expected: {"status":"ok","version":"...","data_dir":"..."}
+```
+
+### Step 6 -- Install/upgrade vezir and configure
+
+```bash
+pip3 install --user --upgrade vezir
+vezir --version
+```
+
+Add to your `~/.zshrc`:
+
+```bash
+export VEZIR_URL=http://<SERVER_TUNNEL_IP>:8000
+export VEZIR_TOKEN=<your-vzr-token>
+```
+
+Then reload: `source ~/.zshrc`
+
+### Step 7 -- Test
+
+```bash
+vezir scribe --title "test recording"
+# Speak for a few seconds, then Ctrl+C
+# Should compress, upload, and show processing status
+```
+
+---
+
 ## Updating nvpn
+
+### Linux
 
 ```bash
 curl -fsSL "https://github.com/mmalmi/nostr-vpn/releases/latest/download/nvpn-x86_64-unknown-linux-musl.tar.gz" \
@@ -141,16 +267,33 @@ sudo cp ~/.local/bin/nvpn /usr/local/bin/   # update the service binary too
 sudo systemctl restart nvpn
 ```
 
+### macOS
+
+If using the native app, check for updates via the app's built-in
+updater.  For CLI-only:
+
+```bash
+curl -fsSL "https://github.com/mmalmi/nostr-vpn/releases/latest/download/nvpn-aarch64-apple-darwin.tar.gz" \
+  | tar -xz -C /tmp
+cd /tmp/nvpn && ./install.sh
+sudo launchctl kickstart -k system/nvpn
+```
+
+---
+
 ## Troubleshooting
 
 ### `nvpn: command not found` after install
 
-Make sure `~/.local/bin` is in your PATH:
+**Linux:** make sure `~/.local/bin` is in your PATH:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+**macOS:** the installer defaults to `/opt/homebrew/bin` or
+`/usr/local/bin`, both usually in PATH already.
 
 ### `sudo nvpn: command not found`
 
@@ -159,37 +302,67 @@ or copy the binary: `sudo cp ~/.local/bin/nvpn /usr/local/bin/`
 
 ### Daemon fails with "Operation not permitted"
 
-The daemon is not running as root.  Make sure you started it via
-`sudo systemctl start nvpn`, not `nvpn start --daemon`.
+The daemon is not running as root.  Start it via the system service,
+not `nvpn start --daemon`.
 
-### `nvpn status` shows `daemon: stopped` but `systemctl` shows active
+### `nvpn status` shows `daemon: stopped` but the service shows active
 
-This is a known nvpn issue: the CLI reads status from the user config,
-not from the running daemon.  Trust `sudo systemctl status nvpn` for
-the real state.
+Known nvpn issue: the CLI reads from the user config, not the running
+daemon socket.  Trust `sudo systemctl status nvpn` (Linux) or
+`sudo launchctl list | grep nvpn` (macOS) for the real state.
 
 ### No peers / tunnel not connecting
 
 1. Confirm the admin has approved your npub:
    `nvpn add-participant --participant <your-npub>` (admin runs this)
-2. Confirm you copied the config to root:
-   `sudo cat /root/.config/nvpn/config.toml` should show your network
-3. Check logs: `sudo journalctl -u nvpn --no-pager -n 50`
+2. Confirm you copied the config to root (see Step 4 for your platform)
+3. Check logs:
+   - Linux: `sudo journalctl -u nvpn --no-pager -n 50`
+   - macOS: `log show --predicate 'process == "nvpn"' --last 5m`
 
 ### curl to server tunnel IP hangs
 
 - Verify the tunnel interface exists: `ip addr show | grep utun`
+  (Linux) or `ifconfig | grep utun` (macOS)
 - Verify the server's nvpn daemon is running (ask the admin)
-- Try waiting 30-60 seconds — Nostr relay discovery can be slow on
-  first connection
+- Wait 30-60 seconds -- Nostr relay discovery can be slow on first
+  connection
+
+### Vezir upload returns 401 "invalid bearer token"
+
+Check your token for copy-paste artifacts:
+
+```bash
+echo "len=${#VEZIR_TOKEN}"   # expected: 47
+echo "$VEZIR_TOKEN" | cat -A  # look for trailing ^\ or whitespace
+```
+
+Common causes: trailing backslash from line-wrap, extra whitespace,
+or accidentally using the nvpn invite string instead of the `vzr_`
+token.  Vezir >= 0.1.6 warns about these automatically.
+
+---
 
 ## Removing nvpn
 
+### Linux
+
 ```bash
 sudo systemctl stop nvpn
-sudo nvpn service uninstall   # or: sudo rm /etc/systemd/system/nvpn.service
+sudo nvpn service uninstall
 sudo rm -rf /root/.config/nvpn
 rm -rf ~/.config/nvpn
-rm ~/.local/bin/nvpn
+rm -f ~/.local/bin/nvpn
 sudo rm -f /usr/local/bin/nvpn
+```
+
+### macOS
+
+If using the native app, drag it to Trash.  For CLI:
+
+```bash
+sudo nvpn service uninstall
+sudo rm -rf "/var/root/Library/Application Support/nvpn"
+rm -rf ~/Library/Application\ Support/nvpn
+rm -f /usr/local/bin/nvpn /opt/homebrew/bin/nvpn
 ```

@@ -190,6 +190,7 @@ def run_scribe(
     token = token or config.client_token()
     if not token:
         raise RuntimeError("VEZIR_TOKEN is not set; run `vezir token issue` on the server")
+    config.validate_token_format(token)
 
     output_dir = output_dir or _default_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)

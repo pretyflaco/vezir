@@ -135,6 +135,7 @@ def upload_cmd(server_url, token, title, compress, wait, wait_timeout, audio_fil
     if not token:
         click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
         sys.exit(1)
+    config.validate_token_format(token)
 
     try:
         audio_file = uploader.validate_audio_path(audio_file)
