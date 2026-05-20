@@ -54,8 +54,11 @@ def serve(host, port, reload):
               help="Wait for server processing and report status (default: on)")
 @click.option("--wait-timeout", default=600, type=int,
               help="Max seconds to wait for processing (default: 600)")
+@click.option("--open-labeling", is_flag=True, default=False,
+              help="Auto-open labeling page in browser when speakers need labeling")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
-def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout, record_args):
+def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
+           open_labeling, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
@@ -72,6 +75,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout, r
             compress=compress,
             wait=wait,
             wait_timeout=float(wait_timeout),
+            open_labeling=open_labeling,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)

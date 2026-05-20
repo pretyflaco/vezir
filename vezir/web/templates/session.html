@@ -7,7 +7,7 @@
 
 <p>
   Status:
-  <span class="badge {{ row.status }}">{{ row.status }}</span>
+  <span id="status-badge" class="badge {{ row.status }}">{{ row.status }}</span>
 </p>
 
 {% if row.status == 'needs_labeling' %}
@@ -28,5 +28,31 @@
     <li><a href="/artifact/{{ row.id }}/{{ name }}">{{ kind }}</a> — {{ name }}</li>
   {% endfor %}
 </ul>
+{% endif %}
+
+{% if row.status in ('queued', 'transcribing', 'syncing', 'needs_labeling') %}
+<script>
+(function() {
+  var currentStatus = "{{ row.status }}";
+  var terminal = {"done": true, "error": true};
+  var interval = setInterval(function() {
+    fetch(window.location.href, {credentials: "same-origin"})
+      .then(function(r) { return r.text(); })
+      .then(function(html) {
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(html, "text/html");
+        var newBadge = doc.getElementById("status-badge");
+        if (!newBadge) return;
+        var newStatus = newBadge.textContent.trim();
+        if (newStatus !== currentStatus) {
+          // Status changed -- full reload to pick up new content
+          clearInterval(interval);
+          window.location.reload();
+        }
+      })
+      .catch(function() {});  // swallow network errors, retry next tick
+  }, 5000);
+})();
+</script>
 {% endif %}
 {% endblock %}

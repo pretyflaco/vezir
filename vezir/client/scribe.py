@@ -97,7 +97,7 @@ def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
     )
 
 
-_TERMINAL_STATUSES = {"done", "error", "needs_labeling"}
+_TERMINAL_STATUSES = {"done", "error"}
 _POLL_INTERVAL = 5.0  # seconds, matches GUI
 
 
@@ -112,11 +112,13 @@ def poll_status(
     token: str,
     session_id: str,
     timeout: float = 600.0,
+    open_labeling: bool = False,
 ) -> str | None:
-    """Poll server until a terminal status is reached. Returns final status.
+    """Poll server until done or error. Returns final status.
 
     Prints status transitions to stdout. On needs_labeling, prints a
-    browser-friendly URL to the labeling page. Returns None on timeout.
+    prominent call-to-action with the labeling URL and continues polling
+    until the session reaches done or error. Returns None on timeout.
     """
     import httpx
 
@@ -125,6 +127,7 @@ def poll_status(
     headers = {"Authorization": f"Bearer {token}"}
     deadline = time.time() + timeout
     last_status = ""
+    labeling_prompted = False
 
     while time.time() < deadline:
         try:
@@ -137,16 +140,28 @@ def poll_status(
 
             if status != last_status:
                 last_status = status
-                if status == "needs_labeling":
+                if status == "needs_labeling" and not labeling_prompted:
+                    labeling_prompted = True
                     label_url = _login_url(
                         server_url, token, f"/label/{session_id}",
                     )
+                    print(flush=True)
                     print(
-                        f"vezir: status: {status} -- some speakers need labeling",
+                        "------------------------------------------------------------",
                         flush=True,
                     )
-                    print(f"vezir: label at {label_url}", flush=True)
-                    return status
+                    print(
+                        f"  Label speakers to finish: {label_url}",
+                        flush=True,
+                    )
+                    print(
+                        "------------------------------------------------------------",
+                        flush=True,
+                    )
+                    if open_labeling:
+                        import webbrowser
+                        webbrowser.open_new_tab(label_url)
+                    print("vezir: waiting for labeling ...", flush=True)
                 elif status == "error":
                     err = data.get("error", "unknown error")
                     first_line = str(err).splitlines()[0][:200]
@@ -184,6 +199,7 @@ def run_scribe(
     compress: bool = True,
     wait: bool = True,
     wait_timeout: float = 600.0,
+    open_labeling: bool = False,
 ) -> dict:
     """Record locally, then upload. Returns the upload response dict."""
     server_url = server_url or config.server_url()
@@ -268,6 +284,9 @@ def run_scribe(
 
     if wait:
         print("vezir: waiting for processing ...", flush=True)
-        poll_status(server_url, token, result["session_id"], timeout=wait_timeout)
+        poll_status(
+            server_url, token, result["session_id"],
+            timeout=wait_timeout, open_labeling=open_labeling,
+        )
 
     return result

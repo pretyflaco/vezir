@@ -35,8 +35,9 @@ _COOKIE_KWARGS = {
     "key": auth.COOKIE_NAME,
     "httponly": True,
     "samesite": "lax",
-        "secure": False,  # VPN-only HTTP for now; flip when TLS is added
+    "secure": False,  # VPN-only HTTP for now; flip when TLS is added
     "path": "/",
+    "max_age": 30 * 86400,  # 30 days; VPN-only so persistent is fine
 }
 
 
