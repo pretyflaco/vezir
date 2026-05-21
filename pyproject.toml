@@ -39,7 +39,7 @@ dependencies = [
     "click>=8.0",
     "httpx>=0.27",
     "ulid-py>=1.1",
-    "meetscribe-record>=0.1.0",
+    "meetscribe-record>=0.3.0",
 ]
 
 [project.scripts]

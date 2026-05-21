@@ -120,6 +120,31 @@ def _default_output_dir() -> Path:
     return Path(os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "meet-recordings")))
 
 
+def _check_meet_prerequisites(meet_bin: str) -> list[str]:
+    """Run ``meet check`` and return any issues as a list of strings.
+
+    On macOS this triggers the TCC permission dialog on first use.
+    Returns an empty list when all prerequisites pass.
+    """
+    try:
+        result = subprocess.run(
+            [meet_bin, "check"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []  # best-effort; don't block the GUI
+
+    if result.returncode != 0:
+        return [
+            line.strip()
+            for line in result.stderr.strip().splitlines()
+            if line.strip()
+        ]
+    return []
+
+
 # ─── State machine ──────────────────────────────────────────────────────────
 
 
@@ -314,6 +339,15 @@ class ScribeWindow:
             meet_bin = _meet_bin()
         except RuntimeError as exc:
             messagebox.showerror("meet binary not found", str(exc), parent=self.root)
+            return
+
+        prereq_issues = _check_meet_prerequisites(meet_bin)
+        if prereq_issues:
+            messagebox.showerror(
+                "Recording prerequisites not met",
+                "\n".join(prereq_issues),
+                parent=self.root,
+            )
             return
 
         outdir = _default_output_dir()

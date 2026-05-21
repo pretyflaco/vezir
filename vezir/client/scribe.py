@@ -38,6 +38,39 @@ def _meet_bin() -> str:
     return found
 
 
+def _check_meet_prerequisites(meet_bin: str) -> None:
+    """Run ``meet check`` to verify recording prerequisites.
+
+    On macOS this triggers the TCC permission dialog on first use so the
+    user can grant mic + system-audio access interactively. If any
+    prerequisite is missing, prints the issues and raises ``SystemExit``.
+    """
+    try:
+        result = subprocess.run(
+            [meet_bin, "check"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        # _meet_bin() already validated this, but guard anyway.
+        return
+    except subprocess.TimeoutExpired:
+        print(
+            "vezir: WARNING: `meet check` timed out — a macOS permission"
+            " dialog may be waiting behind other windows",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    if result.returncode != 0:
+        print("vezir: recording prerequisites not met:", file=sys.stderr, flush=True)
+        for line in result.stderr.strip().splitlines():
+            print(f"  {line}", file=sys.stderr, flush=True)
+        raise SystemExit(1)
+
+
 def _default_output_dir() -> Path:
     return Path(os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "meet-recordings")))
 
@@ -212,6 +245,8 @@ def run_scribe(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     meet_bin = _meet_bin()
+    _check_meet_prerequisites(meet_bin)
+
     cmd = [meet_bin, "record", "-o", str(output_dir)]
     if extra_record_args:
         cmd.extend(extra_record_args)
