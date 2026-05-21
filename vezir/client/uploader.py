@@ -105,14 +105,15 @@ def upload(
     audio_path: Path,
     title: str | None = None,
     timeout: float = 600.0,
-    retries: int = 3,
+    retries: int = 5,
     progress: ProgressCallback | None = None,
     on_retry: RetryCallback | None = None,
 ) -> dict:
     """POST audio to <server_url>/upload. Returns the JSON response.
 
-    Retries on connection errors and 5xx responses with exponential backoff.
-    Raises httpx.HTTPError on permanent failure.
+    Retries on connection errors (including timeouts) and 5xx responses
+    with exponential backoff capped at 30 s. Default 5 attempts give the
+    VPN tunnel ~60 s to recover from a transient drop.
     """
     url = server_url.rstrip("/") + "/upload"
     headers = {"Authorization": f"Bearer {token}"}
@@ -157,7 +158,13 @@ def upload(
                         f"but local file is {expected_bytes} bytes"
                     )
                 return result
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
             will_retry = attempt < retries
             log.warning(
                 "upload attempt %d/%d failed%s: %s",
@@ -170,7 +177,7 @@ def upload(
                 on_retry(attempt, retries, exc)
             last_exc = exc
         if attempt < retries:
-            time.sleep(2 ** attempt)
+            time.sleep(min(2 ** attempt, 30))
     if last_exc:
         raise last_exc
     raise RuntimeError(f"upload failed after {retries} attempts")

@@ -457,7 +457,13 @@ class ScribeWindow:
                 )
                 self._gui_queue.put(("uploaded", result))
             except Exception as exc:
-                self._gui_queue.put(("error", f"upload failed: {exc}"))
+                hint = f"upload failed: {exc}"
+                if audio_path and audio_path.exists():
+                    hint += (
+                        f"\n\nCheck VPN tunnel, then retry manually:\n"
+                        f"  vezir upload {audio_path}"
+                    )
+                self._gui_queue.put(("error", hint))
 
         self._upload_thread = threading.Thread(target=_upload, daemon=True)
         self._upload_thread.start()

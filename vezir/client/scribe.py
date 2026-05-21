@@ -304,14 +304,35 @@ def run_scribe(
         )
 
     print(f"vezir: uploading to {server_url} ...", flush=True)
-    result = uploader.upload(
-        server_url,
-        token,
-        audio,
-        title=title,
-        progress=_progress_line,
-        on_retry=_retry_line,
-    )
+    try:
+        result = uploader.upload(
+            server_url,
+            token,
+            audio,
+            title=title,
+            progress=_progress_line,
+            on_retry=_retry_line,
+        )
+    except Exception as exc:
+        print(flush=True)
+        print(
+            f"vezir: upload failed after retries: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f"vezir: check VPN tunnel: curl -sS {server_url.rstrip('/')}/health",
+            file=sys.stderr,
+            flush=True,
+        )
+        title_flag = f' --title "{title}"' if title else ""
+        print(
+            f"vezir: retry when connectivity is restored:\n"
+            f"  vezir upload{title_flag} {audio}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
     print(flush=True)
     print(f"vezir: uploaded as session {result['session_id']}", flush=True)
     track_url = result.get("dashboard_login_url") or result["dashboard_url"]
