@@ -131,8 +131,8 @@ async def upload(
         raise
 
     log.info(
-        "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r",
-        session_id, github, bytes_written, ext, title,
+        "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r summary_preset=%r",
+        session_id, github, bytes_written, ext, title, summary_preset,
     )
 
     queue.enqueue(session_id, github=github, title=title, summary_preset=summary_preset)
