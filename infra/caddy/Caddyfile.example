@@ -1,0 +1,106 @@
+# Caddyfile.example — vezir reverse proxy
+#
+# Purpose
+# -------
+# Terminate TLS in front of the local vezir uvicorn (now bound to
+# 127.0.0.1:8000 by default since 0.1.12). Two listeners cover the two
+# supported VPN transports:
+#
+#   1. Tailscale: real Let's Encrypt cert via the ts.net DNS-01 challenge.
+#      Joiners trust this automatically (system trust roots).
+#
+#   2. nvpn:      Caddy's internal CA. Joiners must trust the root cert
+#                 once. The root is published via the enrollment QR
+#                 payload (Android: trusted automatically by the app's
+#                 NetworkSecurityConfig; CLI: imported into the OS
+#                 trust store via `vezir trust-server`).
+#
+# Customize: replace the two hostnames and uncomment the snippet you
+# need before running `caddy run --config Caddyfile`.
+
+# --- shared snippets ------------------------------------------------
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "no-referrer"
+		# Vezir's templates are minimal and have no third-party assets,
+		# so a strict CSP is safe.
+		Content-Security-Policy   "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+		# Hide upstream identification.
+		-Server
+	}
+}
+
+(common_logging) {
+	# Log to a dedicated file. Scrub Authorization and Cookie headers
+	# from the access log so neither bearer tokens nor opaque sessions
+	# end up on disk.
+	log {
+		output file /var/log/caddy/vezir-access.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+		format json
+	}
+	# Defence in depth: strip auth headers before request logging serializes
+	# anything (Caddy logs the *post-rewrite* request).
+	request_header -Authorization
+	request_header -Cookie
+}
+
+(proxy_to_vezir) {
+	# Reverse-proxy to the local uvicorn. Vezir trusts the X-Forwarded-*
+	# headers Caddy sets by default.
+	reverse_proxy 127.0.0.1:8000 {
+		# Larger upload timeout (audio uploads can be hundreds of MB).
+		transport http {
+			read_timeout  30m
+			write_timeout 30m
+		}
+	}
+}
+
+# --- Tailscale listener (Let's Encrypt via ts.net DNS-01) -----------
+# Replace muscle.tail178bd.ts.net with your tailnet's MagicDNS name.
+# Requires the Caddy Tailscale module or env TS_AUTHKEY:
+#   xcaddy build --with github.com/tailscale/caddy-tailscale
+# Or use Tailscale's own `tailscale serve` for the cert; in that case
+# delete the explicit `tls` block and just point reverse_proxy at us.
+
+muscle.tail178bd.ts.net {
+	import security_headers
+	import common_logging
+	import proxy_to_vezir
+}
+
+# --- nvpn listener (Caddy internal CA) -----------------------------
+# Replace 10.44.141.239 with your nvpn server IP.
+
+10.44.141.239 {
+	tls internal
+	import security_headers
+	import common_logging
+	import proxy_to_vezir
+}
+
+# --- root cert download (for nvpn joiners) -------------------------
+# Joiners hit this *via the QR-embedded URL* during enrollment, so they
+# can trust the internal CA before their first real request. The path
+# is mounted by the `caddy-trust` snippet; Caddy's admin API exposes
+# the cert at /v2/pki/ca/local/certificates by default. We expose a
+# friendlier copy at /trust/vezir-root.crt by routing it through.
+#
+# The root cert is NOT secret — distributing it is fine — but limiting
+# this route to read-only GETs keeps the surface small.
+
+# Uncomment if you want a fixed-path download URL on the same Caddy
+# instance instead of running `caddy trust` manually on each joiner:
+#
+# 10.44.141.239:80 {
+#     handle /trust/vezir-root.crt {
+#         root * /etc/ssl/caddy-root
+#         file_server
+#     }
+# }
