@@ -18,6 +18,15 @@ Tokens are stored hashed in ~/vezir-data/tokens.json:
 
 The plaintext token is shown ONCE at issue time and is never persisted.
 Lookup is by SHA-256 of the presented bearer token, in constant time.
+
+Cookies
+-------
+Pre-0.1.12, the ``vezir_session`` cookie carried the plaintext bearer
+token. From 0.1.12 onward, the cookie carries an opaque, in-memory
+session id (see ``web_sessions``) instead. The /login flow uses
+short-lived exchange codes (``?code=vzx_...``) to swap a bearer for a
+session, so the bearer never appears in URLs, browser history, or
+reverse-proxy access logs.
 """
 from __future__ import annotations
 
@@ -31,13 +40,14 @@ import time
 from fastapi import Cookie, Header, HTTPException, status
 
 from .. import config
+from . import web_sessions
 
 log = logging.getLogger("vezir.auth")
 
-# Cookie used by the browser hand-off flow (see server.login). Value is the
-# plaintext bearer token; HttpOnly + SameSite=Lax. Equivalent risk profile
-# to the bearer header (which also carries plaintext) — the network surface
-# is VPN-only (Tailscale or nostr-vpn) either way.
+# Cookie used by the browser hand-off flow (see server.login). Value is an
+# opaque in-memory session id (``vzs_...``), NOT the bearer token itself.
+# HttpOnly + SameSite=Lax. The ``secure`` flag flips on once TLS is in
+# front (set VEZIR_COOKIE_SECURE=1 when running behind Caddy).
 COOKIE_NAME = "vezir_session"
 
 # Debounce window for `last_used_at` writes. Prevents a write storm when
@@ -102,9 +112,8 @@ def issue(
         If given (>0), the token expires that many seconds from now.
         ``None`` or 0 means no expiry (matches pre-0.1.12 behavior).
     is_admin:
-        Marks the token as admin-tier. Reserved for a follow-up commit
-        that adds the ``require_admin`` dependency; storing the field
-        now means new tokens are ready when that lands.
+        Marks the token as admin-tier. Required by routes that use the
+        ``require_admin`` dependency (currently /admin/enroll).
     label:
         Free-text annotation displayed by ``vezir token list``. Useful
         for "android-phone" / "linux-laptop" style hints when one human
@@ -210,8 +219,9 @@ def lookup(token: str) -> str | None:
 def is_admin_token(token: str) -> bool:
     """True iff the token resolves AND the matching row has ``is_admin=true``.
 
-    Legacy rows (missing the field) are treated as non-admin. Used by the
-    ``require_admin`` dependency added in a follow-up commit.
+    Legacy rows (missing the field) are treated as non-admin. This is
+    intentional: pre-0.1.12 tokens must be re-issued with ``--admin`` to
+    keep their /admin/enroll access.
     """
     entry = _lookup_entry(token)
     if entry is None:
@@ -261,38 +271,59 @@ def require_bearer_or_cookie(
     """FastAPI dependency: accept either Authorization: Bearer or session cookie.
 
     Used for browser-facing routes (dashboard, session detail, label page,
-    artifact downloads). The cookie is set via /login?token=...&next=...
-    and contains the bearer token plaintext (see server.login).
+    artifact downloads).
+
+    Cookie semantics changed in 0.1.12:
+      * Before: cookie value was the plaintext bearer token (``vzr_...``).
+      * Now:    cookie value is an opaque session id (``vzs_...``) backed
+        by ``web_sessions``. The /login flow swaps a short-lived
+        exchange code (``?code=vzx_...``) for a session.
+
+    For backward compatibility (e.g. cookies persisted in browsers from a
+    pre-0.1.12 install), a cookie value starting with ``vzr_`` is still
+    accepted as a bearer token until next major release.
 
     Returns the GitHub handle of the authenticated scribe.
     """
-    # Prefer the explicit Authorization header when present (programmatic
-    # access, e.g. curl/httpx tooling).
+    # 1. Prefer the explicit Authorization header (programmatic clients).
     token = _token_from_authorization(authorization)
-    via = "header"
-    if not token:
-        token = (vezir_session or "").strip() or None
-        via = "cookie"
+    if token:
+        github = lookup(token)
+        if not github:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        log.debug("auth: %s via header", github)
+        return github
 
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                "not signed in. Visit /login and paste your token, "
-                "or use the URL from `vezir scribe` / `vezir upload` "
-                "output which signs you in automatically."
-            ),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    github = lookup(token)
-    if not github:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    log.debug("auth: %s via %s", github, via)
-    return github
+    # 2. Fall back to the session cookie.
+    cookie_value = (vezir_session or "").strip()
+    if cookie_value:
+        github = web_sessions.lookup_session(cookie_value)
+        if github:
+            log.debug("auth: %s via session cookie", github)
+            return github
+        # Pre-0.1.12 cookies stored the plaintext bearer. Accept once,
+        # so users with a stale browser session aren't surprise-logged-out
+        # after upgrading. The next /login round-trip migrates them to an
+        # opaque session id automatically.
+        if cookie_value.startswith("vzr_"):
+            github = lookup(cookie_value)
+            if github:
+                log.info("auth: %s via legacy bearer-in-cookie", github)
+                return github
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=(
+            "not signed in. Visit /login and paste your token, "
+            "or use the URL from `vezir scribe` / `vezir upload` "
+            "output which signs you in automatically."
+        ),
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def require_admin(
@@ -311,12 +342,9 @@ def require_admin(
         authorization=authorization, vezir_session=vezir_session,
     )
 
-    # Re-resolve to the actual bearer token to read is_admin. Cookies in
-    # this commit still carry the plaintext bearer, so the same value
-    # that proved auth above is what we hand to is_admin_token. The
-    # follow-up commit that introduces opaque sessions keeps this
-    # behavior by re-reading the github handle's row(s) directly from
-    # tokens.json.
+    # Re-resolve to the actual bearer token to read is_admin. Sessions
+    # don't carry the flag directly (we keep them as opaque ids); we look
+    # up the latest row for this github handle in tokens.json.
     #
     # Edge case: a github handle with multiple tokens, some admin, some
     # not. We treat "any admin token for this github" as sufficient —

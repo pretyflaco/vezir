@@ -190,5 +190,7 @@ def test_upload_response_includes_login_url(client_and_token):
     body = resp.json()
     assert "dashboard_url" in body
     assert "dashboard_login_url" in body
-    assert "/login?token=" in body["dashboard_login_url"]
+    # 0.1.12+: exchange code, not plaintext bearer token, in the URL.
+    assert "/login?code=vzx_" in body["dashboard_login_url"]
+    assert token not in body["dashboard_login_url"]
     assert f"%2Fs%2F{body['session_id']}" in body["dashboard_login_url"]

@@ -20,7 +20,7 @@ import ulid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from .. import config
-from . import auth, queue
+from . import auth, queue, web_sessions
 
 log = logging.getLogger("vezir.uploads")
 
@@ -176,16 +176,26 @@ async def upload(
     # bearer-token-aware HTTP client can fetch it directly.
     # `dashboard_login_url` is the same destination wrapped through /login
     # so a browser opened to it picks up a session cookie before being
-    # redirected. Vezir's GUI uses this for its "Open dashboard" button.
+    # redirected.
+    #
+    # 0.1.12: this URL now embeds a one-time, 60-second exchange code
+    # instead of the plaintext bearer token. The code resolves to the
+    # uploader's bearer on /login consume (single-use) and is then
+    # swapped for an opaque session id stored in the cookie. The bearer
+    # never enters the URL, browser history, or Caddy access log.
     from urllib.parse import quote
     auth_token = request.headers.get("authorization", "")
     if auth_token.lower().startswith("bearer "):
         plaintext = auth_token.split(None, 1)[1].strip()
+        code = web_sessions.mint_exchange_code(plaintext)
         login_url = (
-            f"{base}/login?token={quote(plaintext, safe='')}"
+            f"{base}/login?code={quote(code, safe='')}"
             f"&next=%2Fs%2F{session_id}"
         )
     else:
+        # No bearer header (shouldn't happen given require_bearer above,
+        # but stay defensive): emit a code-free URL that lands on the
+        # paste-token form.
         login_url = f"{base}/login?next=%2Fs%2F{session_id}"
     return {
         "session_id": session_id,
