@@ -248,15 +248,43 @@ EOF
 cp data/team.json.example ~/vezir-data/team.json
 $EDITOR ~/vezir-data/team.json
 
-# Issue a token for yourself
-vezir token issue --github kasita
+# Issue an admin token for yourself (admin is required for /admin/enroll).
+# Default expiry is 90 days; pass --expires-in 'never' to keep the old
+# behavior. Re-running `token issue` is the only way to "rotate" a
+# token; there is no edit-in-place.
+vezir token issue --github kasita --admin --label "linux-laptop"
 
-# Start the service
+# Start the service. As of 0.1.12 vezir binds to 127.0.0.1:8000 by
+# default and expects a reverse proxy in front (see infra/caddy/).
 vezir serve
 
 # Or, to skip git sync (artifacts stay only in ~/vezir-data/sessions/<id>/)
 VEZIR_SKIP_SYNC=1 vezir serve
 ```
+
+### TLS via Caddy (recommended)
+
+The vezir server binds to loopback by default; expose it on the VPN with
+Caddy:
+
+```bash
+cd infra/caddy
+./install-caddy.sh
+# edit the dropped Caddyfile to use your hostnames, then:
+sudo systemctl enable --now caddy        # Linux
+# brew services start caddy              # macOS
+```
+
+For nvpn deployments, point Caddy at its internal CA root and tell
+vezir where to find it so the enrollment QR embeds it for joiners:
+
+```bash
+export VEZIR_CADDY_ROOT_CERT_PATH=/etc/ssl/caddy-root.crt
+export VEZIR_COOKIE_SECURE=1   # cookie's Secure flag now safe to set
+```
+
+See [`infra/caddy/README.md`](infra/caddy/README.md) for the migration
+plan and per-transport TLS strategy.
 
 ### Sync target governance
 
@@ -389,6 +417,10 @@ For end-to-end local transcription on Apple Silicon (no server needed), see
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |
 | `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
+| `VEZIR_HOST` | `127.0.0.1` (changed in 0.1.12) | Bind address for `vezir serve`. Front with Caddy in production; set to `0.0.0.0` only as an opt-in escape hatch. |
+| `VEZIR_COOKIE_SECURE` | unset | Set to `1` to add `Secure` to the session cookie. Recommended once Caddy is in front. |
+| `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Path to a PEM file holding the Caddy internal CA root. When set, the device-enrollment QR payload bumps to v2 and embeds the cert so Android can trust the server before the first request. Ignored / falls back to v1 when unset or the file is invalid. |
+| `VEZIR_DISABLE_RATELIMIT` | unset | Set to `1` to disable the in-process rate limiter. Test/CI only. |
 
 On Apple Silicon, vezir prefers meetscribe's MLX Whisper ASR backend when
 `mlx-whisper` is installed and the installed `meet transcribe` supports

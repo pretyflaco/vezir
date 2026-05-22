@@ -371,6 +371,74 @@ token.  Vezir >= 0.1.6 warns about these automatically.
 
 ---
 
+## Offboarding a teammate (admin runbook)
+
+Revoking access to vezir is **two steps**, one per layer. Doing only
+one leaves a gap: an app-layer-revoked teammate is still on the mesh
+(can reach the server's TCP socket), and a mesh-layer-revoked teammate
+keeps a working token until it is also revoked.
+
+Do these together, in this order:
+
+### Step 1 -- Revoke the vezir token (application layer)
+
+On the vezir server:
+
+```bash
+vezir token revoke --github <handle>
+# Removed N token(s) for github=<handle>
+```
+
+This invalidates every token issued to that github handle. From now on
+their `vezir scribe`, `vezir upload`, browser dashboard, and Android
+app all return 401. They are out of vezir.
+
+> Tokens issued from 0.1.12 onward already have an expiry (default 90
+> days). If you forgot to revoke, expiry takes care of it eventually —
+> but always revoke explicitly when you know.
+
+### Step 2 -- Remove from the nvpn mesh (transport layer)
+
+On the vezir server, edit the nvpn config:
+
+```bash
+sudo $EDITOR /root/.config/nvpn/config.toml
+# remove the offboardee's npub from the `participants = [...]` list
+sudo systemctl restart nvpn        # Linux
+# macOS: sudo launchctl kickstart -k system/nvpn
+```
+
+Also update the human-readable roster you keep at
+`~/vezir-data/nvpn-peers.md` so the next admin knows the history.
+
+> `nvpn` does not currently ship a one-shot `remove-participant`
+> command equivalent to its `add-participant`. Tracked upstream in
+> mmalmi/nostr-vpn; until it lands, edit the TOML by hand. Make a
+> backup first (`sudo cp config.toml config.toml.bak`).
+
+### Verification
+
+From the now-offboarded teammate's machine:
+
+```bash
+curl -sS https://<server>/health          # should fail to connect
+echo $?                                   # non-zero
+```
+
+And from the server, the participants list:
+
+```bash
+sudo grep -c '<their-npub>' /root/.config/nvpn/config.toml
+# expected: 0
+```
+
+> If you only need to *suspend* access (e.g. someone is on leave), do
+> Step 1 only. The mesh participation is harmless without a valid
+> token. Re-issue a fresh token when they return — do not "un-revoke",
+> there is no such operation.
+
+---
+
 ## Removing nvpn
 
 ### Linux
