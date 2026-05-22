@@ -195,6 +195,38 @@ def test_admin_enroll_rejects_missing_credentials(client_factory):
     assert resp.status_code == 401
 
 
+def test_admin_check_is_per_token_not_per_handle(client_factory):
+    """A scribe-tier token must NOT inherit admin access from a separate
+    admin-tier token issued to the same github handle. This was a bug
+    in the initial 0.1.12 release where require_admin scanned all tokens
+    for the handle rather than checking the specific token presented.
+    """
+    from vezir.server import auth
+    client = client_factory()
+    _admin_tok = auth.issue("alice", is_admin=True)
+    scribe_tok = auth.issue("alice", is_admin=False)
+    # Scribe token for alice must get 403, even though alice also has an admin token.
+    resp = client.get("/admin/enroll", headers=_bearer(scribe_tok))
+    assert resp.status_code == 403
+
+
+def test_admin_check_per_token_via_session_cookie(client_factory):
+    """Same per-token check must hold when auth comes through a session
+    cookie rather than a direct bearer header. The is_admin flag is
+    captured at session creation time (/login).
+    """
+    from vezir.server import auth, web_sessions
+    client = client_factory()
+    _admin_tok = auth.issue("alice", is_admin=True)
+    scribe_tok = auth.issue("alice", is_admin=False)
+    # Log in with the scribe token via exchange code → opaque session.
+    code = web_sessions.mint_exchange_code(scribe_tok)
+    client.get(f"/login?code={code}&next=/")
+    # Cookie is set; try /admin/enroll.
+    resp = client.get("/admin/enroll")
+    assert resp.status_code == 403
+
+
 # ── Patch 2: exchange codes ─────────────────────────────────────────────────
 
 
@@ -295,7 +327,9 @@ def test_logout_invalidates_session(client_factory, tmp_data):
         if part.strip().startswith("vezir_session="):
             sid = part.strip().split("=", 1)[1]
     assert sid is not None
-    assert web_sessions.lookup_session(sid) == "alice"
+    result = web_sessions.lookup_session(sid)
+    assert result is not None
+    assert result[0] == "alice"
 
     client.cookies.set("vezir_session", sid)
     r2 = client.get("/logout")

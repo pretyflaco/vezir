@@ -285,6 +285,24 @@ def require_bearer_or_cookie(
 
     Returns the GitHub handle of the authenticated scribe.
     """
+    github, _is_admin = _resolve_auth(authorization, vezir_session)
+    return github
+
+
+def _resolve_auth(
+    authorization: str | None,
+    vezir_session: str | None,
+) -> tuple[str, bool]:
+    """Shared auth resolution returning ``(github, is_admin)``.
+
+    The ``is_admin`` flag reflects the *specific token* or *specific
+    session* used for this request — not "any admin token for the
+    same github handle". This prevents a scribe-tier token from
+    inheriting admin access just because the same person also holds
+    an admin-tier token.
+
+    Raises 401 if no valid credential is found.
+    """
     # 1. Prefer the explicit Authorization header (programmatic clients).
     token = _token_from_authorization(authorization)
     if token:
@@ -295,25 +313,25 @@ def require_bearer_or_cookie(
                 detail="invalid token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        log.debug("auth: %s via header", github)
-        return github
+        admin = is_admin_token(token)
+        log.debug("auth: %s via header (admin=%s)", github, admin)
+        return github, admin
 
     # 2. Fall back to the session cookie.
     cookie_value = (vezir_session or "").strip()
     if cookie_value:
-        github = web_sessions.lookup_session(cookie_value)
-        if github:
-            log.debug("auth: %s via session cookie", github)
-            return github
-        # Pre-0.1.12 cookies stored the plaintext bearer. Accept once,
-        # so users with a stale browser session aren't surprise-logged-out
-        # after upgrading. The next /login round-trip migrates them to an
-        # opaque session id automatically.
+        result = web_sessions.lookup_session(cookie_value)
+        if result is not None:
+            github, admin = result
+            log.debug("auth: %s via session cookie (admin=%s)", github, admin)
+            return github, admin
+        # Pre-0.1.12 cookies stored the plaintext bearer. Accept once.
         if cookie_value.startswith("vzr_"):
             github = lookup(cookie_value)
             if github:
+                admin = is_admin_token(cookie_value)
                 log.info("auth: %s via legacy bearer-in-cookie", github)
-                return github
+                return github, admin
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -331,40 +349,28 @@ def require_admin(
     vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> str:
     """FastAPI dependency: same surface as ``require_bearer_or_cookie`` but
-    additionally checks that the underlying token has ``is_admin=true``.
+    additionally checks that the *specific token used for this request*
+    has ``is_admin=true``.
+
+    This is a per-token check, not per-handle. A scribe-tier token does
+    NOT inherit admin access even if the same github handle also owns an
+    admin-tier token. The admin flag is captured at session-creation time
+    for cookie-based auth (see ``web_sessions.open_session``).
 
     Currently gates /admin/enroll. Legacy tokens (no ``is_admin`` field)
     are rejected — operators must re-issue with ``--admin`` to keep
-    enrollment access. This is a one-time migration cost in exchange for
-    making /admin/enroll non-self-serve for ordinary scribe tokens.
+    enrollment access.
     """
-    github_unverified = require_bearer_or_cookie(
-        authorization=authorization, vezir_session=vezir_session,
-    )
+    github, admin = _resolve_auth(authorization, vezir_session)
+    if admin:
+        return github
 
-    # Re-resolve to the actual bearer token to read is_admin. Sessions
-    # don't carry the flag directly (we keep them as opaque ids); we look
-    # up the latest row for this github handle in tokens.json.
-    #
-    # Edge case: a github handle with multiple tokens, some admin, some
-    # not. We treat "any admin token for this github" as sufficient —
-    # consistent with how `revoke` already operates per-github rather
-    # than per-token.
-    data = _load_tokens()
-    for entry in data["tokens"]:
-        if entry.get("github") != github_unverified:
-            continue
-        if _is_expired(entry):
-            continue
-        if entry.get("is_admin"):
-            return github_unverified
-
-    log.info("auth: %s lacks admin role for /admin/* route", github_unverified)
+    log.info("auth: %s lacks admin role for /admin/* route", github)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=(
             "this route requires an admin token. Ask the operator to "
             "re-issue your token with `vezir token issue --admin "
-            f"--github {github_unverified}`."
+            f"--github {github}`."
         ),
     )

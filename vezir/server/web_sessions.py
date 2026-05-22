@@ -105,24 +105,40 @@ def consume_exchange_code(code: str) -> str | None:
 # ── browser sessions ────────────────────────────────────────────────────────
 
 
-def open_session(github: str) -> str:
-    """Create a new opaque session id bound to a github handle."""
+def open_session(github: str, *, is_admin: bool = False) -> str:
+    """Create a new opaque session id bound to a github handle.
+
+    ``is_admin`` is captured at session-creation time (i.e. at /login)
+    from the bearer token that was presented. This lets ``require_admin``
+    check the specific token's admin flag rather than scanning all tokens
+    for the github handle.
+    """
     sid = _SESSION_PREFIX + secrets.token_urlsafe(24)
     with _lock:
-        _sessions[sid] = (github, _now())
-    log.debug("opened session for %s", github)
+        _sessions[sid] = (github, _now(), bool(is_admin))
+    log.debug("opened session for %s (admin=%s)", github, is_admin)
     return sid
 
 
-def lookup_session(sid: str | None) -> str | None:
-    """Resolve a session id to its github handle, or None."""
+def lookup_session(sid: str | None) -> tuple[str, bool] | None:
+    """Resolve a session id to ``(github, is_admin)`` or None.
+
+    Changed in 0.1.12-hotfix: returns a 2-tuple instead of just the
+    github string, so ``require_admin`` can check the per-token admin
+    flag that was captured at session creation time.
+    """
     if not sid or not sid.startswith(_SESSION_PREFIX):
         return None
     with _lock:
         entry = _sessions.get(sid)
     if entry is None:
         return None
-    return entry[0]
+    # entry is (github, created_at, is_admin) — is_admin may be missing
+    # in sessions created before this hotfix (within the same process
+    # lifetime). Treat those as non-admin.
+    github = entry[0]
+    is_admin = entry[2] if len(entry) > 2 else False
+    return (github, is_admin)
 
 
 def close_session(sid: str | None) -> None:

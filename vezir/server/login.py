@@ -80,9 +80,11 @@ def _safe_next(next_value: str | None) -> str:
     return next_value
 
 
-def _redirect_with_session(github: str, next_path: str) -> RedirectResponse:
+def _redirect_with_session(
+    github: str, next_path: str, *, is_admin: bool = False,
+) -> RedirectResponse:
     """Open a fresh in-memory session and 303 → next_path with the cookie."""
-    sid = web_sessions.open_session(github)
+    sid = web_sessions.open_session(github, is_admin=is_admin)
     resp = RedirectResponse(url=next_path, status_code=status.HTTP_303_SEE_OTHER)
     resp.set_cookie(value=sid, **_cookie_kwargs())
     return resp
@@ -137,7 +139,9 @@ def login_get(
                 status_code=401,
             )
         log.info("login: %s via exchange code, next=%s", github, safe_next)
-        return _redirect_with_session(github, safe_next)
+        return _redirect_with_session(
+            github, safe_next, is_admin=auth.is_admin_token(bearer),
+        )
 
     # Deprecated path: bearer plaintext in URL. Kept for one release.
     if token:
@@ -148,7 +152,9 @@ def login_get(
                 "client should be upgraded to use the ?code= exchange flow",
                 github,
             )
-            resp = _redirect_with_session(github, safe_next)
+            resp = _redirect_with_session(
+                github, safe_next, is_admin=auth.is_admin_token(token),
+            )
             resp.headers["Deprecation"] = "true"
             resp.headers["Warning"] = (
                 '299 - "?token= URLs are deprecated; clients should use '
@@ -190,7 +196,9 @@ def login_post(
             next_path=safe_next, status_code=401,
         )
     log.info("login: %s via form, next=%s", github, safe_next)
-    return _redirect_with_session(github, safe_next)
+    return _redirect_with_session(
+        github, safe_next, is_admin=auth.is_admin_token(token),
+    )
 
 
 @router.get("/logout")
