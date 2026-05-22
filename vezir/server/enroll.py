@@ -1,34 +1,50 @@
 """Android (and any QR-friendly) enrollment endpoint.
 
 GET /admin/enroll
-    Auth: bearer (header) or session cookie. Same posture as other browser
-    routes — operator opens this page from an authenticated browser.
+    Auth: admin token (header) or session cookie tied to an admin
+    bearer. Pre-0.1.12 tokens cannot reach this page until re-issued
+    with ``vezir token issue --admin`` (see ``auth.require_admin``).
 
     Renders an HTML page with:
       - a paste-the-token form (when no `?token=` is supplied), OR
-      - a QR code encoding a JSON payload `{"v":1,"url":"...","token":"..."}`
-        plus a copyable text representation, when both `token` and `url` are
-        supplied as query parameters.
+      - a QR code encoding a versioned JSON payload, plus a copyable
+        text representation, when both `token` and `url` are supplied.
 
 POST /admin/enroll
     Same render flow; lets the operator submit token+url via a form rather
     than putting the token in the URL bar (avoids browser-history leakage).
 
-Security posture:
+QR payload schema versions
+--------------------------
+v1 (pre-0.1.12 and Android < 0.1.4):
+    {"v": 1, "url": "...", "token": "..."}
+
+v2 (0.1.12+, when VEZIR_CADDY_ROOT_CERT_PATH is set):
+    {"v": 2, "url": "...", "token": "...", "ca_pem": "-----BEGIN CERT..."}
+    The PEM-encoded Caddy internal CA cert is included so the Android
+    app can trust the server before the first real request. Hostname is
+    encoded by ``url``. Older Android versions ignore ``ca_pem`` and use
+    only ``url`` + ``token`` (graceful degradation).
+
+Security posture
+----------------
   - This page deliberately renders the plaintext token so it can be scanned
     or copied. The page warns the operator and recommends closing the tab
-    after enrollment. Long-term replacement is a one-time short-lived
-    enrollment code; tracked in vezir_plan.md.
+    after enrollment.
   - The page is not linked from the dashboard.
   - The QR payload is generated server-side as inline SVG (segno), no JS.
-  - 0.1.12+: gated by ``require_admin``. Pre-0.1.12 tokens (no
-    ``is_admin`` field) cannot reach this page until re-issued with
-    ``vezir token issue --admin``.
+  - The CA root is *not* secret; embedding it in the QR is a UX choice,
+    not a confidentiality risk. The risk to manage is *integrity*: an
+    attacker who can rewrite the QR could swap the CA. The same attacker
+    can swap the URL, so embedding the CA does not enlarge the trust
+    surface — the operator must still scan from a trusted screen.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import segno
@@ -43,18 +59,71 @@ log = logging.getLogger("vezir.enroll")
 router = APIRouter()
 
 
-# Versioned QR payload schema. Bump `v` if the Android app needs to
-# distinguish a future shape.
-PAYLOAD_VERSION = 1
+# Latest QR payload schema version. v1 omits ca_pem; v2 includes it.
+PAYLOAD_VERSION = 2
+
+# Hard cap on the embedded CA PEM length. A normal RSA-2048 or Ed25519
+# Caddy root is ~1-2 KiB. Anything much larger is operator error and we
+# bail rather than producing a multi-kilobyte QR that won't scan.
+_MAX_CA_PEM_BYTES = 8 * 1024
 
 
-def build_payload(server_url: str, token: str) -> str:
-    """Return the canonical QR payload JSON string."""
-    return json.dumps(
-        {"v": PAYLOAD_VERSION, "url": server_url, "token": token},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+def _load_caddy_root_cert() -> str | None:
+    """Return the PEM-encoded Caddy internal CA cert, if configured.
+
+    Configured via ``VEZIR_CADDY_ROOT_CERT_PATH``. Returns None when the
+    env var is unset, the file is missing, or its contents are clearly
+    not a PEM certificate. Logs but does not raise on read errors so
+    that a misconfigured cert path does not break the enrollment form
+    entirely — it just downgrades the QR payload to v1.
+    """
+    path_env = os.environ.get("VEZIR_CADDY_ROOT_CERT_PATH")
+    if not path_env:
+        return None
+    p = Path(path_env)
+    if not p.exists():
+        log.warning(
+            "VEZIR_CADDY_ROOT_CERT_PATH=%s does not exist; falling back to v1 payload",
+            path_env,
+        )
+        return None
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception as exc:
+        log.warning("could not read %s: %s", path_env, exc)
+        return None
+    if "BEGIN CERTIFICATE" not in text:
+        log.warning(
+            "%s does not look like a PEM-encoded certificate; falling back to v1",
+            path_env,
+        )
+        return None
+    if len(text.encode("utf-8")) > _MAX_CA_PEM_BYTES:
+        log.warning(
+            "CA cert at %s is %d bytes (cap %d); falling back to v1",
+            path_env, len(text), _MAX_CA_PEM_BYTES,
+        )
+        return None
+    return text
+
+
+def build_payload(server_url: str, token: str, ca_pem: str | None = None) -> str:
+    """Return the canonical QR payload JSON string.
+
+    Includes the CA PEM (and bumps ``v`` to 2) when ``ca_pem`` is given
+    and non-empty. When omitted, returns the v1 shape unchanged so old
+    Android builds keep parsing it.
+    """
+    if ca_pem:
+        obj = {
+            "v": PAYLOAD_VERSION,
+            "url": server_url,
+            "token": token,
+            "ca_pem": ca_pem,
+        }
+    else:
+        obj = {"v": 1, "url": server_url, "token": token}
+    return json.dumps(obj, separators=(",", ":"), sort_keys=True)
 
 
 def _is_safe_server_url(url: str) -> bool:
@@ -106,7 +175,8 @@ def _render(
         if not github:
             error = error or "Invalid token."
         else:
-            payload = build_payload(server_url, token)
+            ca_pem = _load_caddy_root_cert()
+            payload = build_payload(server_url, token, ca_pem=ca_pem)
             qr_svg = _render_qr_svg(payload)
 
     return templates.TemplateResponse(

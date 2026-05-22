@@ -28,6 +28,18 @@ def client_and_token(tmp_data):
     return TestClient(app, follow_redirects=False), token
 
 
+@pytest.fixture
+def client_and_nonadmin_token(tmp_data):
+    """Scribe-tier token used to verify /admin/enroll denies non-admins."""
+    from fastapi.testclient import TestClient
+    from vezir.server import auth
+    from vezir.server.app import create_app
+
+    token = auth.issue("bob", is_admin=False)
+    app = create_app()
+    return TestClient(app, follow_redirects=False), token
+
+
 def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
@@ -48,6 +60,23 @@ def test_enroll_post_requires_auth(client_and_token):
         data={"token": "vzr_x", "url": "http://example.local:8000"},
     )
     assert resp.status_code == 401
+
+
+def test_enroll_get_requires_admin_role(client_and_nonadmin_token):
+    """A valid but non-admin token must be denied with 403, not let in."""
+    client, token = client_and_nonadmin_token
+    resp = client.get("/admin/enroll", headers=_bearer(token))
+    assert resp.status_code == 403
+
+
+def test_enroll_post_requires_admin_role(client_and_nonadmin_token):
+    client, token = client_and_nonadmin_token
+    resp = client.post(
+        "/admin/enroll",
+        headers=_bearer(token),
+        data={"token": token, "url": "http://example.local:8000"},
+    )
+    assert resp.status_code == 403
 
 
 # ── empty form (just the paste UI) ──────────────────────────────────────────
@@ -166,15 +195,84 @@ def test_enroll_post_rejects_empty_url(client_and_token):
 # ── payload schema is canonical ─────────────────────────────────────────────
 
 
-def test_payload_is_canonical_json():
-    from vezir.server.enroll import build_payload, PAYLOAD_VERSION
+def test_payload_v1_when_no_ca(monkeypatch):
+    """Without a CA cert configured, build_payload emits the v1 shape so
+    pre-0.1.12 Android/iOS clients keep parsing it unchanged."""
+    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
+    from vezir.server.enroll import build_payload
 
     payload = build_payload("http://server.example:8000", "vzr_abc123")
     obj = json.loads(payload)
     assert obj == {
-        "v": PAYLOAD_VERSION,
+        "v": 1,
         "url": "http://server.example:8000",
         "token": "vzr_abc123",
     }
     # Compact (no spaces) so QR is smaller.
     assert " " not in payload
+
+
+def test_payload_v2_when_ca_provided():
+    """With a CA cert, build_payload bumps to v2 and embeds the PEM."""
+    from vezir.server.enroll import build_payload, PAYLOAD_VERSION
+
+    ca = "-----BEGIN CERTIFICATE-----\nABCDEF\n-----END CERTIFICATE-----\n"
+    payload = build_payload("https://srv.ts.net", "vzr_abc", ca_pem=ca)
+    obj = json.loads(payload)
+    assert obj["v"] == PAYLOAD_VERSION == 2
+    assert obj["url"] == "https://srv.ts.net"
+    assert obj["token"] == "vzr_abc"
+    assert obj["ca_pem"] == ca
+
+
+def test_payload_ca_loaded_from_env(monkeypatch, tmp_path):
+    """When VEZIR_CADDY_ROOT_CERT_PATH points at a real PEM, the
+    /admin/enroll handler should emit a v2 payload containing it."""
+    cert = tmp_path / "vezir-root.crt"
+    cert.write_text(
+        "-----BEGIN CERTIFICATE-----\nMOCKED\n-----END CERTIFICATE-----\n"
+    )
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(cert))
+
+    from vezir.server.enroll import _load_caddy_root_cert
+    loaded = _load_caddy_root_cert()
+    assert loaded is not None
+    assert "MOCKED" in loaded
+
+
+def test_payload_ca_silently_falls_back_on_bad_path(monkeypatch):
+    """A misconfigured cert path must NOT break the enroll form. It
+    should fall back to v1 and just log a warning. Operators upgrade
+    from no-Caddy to with-Caddy in a sequence, so the intermediate
+    state must be benign.
+    """
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", "/does/not/exist.crt")
+    from vezir.server.enroll import _load_caddy_root_cert, build_payload
+
+    assert _load_caddy_root_cert() is None
+    payload = build_payload("http://srv:8000", "vzr_t")
+    assert json.loads(payload)["v"] == 1
+
+
+def test_payload_ca_rejected_when_not_pem(monkeypatch, tmp_path):
+    """If the configured file isn't a PEM cert, fall back to v1 rather
+    than dumping garbage into the QR.
+    """
+    fake = tmp_path / "garbage"
+    fake.write_text("this is not a certificate")
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(fake))
+    from vezir.server.enroll import _load_caddy_root_cert
+    assert _load_caddy_root_cert() is None
+
+
+def test_payload_ca_rejected_when_too_large(monkeypatch, tmp_path):
+    """Hard cap protects QR scannability."""
+    big = tmp_path / "huge.crt"
+    big.write_text(
+        "-----BEGIN CERTIFICATE-----\n"
+        + ("A" * 100_000)
+        + "\n-----END CERTIFICATE-----\n"
+    )
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(big))
+    from vezir.server.enroll import _load_caddy_root_cert
+    assert _load_caddy_root_cert() is None
