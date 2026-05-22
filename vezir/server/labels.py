@@ -263,12 +263,15 @@ def api_label_get(
           "session_id": "01KS...",
           "status": "needs_labeling",
           "speakers": [
-            {"id": "REMOTE_0", "channel": 1, "sample_text": "Yeah I think..."},
+            {"id": "SPEAKER_00", "channel": "mic", "sample_text": "Yeah I think..."},
             ...
           ],
           "team": ["kasita", "pretyflaco", ...],
           "audio_available": true
         }
+
+    Note: ``channel`` is a string from meetscribe (e.g. "mic", "system"),
+    not an integer.
     """
     row = queue.get(session_id)
     if not row:
