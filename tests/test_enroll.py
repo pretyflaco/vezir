@@ -17,11 +17,13 @@ def tmp_data(monkeypatch):
 
 @pytest.fixture
 def client_and_token(tmp_data):
+    """Admin-tier token for /admin/enroll happy-path tests."""
     from fastapi.testclient import TestClient
     from vezir.server import auth
     from vezir.server.app import create_app
 
-    token = auth.issue("alice")
+    # /admin/enroll now requires is_admin=True (0.1.12+).
+    token = auth.issue("alice", is_admin=True)
     app = create_app()
     return TestClient(app, follow_redirects=False), token
 

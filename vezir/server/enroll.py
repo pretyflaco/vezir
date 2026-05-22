@@ -21,6 +21,9 @@ Security posture:
     enrollment code; tracked in vezir_plan.md.
   - The page is not linked from the dashboard.
   - The QR payload is generated server-side as inline SVG (segno), no JS.
+  - 0.1.12+: gated by ``require_admin``. Pre-0.1.12 tokens (no
+    ``is_admin`` field) cannot reach this page until re-issued with
+    ``vezir token issue --admin``.
 """
 from __future__ import annotations
 
@@ -126,7 +129,7 @@ def enroll_get(
     request: Request,
     token: str | None = None,
     url: str | None = None,
-    me: str = Depends(auth.require_bearer_or_cookie),
+    me: str = Depends(auth.require_admin),
 ):
     """Render the enrollment page.
 
@@ -142,7 +145,7 @@ def enroll_post(
     request: Request,
     token: str = Form(...),
     url: str = Form(...),
-    me: str = Depends(auth.require_bearer_or_cookie),
+    me: str = Depends(auth.require_admin),
 ):
     """Same render flow but token+url come from a form (no URL leakage)."""
     token = token.strip()

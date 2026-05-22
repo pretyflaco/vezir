@@ -293,3 +293,50 @@ def require_bearer_or_cookie(
         )
     log.debug("auth: %s via %s", github, via)
     return github
+
+
+def require_admin(
+    authorization: str | None = Header(default=None),
+    vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> str:
+    """FastAPI dependency: same surface as ``require_bearer_or_cookie`` but
+    additionally checks that the underlying token has ``is_admin=true``.
+
+    Currently gates /admin/enroll. Legacy tokens (no ``is_admin`` field)
+    are rejected — operators must re-issue with ``--admin`` to keep
+    enrollment access. This is a one-time migration cost in exchange for
+    making /admin/enroll non-self-serve for ordinary scribe tokens.
+    """
+    github_unverified = require_bearer_or_cookie(
+        authorization=authorization, vezir_session=vezir_session,
+    )
+
+    # Re-resolve to the actual bearer token to read is_admin. Cookies in
+    # this commit still carry the plaintext bearer, so the same value
+    # that proved auth above is what we hand to is_admin_token. The
+    # follow-up commit that introduces opaque sessions keeps this
+    # behavior by re-reading the github handle's row(s) directly from
+    # tokens.json.
+    #
+    # Edge case: a github handle with multiple tokens, some admin, some
+    # not. We treat "any admin token for this github" as sufficient —
+    # consistent with how `revoke` already operates per-github rather
+    # than per-token.
+    data = _load_tokens()
+    for entry in data["tokens"]:
+        if entry.get("github") != github_unverified:
+            continue
+        if _is_expired(entry):
+            continue
+        if entry.get("is_admin"):
+            return github_unverified
+
+    log.info("auth: %s lacks admin role for /admin/* route", github_unverified)
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "this route requires an admin token. Ask the operator to "
+            "re-issue your token with `vezir token issue --admin "
+            f"--github {github_unverified}`."
+        ),
+    )
