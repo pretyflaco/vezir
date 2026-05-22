@@ -141,7 +141,10 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
     audio = tmp_path / "prior.wav"
     audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
 
-    def fake_upload(server_url, token, audio_path, title=None, progress=None, on_retry=None):
+    def fake_upload(server_url, token, audio_path, title=None, progress=None,
+                    on_retry=None, **kwargs):
+        # **kwargs swallows summary_preset, auto_label, sync, etc. — fields
+        # added after this test was written and irrelevant to its assertion.
         assert server_url == "http://server.test"
         assert token == "vzr_test"
         assert audio_path == audio
@@ -189,7 +192,9 @@ def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
         assert keep_wav is True
         return ogg
 
-    def fake_upload(server_url, token, audio_path, title=None, progress=None, on_retry=None):
+    def fake_upload(server_url, token, audio_path, title=None, progress=None,
+                    on_retry=None, **kwargs):
+        # **kwargs absorbs summary_preset / auto_label / sync added later.
         assert audio_path == ogg
         return {
             "session_id": "01TEST",
