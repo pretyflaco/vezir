@@ -77,7 +77,13 @@ server = [
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
     "jinja2>=3.1",
-    "meetscribe-offline>=0.6.0",
+    # vezir 0.1.11's worker shells out to `meet transcribe --summary-preset
+    # <id>` (introduced in meetscribe-offline 0.8.0) and relies on
+    # apply_labels() accepting the summary_preset kwarg (fixed in 0.8.1).
+    # Pin to >= 0.8.1 so a fresh `pip install vezir[server]` gets the
+    # preset-aware meetscribe rather than a pre-0.8 version that would
+    # crash when the worker spawns meet with --summary-preset.
+    "meetscribe-offline>=0.8.1",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
