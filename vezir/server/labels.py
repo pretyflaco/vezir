@@ -1,8 +1,13 @@
-"""Speaker labeling endpoints (the U2 web UI).
+"""Speaker labeling endpoints: web UI (HTML) and native-client API (JSON).
 
-GET  /label/<session-id>                      → HTML labeling page
-GET  /label/<session-id>/clip/<speaker-id>    → audio clip (WAV)
-POST /label/<session-id>                      → apply label_map, regenerate
+HTML routes (browser / web dashboard):
+  GET  /label/<session-id>                      → HTML labeling page
+  GET  /label/<session-id>/clip/<speaker-id>    → audio clip (WAV)
+  POST /label/<session-id>                      → apply label_map, regenerate
+
+JSON API routes (Android / programmatic clients):
+  GET  /api/label/<session-id>                  → JSON speaker list + team
+  POST /api/label/<session-id>                  → apply labels from JSON body
 
 The labeling page is shown when a session's status is `needs_labeling`.
 On submit, vezir invokes meetscribe's apply_labels() directly to relabel
@@ -15,13 +20,14 @@ import json
 import logging
 import re
 import shutil
+import threading
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .. import config
-from . import auth, meet_runner, queue, worker
+from . import auth, meet_runner, queue, ratelimit, worker
 from .templating import templates
 
 log = logging.getLogger("vezir.labels")
@@ -107,7 +113,10 @@ def label_page(
     )
 
 
-@router.get("/label/{session_id}/clip/{speaker_id}")
+@router.get(
+    "/label/{session_id}/clip/{speaker_id}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
 def label_clip(
     session_id: str,
     speaker_id: str,
@@ -142,42 +151,17 @@ def label_clip(
     return FileResponse(cached, media_type="audio/wav")
 
 
-@router.post("/label/{session_id}")
-async def submit_labels(
-    request: Request,
-    session_id: str,
-    github: str = Depends(auth.require_bearer_or_cookie),
-):
-    """Apply user-assigned labels and trigger sync.
+def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str) -> None:
+    """Shared logic for both the HTML form POST and the JSON API POST.
 
-    Form fields are dynamic: one per speaker, named `label_<speaker_id>`.
-    Empty values are skipped (speaker stays as-is).
+    Applies labels via meetscribe, updates the voiceprint DB, and spawns
+    a background thread for sync + cleanup.
     """
-    row = queue.get(session_id)
-    if not row:
-        raise HTTPException(404, "session not found")
-
-    form = await request.form()
-    label_map: dict[str, str] = {}
-    for key, value in form.items():
-        if not key.startswith("label_"):
-            continue
-        if not isinstance(value, str):
-            continue
-        name = value.strip()
-        if not name:
-            continue
-        speaker_id = key[len("label_"):]
-        label_map[speaker_id] = name
-
     log.info("session=%s labels=%s by=%s", session_id, label_map, github)
 
-    # Apply via meetscribe (regenerates txt/srt/json/summary/pdf in-place).
-    # Run inside the per-job HOME shim so the central voiceprint DB is
-    # updated by meetscribe's update_profiles_from_confirmed_labels()
-    # if/when meet/label.py routes through it.
-    home = meet_runner.build_home_shim(session_id)
     import os
+
+    home = meet_runner.build_home_shim(session_id)
     saved = {k: os.environ.get(k) for k in ("HOME", "XDG_CONFIG_HOME")}
     try:
         os.environ["HOME"] = str(home)
@@ -186,15 +170,9 @@ async def submit_labels(
         apply_labels(
             _session_dir(session_id),
             label_map=label_map,
-            regenerate_summary=False,  # avoid LLM re-run; cheap find/replace path
+            regenerate_summary=False,
         )
 
-        # Update the central voiceprint DB with confirmed labels.
-        # Fix for #8: the call was passing (session_dir, label_map) — two
-        # args — but the meetscribe-offline signature expects four:
-        # (audio_path, transcript_segments, confirmed_label_map, channel_map).
-        # Load the transcript and detect channel layout so the embeddings
-        # are stored with the correct channel provenance.
         try:
             from meet.voiceprint import update_profiles_from_confirmed_labels
             from meet.label import _load_transcript, _detect_speaker_channels
@@ -228,9 +206,6 @@ async def submit_labels(
             else:
                 os.environ[k] = v
 
-    # Hand off to worker for sync + cleanup. Run in a background thread so
-    # the HTTP request returns promptly.
-    import threading
     threading.Thread(
         target=worker.finalize_after_labeling,
         args=(session_id,),
@@ -238,4 +213,130 @@ async def submit_labels(
         daemon=True,
     ).start()
 
+
+_LABELABLE_STATUSES = ("needs_labeling", "done", "error")
+
+
+@router.post("/label/{session_id}")
+async def submit_labels(
+    request: Request,
+    session_id: str,
+    github: str = Depends(auth.require_bearer_or_cookie),
+):
+    """Apply user-assigned labels and trigger sync (HTML form POST)."""
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+
+    form = await request.form()
+    label_map: dict[str, str] = {}
+    for key, value in form.items():
+        if not key.startswith("label_"):
+            continue
+        if not isinstance(value, str):
+            continue
+        name = value.strip()
+        if not name:
+            continue
+        speaker_id = key[len("label_"):]
+        label_map[speaker_id] = name
+
+    _apply_and_finalize(session_id, label_map, github)
     return RedirectResponse(url=f"/s/{session_id}", status_code=303)
+
+
+# ── JSON API (native clients) ───────────────────────────────────────────────
+
+
+@router.get(
+    "/api/label/{session_id}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def api_label_get(
+    session_id: str,
+    github: str = Depends(auth.require_bearer),
+):
+    """Return the speaker list and team handles for native-client labeling.
+
+    Response:
+        {
+          "session_id": "01KS...",
+          "status": "needs_labeling",
+          "speakers": [
+            {"id": "REMOTE_0", "channel": 1, "sample_text": "Yeah I think..."},
+            ...
+          ],
+          "team": ["kasita", "pretyflaco", ...],
+          "audio_available": true
+        }
+    """
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    if row["status"] not in _LABELABLE_STATUSES:
+        raise HTTPException(
+            409,
+            f"session status is '{row['status']}'; labeling requires "
+            f"one of: {', '.join(_LABELABLE_STATUSES)}",
+        )
+
+    speakers = _get_speakers(session_id)
+    sdir = _session_dir(session_id)
+    audio_available = _find_wav(sdir) is not None
+
+    return {
+        "session_id": session_id,
+        "status": row["status"],
+        "speakers": [
+            {
+                "id": sp.id,
+                "channel": getattr(sp, "channel", None),
+                "sample_text": getattr(sp, "sample_text", None),
+            }
+            for sp in speakers
+        ],
+        "team": _team_handles(),
+        "audio_available": audio_available,
+    }
+
+
+@router.post(
+    "/api/label/{session_id}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def api_label_post(
+    session_id: str,
+    labels: dict = Body(..., example={"labels": {"REMOTE_0": "kasita"}}),
+    github: str = Depends(auth.require_bearer),
+):
+    """Apply labels from a JSON body (native clients).
+
+    Expected body:
+        {"labels": {"REMOTE_0": "kasita", "REMOTE_1": "alice"}}
+
+    Empty or missing labels for a speaker keep the auto-assigned label.
+    """
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    if row["status"] not in _LABELABLE_STATUSES:
+        raise HTTPException(
+            409,
+            f"session status is '{row['status']}'; labeling requires "
+            f"one of: {', '.join(_LABELABLE_STATUSES)}",
+        )
+
+    raw_labels = labels.get("labels")
+    if not isinstance(raw_labels, dict):
+        raise HTTPException(400, "body must contain a 'labels' dict")
+
+    label_map: dict[str, str] = {}
+    for speaker_id, name in raw_labels.items():
+        if not isinstance(name, str):
+            continue
+        name = name.strip()
+        if name:
+            label_map[str(speaker_id)] = name
+
+    _apply_and_finalize(session_id, label_map, github)
+    return {"ok": True, "session_id": session_id}
