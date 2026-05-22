@@ -25,6 +25,17 @@ different purposes and go in different places:
 
 Do not paste the invite into `VEZIR_TOKEN` or vice versa.
 
+## Current participants
+
+The live participant list is in `~/.config/nvpn/config.toml` under the
+`participants = [...]` key (and is mirrored to `/root/.config/nvpn/config.toml`
+for the system daemon).  A human-readable roster mapping npubs to names
+and devices is maintained out-of-tree by the admin at
+`~/vezir-data/nvpn-peers.md`.
+
+To join, send your npub (printed by `nvpn init`) to the admin and they
+will run `nvpn add-participant --participant <your-npub>`.
+
 ---
 
 ## Linux setup
@@ -252,6 +263,23 @@ vezir scribe --title "test recording"
 # Speak for a few seconds, then Ctrl+C
 # Should compress, upload, and show processing status
 ```
+
+---
+
+## Android (vezir-android thin client)
+
+The Android client bundles its own nvpn integration -- no separate
+`nvpn` install required on the phone.  Sideload the APK from the
+[vezir-android releases page](https://github.com/pretyflaco/vezir-android/releases/latest),
+generate keys in-app, then send the displayed npub to the admin to be
+added with `nvpn add-participant`.  Token, preset, and privacy
+opt-outs are configured via the in-app UI rather than env vars or CLI
+flags.
+
+End-to-end validated 2026-05-22 on vezir-android 0.1.4 against muscle
+running vezir 0.1.11.  See the
+[wiki onboarding page](https://github.com/blinkbitcoin/blink-wip/wiki/pretyflaco----2026-05-21-Vezir-Onboarding-with-nostr-vpn)
+for the full UI walkthrough.
 
 ---
 
