@@ -299,6 +299,47 @@ class ScribeWindow:
                                     values=_PRESET_LABELS, state="readonly", width=38)
         preset_combo.pack(side="left", padx=(8, 0), fill="x", expand=True)
 
+        # ─── Auto-label + sync opt-out checkboxes ─────
+        # Load sticky prefs so the user's last choice survives relaunches.
+        # Default True on missing keys preserves pre-opt-out behavior.
+        from .config import load_client_prefs, save_client_prefs
+        self._client_prefs_load = load_client_prefs
+        self._client_prefs_save = save_client_prefs
+        prefs = load_client_prefs()
+        self._auto_label_var = tk.BooleanVar(
+            value=bool(prefs.get("auto_label", True))
+        )
+        self._sync_var = tk.BooleanVar(
+            value=bool(prefs.get("sync", True))
+        )
+
+        def _persist_auto_label(*_a):
+            p = self._client_prefs_load()
+            p["auto_label"] = bool(self._auto_label_var.get())
+            self._client_prefs_save(p)
+
+        def _persist_sync(*_a):
+            p = self._client_prefs_load()
+            p["sync"] = bool(self._sync_var.get())
+            self._client_prefs_save(p)
+
+        toggles_frame = tk.Frame(root)
+        toggles_frame.pack(fill="x", padx=8, pady=(2, 4))
+        tk.Checkbutton(
+            toggles_frame,
+            text="Auto-label speakers",
+            variable=self._auto_label_var,
+            command=_persist_auto_label,
+            anchor="w",
+        ).pack(side="left", padx=(0, 16))
+        tk.Checkbutton(
+            toggles_frame,
+            text="Sync to git",
+            variable=self._sync_var,
+            command=_persist_sync,
+            anchor="w",
+        ).pack(side="left")
+
         # ─── Recorder row ────
         rec_frame = tk.Frame(root)
         rec_frame.pack(fill="x", padx=8, pady=8)
@@ -505,6 +546,11 @@ class ScribeWindow:
                     ))
 
                 preset_id = _PRESET_LABEL_TO_ID.get(self._preset_var.get(), "high-quality")
+                # Snapshot the toggles at upload time so any in-flight
+                # checkbox flips after we've started uploading don't
+                # affect this session's behavior.
+                auto_label = bool(self._auto_label_var.get())
+                sync = bool(self._sync_var.get())
                 self._gui_queue.put(("status", "uploading"))
                 result = do_upload(
                     self.url,
@@ -512,6 +558,8 @@ class ScribeWindow:
                     audio_path,
                     title=title,
                     summary_preset=preset_id,
+                    auto_label=auto_label,
+                    sync=sync,
                     progress=progress,
                     on_retry=on_retry,
                 )

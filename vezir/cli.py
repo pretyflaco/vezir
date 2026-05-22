@@ -60,15 +60,37 @@ def serve(host, port, reload):
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
     help="Summarization quality/privacy preset")
+@click.option("--auto-label/--no-auto-label", "auto_label", default=None,
+              help="Auto-label speakers against the central voiceprint DB "
+                   "(default: on; persists across launches)")
+@click.option("--sync/--no-sync", "sync", default=None,
+              help="Sync session artifacts to the configured destination "
+                   "repo (default: on; persists across launches)")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
 def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
-           open_labeling, preset, record_args):
+           open_labeling, preset, auto_label, sync, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
     Example: vezir scribe --title standup -- --virtual-sink
     """
     from .client.scribe import run_scribe
+    from .client.config import (
+        load_client_prefs, save_client_prefs,
+    )
+
+    prefs = load_client_prefs()
+    if auto_label is None:
+        auto_label = prefs.get("auto_label", True)
+    else:
+        prefs["auto_label"] = auto_label
+        save_client_prefs(prefs)
+    if sync is None:
+        sync = prefs.get("sync", True)
+    else:
+        prefs["sync"] = sync
+        save_client_prefs(prefs)
+
     try:
         run_scribe(
             server_url=server_url,
@@ -81,6 +103,8 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
             wait_timeout=float(wait_timeout),
             open_labeling=open_labeling,
             summary_preset=preset,
+            auto_label=auto_label,
+            sync=sync,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)
@@ -105,6 +129,12 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
     help="Summarization quality/privacy preset")
+@click.option("--auto-label/--no-auto-label", "auto_label", default=None,
+              help="Auto-label speakers against the central voiceprint DB "
+                   "(default: on; persists across launches)")
+@click.option("--sync/--no-sync", "sync", default=None,
+              help="Sync session artifacts to the configured destination "
+                   "repo (default: on; persists across launches)")
 @click.option("--wait/--no-wait", default=False,
               help="Wait for server processing and report status (default: off)")
 @click.option("--wait-timeout", default=600, type=int,
@@ -113,9 +143,23 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_cmd(server_url, token, title, compress, preset, wait, wait_timeout, audio_file):
+def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
+               wait, wait_timeout, audio_file):
     """Upload an existing WAV/OGG recording to vezir."""
     from .client import uploader
+    from .client.config import load_client_prefs, save_client_prefs
+
+    prefs = load_client_prefs()
+    if auto_label is None:
+        auto_label = prefs.get("auto_label", True)
+    else:
+        prefs["auto_label"] = auto_label
+        save_client_prefs(prefs)
+    if sync is None:
+        sync = prefs.get("sync", True)
+    else:
+        prefs["sync"] = sync
+        save_client_prefs(prefs)
 
     def fmt_bytes(nbytes: int) -> str:
         if nbytes < 1024:
@@ -169,6 +213,8 @@ def upload_cmd(server_url, token, title, compress, preset, wait, wait_timeout, a
             audio_file,
             title=title,
             summary_preset=preset,
+            auto_label=auto_label,
+            sync=sync,
             progress=progress,
             on_retry=on_retry,
         )

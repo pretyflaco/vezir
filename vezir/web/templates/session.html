@@ -5,13 +5,32 @@
 <h1>{{ row.title or row.id }}</h1>
 <p class="muted">scribed by <strong>{{ row.github }}</strong> at {{ row.created_at }}</p>
 
+{# Derive a "local-only" UI state: the job completed but the user opted #}
+{# out of sync at upload time, so artifacts are on the vezir server but #}
+{# never pushed to the configured destination repo.  The retroactive    #}
+{# /session/<id>/sync endpoint flips sync_enabled and re-runs sync.     #}
+{% set is_local_only = row.status == 'done' and row.sync_enabled == 0 %}
+
 <p>
   Status:
-  <span id="status-badge" class="badge {{ row.status }}">{{ row.status }}</span>
+  {% if is_local_only %}
+    <span id="status-badge" class="badge local-only">local-only</span>
+  {% else %}
+    <span id="status-badge" class="badge {{ row.status }}">{{ row.status }}</span>
+  {% endif %}
 </p>
 
 {% if row.status == 'needs_labeling' %}
   <p><a href="/label/{{ row.id }}" class="cta">Label speakers</a></p>
+{% endif %}
+
+{% if is_local_only %}
+<form method="post" action="/session/{{ row.id }}/sync" style="margin: 1em 0;">
+  <button type="submit" class="cta">Sync now</button>
+  <span class="muted">
+    Push this session's artifacts to the configured destination repo.
+  </span>
+</form>
 {% endif %}
 
 {% if row.error %}

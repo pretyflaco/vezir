@@ -105,6 +105,8 @@ def upload(
     audio_path: Path,
     title: str | None = None,
     summary_preset: str | None = None,
+    auto_label: bool = True,
+    sync: bool = True,
     timeout: float = 600.0,
     retries: int = 5,
     progress: ProgressCallback | None = None,
@@ -137,6 +139,12 @@ def upload(
                     data["title"] = title
                 if summary_preset:
                     data["summary_preset"] = summary_preset
+                # Privacy toggles sent as strings so FastAPI's Form
+                # parsing is identical across clients.  Always send so
+                # the user's explicit choice is recorded; server treats
+                # absent fields as True (back-compat with older clients).
+                data["auto_label"] = "true" if auto_label else "false"
+                data["sync"] = "true" if sync else "false"
                 with httpx.Client(timeout=timeout) as client:
                     resp = client.post(url, headers=headers, files=files, data=data)
             if resp.status_code == 200:

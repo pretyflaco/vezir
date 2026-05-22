@@ -238,10 +238,21 @@ def process_one(job: dict) -> None:
             )
             return
 
-        # 2. label --auto against central voiceprint DB
-        rc = meet_runner.label_auto(sd, job_id, log_path)
-        if rc != 0:
-            log.warning("label --auto returned %s; continuing", rc)
+        # 2. label --auto against central voiceprint DB (per-job opt-out)
+        # The job row's auto_label_enabled flag is set at upload time from
+        # the client's checkbox / switch.  When False, skip auto-labeling
+        # entirely so every session lands in needs_labeling for human
+        # review.  This is a privacy / control choice some users prefer.
+        auto_label_enabled = bool(job.get("auto_label_enabled", 1))
+        if auto_label_enabled:
+            rc = meet_runner.label_auto(sd, job_id, log_path)
+            if rc != 0:
+                log.warning("label --auto returned %s; continuing", rc)
+        else:
+            log.info(
+                "job %s: auto_label_enabled=0; skipping label --auto",
+                job_id,
+            )
 
         artifacts = _find_artifacts(sd)
 
@@ -253,9 +264,17 @@ def process_one(job: dict) -> None:
             log.info("job %s needs labeling", job_id)
             return
 
-        # 4. sync to git (unless VEZIR_SKIP_SYNC is set)
+        # 4. sync to git.  Two independent gates both must allow sync:
+        #    - VEZIR_SKIP_SYNC env var (operator-side kill switch)
+        #    - per-job sync_enabled flag (user-side opt-out at upload)
+        sync_enabled = bool(job.get("sync_enabled", 1))
         if _skip_sync():
             log.info("job %s: VEZIR_SKIP_SYNC set, skipping meet sync", job_id)
+        elif not sync_enabled:
+            log.info(
+                "job %s: sync_enabled=0; keeping session local-only",
+                job_id,
+            )
         else:
             queue.update_status(job_id, "syncing", artifacts=artifacts)
             rc = meet_runner.sync(sd, job_id, log_path)
@@ -345,10 +364,18 @@ def finalize_after_labeling(session_id: str) -> None:
         # everything based on already-applied labels in labels.json. But since
         # vezir's web UI applies labels via meetscribe's apply_labels()
         # directly (see labels.py), the artifacts are already regenerated.
-        # All that remains is sync.
+        # All that remains is sync (or not — both VEZIR_SKIP_SYNC and the
+        # per-job sync_enabled flag can independently veto).
+        job = queue.get(session_id) or {}
+        sync_enabled = bool(job.get("sync_enabled", 1))
         if _skip_sync():
             log.info(
                 "post-labeling: VEZIR_SKIP_SYNC set, skipping meet sync for %s",
+                session_id,
+            )
+        elif not sync_enabled:
+            log.info(
+                "post-labeling: sync_enabled=0; keeping session %s local-only",
                 session_id,
             )
         else:

@@ -1,21 +1,23 @@
 """Session metadata + dashboard endpoints.
 
-GET /                      → HTML dashboard (recent sessions)
-GET /s/<session-id>        → HTML session detail page
-GET /api/sessions          → JSON list (for clients)
-GET /api/sessions/<id>     → JSON session detail
-GET /artifact/<id>/<name>  → download a generated artifact
+GET  /                       → HTML dashboard (recent sessions)
+GET  /s/<session-id>         → HTML session detail page
+GET  /api/sessions           → JSON list (for clients)
+GET  /api/sessions/<id>      → JSON session detail
+GET  /artifact/<id>/<name>   → download a generated artifact
+POST /session/<id>/sync      → retroactive sync of a local-only session
 """
 from __future__ import annotations
 
 import json
 import logging
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .. import config
-from . import auth, queue
+from . import auth, queue, worker
 from .templating import templates
 
 log = logging.getLogger("vezir.sessions")
@@ -96,3 +98,57 @@ def artifact(
     if not p.exists():
         raise HTTPException(404, "artifact not found")
     return FileResponse(p, filename=name)
+
+
+@router.post("/session/{session_id}/sync")
+def sync_now(
+    session_id: str,
+    request: Request,
+    github: str = Depends(auth.require_bearer_or_cookie),
+):
+    """Retroactively sync a previously local-only session to git.
+
+    Flow: the user uploaded a meeting with `sync=false` (or via an older
+    workflow that never reached the sync step), the session sits at
+    `done` with no git push, and the user now wants to publish it.
+    Clicking "Sync now" in the dashboard hits this endpoint, which:
+
+      1. Sets the queue row's `sync_enabled = 1`
+      2. Runs `meet sync` via the existing worker.finalize_after_labeling
+         flow (in a background thread, like the labeling submit handler)
+      3. Redirects the browser back to /s/<id> where the page polls
+         the status until it transitions through `syncing` -> `done`
+
+    Refuses if the session is in a status that doesn't admit retroactive
+    sync (e.g. `error`, `transcribing`, `needs_labeling`).  Re-syncing a
+    session that already synced is allowed (force-push semantics inherited
+    from `meet sync --force`).
+    """
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    if row["status"] not in ("done", "syncing"):
+        raise HTTPException(
+            409,
+            f"session status '{row['status']}' does not admit retroactive sync; "
+            "wait for transcription/labeling to complete first",
+        )
+
+    # Flip the per-job flag so the worker's gates allow sync this round.
+    queue.set_sync_enabled(session_id, True)
+    log.info("session=%s retroactive sync requested by %s", session_id, github)
+
+    # Hand off to the same finalize path the labeling submit uses.  Runs
+    # in a background thread so the HTTP response returns immediately.
+    threading.Thread(
+        target=worker.finalize_after_labeling,
+        args=(session_id,),
+        name=f"sync-now-{session_id}",
+        daemon=True,
+    ).start()
+
+    # Browser POSTs from the dashboard form land here; redirect back to
+    # the session page so the user sees the status transition.
+    if "text/html" in (request.headers.get("accept") or ""):
+        return RedirectResponse(url=f"/s/{session_id}", status_code=303)
+    return {"session_id": session_id, "queued": True}

@@ -72,15 +72,40 @@ def _validate_magic(ext: str, chunk: bytes) -> None:
         raise HTTPException(status_code=415, detail=f"invalid {ext} audio header")
 
 
+def _parse_bool_form(v: str | None, default: bool) -> bool:
+    """Parse a string-encoded bool from multipart form data.
+
+    Multipart bools are tricky in FastAPI — bare bool params coerce
+    inconsistently across clients (httpx, OkHttp, curl).  Standardize on
+    string "true"/"false" / "1"/"0" / "yes"/"no".  Missing or unparseable
+    -> default.
+    """
+    if v is None:
+        return default
+    s = v.strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off"):
+        return False
+    return default
+
+
 @router.post("/upload")
 async def upload(
     request: Request,
     audio: UploadFile = File(...),
     title: str | None = Form(default=None),
     summary_preset: str | None = Form(default=None),
+    # Per-upload privacy toggles.  Default True preserves pre-opt-out
+    # behavior for older clients (vezir < 0.1.11, vezir-android < 0.1.4)
+    # that don't send these fields.
+    auto_label: str | None = Form(default=None),
+    sync: str | None = Form(default=None),
     audio_bytes: int | None = Form(default=None),
     github: str = Depends(auth.require_bearer),
 ):
+    auto_label_enabled = _parse_bool_form(auto_label, default=True)
+    sync_enabled = _parse_bool_form(sync, default=True)
     config.ensure_dirs()
     max_bytes = config.max_upload_bytes()
     content_length = request.headers.get("content-length")
@@ -131,11 +156,20 @@ async def upload(
         raise
 
     log.info(
-        "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r summary_preset=%r",
+        "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r "
+        "summary_preset=%r auto_label=%s sync=%s",
         session_id, github, bytes_written, ext, title, summary_preset,
+        auto_label_enabled, sync_enabled,
     )
 
-    queue.enqueue(session_id, github=github, title=title, summary_preset=summary_preset)
+    queue.enqueue(
+        session_id,
+        github=github,
+        title=title,
+        summary_preset=summary_preset,
+        auto_label_enabled=auto_label_enabled,
+        sync_enabled=sync_enabled,
+    )
 
     base = str(request.base_url).rstrip("/")
     # `dashboard_url` is the canonical session detail path; clients with a

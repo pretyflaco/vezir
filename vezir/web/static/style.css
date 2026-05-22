@@ -128,6 +128,11 @@ tr:last-child td { border-bottom: none; }
 .badge.syncing       { background: #d6e6ff; color: #1a4488; }
 .badge.done          { background: #d6f0d6; color: var(--ok); }
 .badge.error         { background: #ffd6d6; color: var(--err); }
+/* Session reached `done` with sync_enabled=0; artifacts are on the
+   server but never pushed to the destination repo.  Visually distinct
+   from `done` so the user can tell at a glance the session isn't
+   propagated. */
+.badge.local-only    { background: #f0e6f5; color: #6a3a8a; }
 
 .cta {
   display: inline-block;

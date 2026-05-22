@@ -4,16 +4,24 @@ Single-writer, single-worker model. Serialized job execution per the MVP
 plan. The queue stores one row per uploaded session.
 
 Schema:
-    id              ULID, primary key, also the session id
-    github          GitHub handle of the scribe who uploaded
-    title           Optional meeting title
-    status          one of: queued, transcribing, needs_labeling, syncing,
-                    done, error
-    created_at      ISO timestamp
-    updated_at      ISO timestamp
-    error           Last error message, if any
-    artifacts       JSON-encoded dict of artifact paths (relative to session
-                    dir): txt, srt, json, summary, pdf
+    id                   ULID, primary key, also the session id
+    github               GitHub handle of the scribe who uploaded
+    title                Optional meeting title
+    summary_preset       Optional preset id (high-quality | confidential | alternative)
+    auto_label_enabled   0/1.  When 0, worker skips `meet label --auto` and
+                         routes the session straight to needs_labeling for
+                         human-only labeling.  Default 1.
+    sync_enabled         0/1.  When 0, worker skips `meet sync` after the
+                         pipeline completes; session goes to `done` with
+                         no git push.  Default 1.  Operator-side env var
+                         VEZIR_SKIP_SYNC overrides to 0 globally.
+    status               one of: queued, transcribing, needs_labeling, syncing,
+                         done, error
+    created_at           ISO timestamp
+    updated_at           ISO timestamp
+    error                Last error message, if any
+    artifacts            JSON-encoded dict of artifact paths (relative to session
+                         dir): txt, srt, json, summary, pdf
 """
 from __future__ import annotations
 
@@ -31,15 +39,17 @@ _LOCK = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
-    id              TEXT PRIMARY KEY,
-    github          TEXT NOT NULL,
-    title           TEXT,
-    summary_preset  TEXT,
-    status          TEXT NOT NULL,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    error           TEXT,
-    artifacts       TEXT
+    id                  TEXT PRIMARY KEY,
+    github              TEXT NOT NULL,
+    title               TEXT,
+    summary_preset      TEXT,
+    auto_label_enabled  INTEGER NOT NULL DEFAULT 1,
+    sync_enabled        INTEGER NOT NULL DEFAULT 1,
+    status              TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    error               TEXT,
+    artifacts           TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
@@ -72,25 +82,50 @@ def _conn() -> Iterator[sqlite3.Connection]:
         conn.row_factory = sqlite3.Row
         try:
             conn.executescript(SCHEMA)
-            try:
-                conn.execute("ALTER TABLE jobs ADD COLUMN summary_preset TEXT")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+            # Idempotent column-add migrations for existing DBs predating
+            # each column.  Each is wrapped in its own try because the
+            # second add must still run if the first is a duplicate.
+            for ddl in (
+                "ALTER TABLE jobs ADD COLUMN summary_preset TEXT",
+                "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
+            ):
+                try:
+                    conn.execute(ddl)
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
             yield conn
             conn.commit()
         finally:
             conn.close()
 
 
-def enqueue(job_id: str, github: str, title: str | None = None,
-            summary_preset: str | None = None) -> None:
-    """Add a new job in `queued` state."""
+def enqueue(
+    job_id: str,
+    github: str,
+    title: str | None = None,
+    summary_preset: str | None = None,
+    auto_label_enabled: bool = True,
+    sync_enabled: bool = True,
+) -> None:
+    """Add a new job in `queued` state.
+
+    Booleans are stored as 0/1 (SQLite convention).  Callers may pass
+    None implicitly via missing form fields — those land here as True by
+    default, preserving the pre-opt-out worker behavior.
+    """
     with _conn() as c:
         c.execute(
-            "INSERT INTO jobs (id, github, title, summary_preset, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'queued', ?, ?)",
-            (job_id, github, title, summary_preset, _now(), _now()),
+            "INSERT INTO jobs (id, github, title, summary_preset, "
+            "auto_label_enabled, sync_enabled, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            (
+                job_id, github, title, summary_preset,
+                1 if auto_label_enabled else 0,
+                1 if sync_enabled else 0,
+                _now(), _now(),
+            ),
         )
 
 
@@ -142,6 +177,19 @@ def get(job_id: str) -> dict | None:
     with _conn() as c:
         row = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+
+def set_sync_enabled(job_id: str, enabled: bool) -> None:
+    """Flip the sync_enabled flag on an existing job.
+
+    Used by the retroactive POST /session/<id>/sync endpoint to opt a
+    previously local-only session back in to git sync.
+    """
+    with _conn() as c:
+        c.execute(
+            "UPDATE jobs SET sync_enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, _now(), job_id),
+        )
 
 
 def list_recent(limit: int = 50, github: str | None = None) -> list[dict]:
