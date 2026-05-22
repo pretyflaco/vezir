@@ -12,8 +12,9 @@ Two reasons:
    or a compromised nvpn key shouldn't immediately expose bearer tokens
    in cleartext. Caddy stops the plaintext at the box's edge.
 
-2. **Caddy access logs scrub `Authorization` and `Cookie` headers**
-   (see `Caddyfile.example`'s `common_logging` snippet). Without a
+2. **Caddy redacts sensitive headers** (`Authorization`, `Cookie`,
+   `Set-Cookie`, `Proxy-Authorization`) **in access logs by default** —
+   they appear as `"REDACTED"` with no extra config. Without a
    reverse proxy, anything that logs the request line — uvicorn's
    access log, a future debug `tcpdump`, an nginx-style sidecar —
    captures the bearer token on disk.

@@ -155,7 +155,7 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
             "session_id": "01TEST",
             "bytes": 12,
             "dashboard_url": "http://server.test/s/01TEST",
-            "dashboard_login_url": "http://server.test/login?next=%2Fs%2F01TEST",
+            "dashboard_login_url": "http://server.test/login?code=vzx_fake&next=%2Fs%2F01TEST",
         }
 
     monkeypatch.setattr(uploader, "upload", fake_upload)
@@ -200,7 +200,7 @@ def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
             "session_id": "01TEST",
             "bytes": ogg.stat().st_size,
             "dashboard_url": "http://server.test/s/01TEST",
-            "dashboard_login_url": "http://server.test/login?next=%2Fs%2F01TEST",
+            "dashboard_login_url": "http://server.test/login?code=vzx_fake&next=%2Fs%2F01TEST",
         }
 
     monkeypatch.setattr(uploader, "compress_wav_for_upload", fake_compress)

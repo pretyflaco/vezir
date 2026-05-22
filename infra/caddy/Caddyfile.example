@@ -34,9 +34,12 @@
 }
 
 (common_logging) {
-	# Log to a dedicated file. Scrub Authorization and Cookie headers
-	# from the access log so neither bearer tokens nor opaque sessions
-	# end up on disk.
+	# Log to a dedicated file. Caddy redacts Authorization, Cookie,
+	# Set-Cookie, and Proxy-Authorization headers in access logs by
+	# default (they appear as "REDACTED"). No manual stripping needed.
+	#
+	# Do NOT add `request_header -Authorization` or similar here — that
+	# would strip the header from the *upstream request*, breaking auth.
 	log {
 		output file /var/log/caddy/vezir-access.log {
 			roll_size 50mb
@@ -44,10 +47,6 @@
 		}
 		format json
 	}
-	# Defence in depth: strip auth headers before request logging serializes
-	# anything (Caddy logs the *post-rewrite* request).
-	request_header -Authorization
-	request_header -Cookie
 }
 
 (proxy_to_vezir) {
@@ -62,14 +61,26 @@
 	}
 }
 
-# --- Tailscale listener (Let's Encrypt via ts.net DNS-01) -----------
+# --- Tailscale listener (Let's Encrypt cert via `tailscale cert`) ---
 # Replace muscle.tail178bd.ts.net with your tailnet's MagicDNS name.
-# Requires the Caddy Tailscale module or env TS_AUTHKEY:
+#
+# Stock Caddy cannot auto-provision certs for *.ts.net domains.
+# Instead, use `tailscale cert` to get a Let's Encrypt cert/key pair
+# and point Caddy at the files:
+#
+#   sudo tailscale cert \
+#     --cert-file /etc/caddy/certs/muscle.tail178bd.ts.net.crt \
+#     --key-file  /etc/caddy/certs/muscle.tail178bd.ts.net.key \
+#     muscle.tail178bd.ts.net
+#
+# Set up a cron/timer to renew (certs last 90 days):
+#   sudo tailscale cert ... && sudo systemctl reload caddy
+#
+# Alternative: build Caddy with the Tailscale module for auto-renewal:
 #   xcaddy build --with github.com/tailscale/caddy-tailscale
-# Or use Tailscale's own `tailscale serve` for the cert; in that case
-# delete the explicit `tls` block and just point reverse_proxy at us.
 
 muscle.tail178bd.ts.net {
+	tls /etc/caddy/certs/muscle.tail178bd.ts.net.crt /etc/caddy/certs/muscle.tail178bd.ts.net.key
 	import security_headers
 	import common_logging
 	import proxy_to_vezir
