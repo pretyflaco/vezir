@@ -213,11 +213,28 @@ def process_one(job: dict) -> None:
 
     try:
         # 1. transcribe
-        rc = meet_runner.transcribe(sd, job_id, log_path, summary_preset=job.get("summary_preset"))
+        requested_preset = job.get("summary_preset")
+        rc = meet_runner.transcribe(sd, job_id, log_path, summary_preset=requested_preset)
         if rc != 0:
             queue.update_status(
                 job_id, "error",
                 error=_error_with_tail(f"meet transcribe exited {rc}", log_path),
+            )
+            return
+
+        # Belt-and-suspenders: if a preset was explicitly requested but no
+        # summary file ended up on disk, mark the job as errored.  The CLI
+        # is expected to exit non-zero in this case (preset guard), but in
+        # case that contract is ever broken we surface the silent failure
+        # here rather than syncing an empty-summary PDF to GitHub.
+        if requested_preset and not list(sd.glob("*.summary.md")):
+            queue.update_status(
+                job_id, "error",
+                error=_error_with_tail(
+                    f"preset '{requested_preset}' requested but no summary "
+                    "was generated; see job log",
+                    log_path,
+                ),
             )
             return
 
