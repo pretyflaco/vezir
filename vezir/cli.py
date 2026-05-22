@@ -261,14 +261,81 @@ def token():
     """Manage scribe bearer tokens (server-side)."""
 
 
+_DEFAULT_TOKEN_LIFETIME = "90d"
+
+
+def _parse_duration(s: str) -> int:
+    """Parse a duration like ``30d``, ``12h``, ``45m``, ``never`` to seconds.
+
+    Returns 0 for ``never`` (= no expiry). Raises ``click.BadParameter`` on
+    malformed input. Suffixes: s/m/h/d/w. Bare integer is interpreted as
+    seconds.
+    """
+    if not s:
+        raise click.BadParameter("empty duration")
+    s = s.strip().lower()
+    if s in ("never", "none", "0"):
+        return 0
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+    if s[-1] in units:
+        try:
+            n = int(s[:-1])
+        except ValueError:
+            raise click.BadParameter(
+                f"invalid duration {s!r}; use e.g. 30d, 12h, 45m, or 'never'"
+            )
+        if n < 0:
+            raise click.BadParameter("duration must be non-negative")
+        return n * units[s[-1]]
+    try:
+        n = int(s)
+    except ValueError:
+        raise click.BadParameter(
+            f"invalid duration {s!r}; use e.g. 30d, 12h, 45m, or 'never'"
+        )
+    if n < 0:
+        raise click.BadParameter("duration must be non-negative")
+    return n
+
+
 @token.command("issue")
 @click.option("--github", required=True, help="GitHub handle of the scribe")
-def token_issue(github):
+@click.option(
+    "--expires-in", default=_DEFAULT_TOKEN_LIFETIME, show_default=True,
+    help="Token lifetime (e.g. 30d, 12h, 45m, 'never'). Default 90d.",
+)
+@click.option(
+    "--admin", "is_admin", is_flag=True, default=False,
+    help="Mark this token as admin-tier (required for /admin/enroll).",
+)
+@click.option(
+    "--label", default=None,
+    help="Free-text annotation (e.g. 'android-phone'); shown by `token list`.",
+)
+def token_issue(github, expires_in, is_admin, label):
     """Issue a new bearer token. Prints plaintext ONCE; not recoverable."""
     from .server import auth
-    plaintext = auth.issue(github)
+    seconds = _parse_duration(expires_in)
+    plaintext = auth.issue(
+        github,
+        expires_in_seconds=seconds if seconds > 0 else None,
+        is_admin=is_admin,
+        label=label,
+    )
     click.echo(f"Token issued for github={github}")
     click.echo(f"  VEZIR_TOKEN={plaintext}")
+    if seconds == 0:
+        click.echo("  expires:  never")
+    else:
+        import time as _time
+        exp = _time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() + seconds),
+        )
+        click.echo(f"  expires:  {exp}  ({expires_in})")
+    if is_admin:
+        click.echo("  role:     admin (can reach /admin/* routes)")
+    if label:
+        click.echo(f"  label:    {label}")
     click.echo("Hand this to the scribe; it is not recoverable.")
 
 
@@ -287,7 +354,15 @@ def token_revoke(github):
               help="Server URL the device should connect to "
                    "(default $VEZIR_URL or computed). Used only to print "
                    "a convenience link; the token is also printed for paste.")
-def token_enroll(github, server_url):
+@click.option(
+    "--expires-in", default=_DEFAULT_TOKEN_LIFETIME, show_default=True,
+    help="Token lifetime (e.g. 30d, 12h, 45m, 'never'). Default 90d.",
+)
+@click.option(
+    "--label", default=None,
+    help="Free-text annotation (e.g. 'android-phone').",
+)
+def token_enroll(github, server_url, expires_in, label):
     """Issue a token and print enrollment instructions for a mobile device.
 
     Convenience wrapper around `vezir token issue` that also prints a
@@ -295,7 +370,13 @@ def token_enroll(github, server_url):
     to display a QR code for the Android app to scan.
     """
     from .server import auth
-    plaintext = auth.issue(github)
+    seconds = _parse_duration(expires_in)
+    plaintext = auth.issue(
+        github,
+        expires_in_seconds=seconds if seconds > 0 else None,
+        is_admin=False,  # device tokens are scribe-tier; admins re-issue separately
+        label=label,
+    )
 
     # Best-effort server URL: explicit --server, then $VEZIR_URL, falling
     # back to config.server_url()'s default. Operators can pass --server to
@@ -328,15 +409,86 @@ def token_enroll(github, server_url):
 
 
 @token.command("list")
-def token_list():
-    """List token entries (handles only; never the plaintext)."""
+@click.option("--dormant", "dormant_days", type=int, default=None,
+              help="Only show tokens with no successful use in the last N days.")
+def token_list(dormant_days):
+    """List token entries (handles, expiry, last use; never the plaintext).
+
+    Columns: github, role, label, issued, expires, last_used. ``expires``
+    of ``never`` is a legacy (pre-0.1.12) row or an explicit
+    ``--expires-in never`` issue. ``last_used`` is updated at most once
+    per minute per token (debounced) and only reflects successful auth.
+
+    With ``--dormant N`` only rows whose ``last_used`` is older than N
+    days (or ``never used``) appear — useful for "who should I rotate?".
+    """
+    import time as _time
+
     p = config.tokens_json_path()
     if not p.exists():
         click.echo("(no tokens issued)")
         return
     data = json.loads(p.read_text(encoding="utf-8"))
-    for entry in data.get("tokens", []):
-        click.echo(f"  {entry['github']}  issued {entry['issued_at']}")
+    rows = data.get("tokens", [])
+    if not rows:
+        click.echo("(no tokens issued)")
+        return
+
+    def _age_seconds(ts: str | None) -> float | None:
+        if not ts:
+            return None
+        try:
+            t = _time.mktime(
+                _time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+            ) - _time.timezone
+            return _time.time() - t
+        except Exception:
+            return None
+
+    if dormant_days is not None:
+        threshold_sec = dormant_days * 86400
+        kept = []
+        for entry in rows:
+            age = _age_seconds(entry.get("last_used_at"))
+            if age is None or age >= threshold_sec:
+                kept.append(entry)
+        rows = kept
+        if not rows:
+            click.echo(
+                f"(no tokens dormant for >= {dormant_days} days)"
+            )
+            return
+
+    # Column widths.
+    def _w(items: list[str], min_w: int) -> int:
+        return max([min_w] + [len(s) for s in items])
+
+    githubs = [str(r.get("github") or "?") for r in rows]
+    labels = [str(r.get("label") or "-") for r in rows]
+    roles = ["admin" if r.get("is_admin") else "scribe" for r in rows]
+    g_w = _w(githubs, len("github"))
+    l_w = _w(labels, len("label"))
+    r_w = _w(roles, len("role"))
+
+    click.echo(
+        f"  {'github':<{g_w}}  {'role':<{r_w}}  {'label':<{l_w}}  "
+        f"{'issued':<20}  {'expires':<20}  last_used"
+    )
+    for entry in rows:
+        github = str(entry.get("github") or "?")
+        role = "admin" if entry.get("is_admin") else "scribe"
+        label = str(entry.get("label") or "-")
+        issued = str(entry.get("issued_at") or "?")
+        expires = entry.get("expires_at") or "never"
+        last_used = entry.get("last_used_at") or "never used"
+        # Annotate expired rows so the operator can spot revoke-and-reissue
+        # candidates at a glance.
+        age = _age_seconds(expires) if expires != "never" else None
+        suffix = "  (expired)" if age is not None and age > 0 else ""
+        click.echo(
+            f"  {github:<{g_w}}  {role:<{r_w}}  {label:<{l_w}}  "
+            f"{issued:<20}  {expires:<20}  {last_used}{suffix}"
+        )
 
 
 # ── voiceprints ───────────────────────────────────────────────────────────────
