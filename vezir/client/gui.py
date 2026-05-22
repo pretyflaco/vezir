@@ -3,7 +3,7 @@
 A small always-on-top window that wraps `vezir scribe`'s flow:
 
   ┌─────────────────────────────────┐
-  │ vezir scribe         alice ✕   │   header (identity, close)
+  │ [vezir logo]         alice ✕   │   header (identity, close)
   ├─────────────────────────────────┤
   │ Title: [_____________________ ] │   meeting title
   │                                 │
@@ -55,6 +55,30 @@ _PRESET_LABEL_TO_ID = {
     "Confidential \u2014 DeepSeek V4 Pro (TEE)": "confidential",
     "Alternative \u2014 Kimi K2.6": "alternative",
 }
+
+
+def _load_logo_image() -> "tk.PhotoImage | None":
+    """Load the vezir brand-lockup PNG for the GUI header.
+
+    Returns None if the asset cannot be located or Tk fails to decode it
+    (e.g. running from a checkout where the PNG has not been generated).
+    Caller falls back to a textual label.
+
+    The PNG is shipped as package-data; we resolve it through
+    importlib.resources so it works the same in a wheel install, an
+    editable install, and a zipapp.
+    """
+    try:
+        from importlib.resources import files as _pkg_files
+        resource = _pkg_files("vezir.client.assets") / "vezir-logo-400.png"
+        # importlib.resources may return a MultiplexedPath / Traversable
+        # that is not a plain filesystem path.  as_file() yields a real
+        # path even when the resource is shipped inside a zip.
+        from importlib.resources import as_file
+        with as_file(resource) as p:
+            return tk.PhotoImage(file=str(p))
+    except Exception:
+        return None
 
 
 # ─── Persistent client config ────────────────────────────────────────────────
@@ -227,14 +251,22 @@ class ScribeWindow:
         self._poll_thread: threading.Thread | None = None
         self._gui_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
 
-        root.title("vezir scribe")
+        root.title("vezir")
         root.attributes("-topmost", True)
         root.minsize(360, 220)
 
         # ─── Header ─────────
         header = tk.Frame(root)
         header.pack(fill="x", padx=8, pady=(8, 4))
-        tk.Label(header, text="vezir scribe", font=("Sans", 11, "bold")).pack(side="left")
+        # Brand lockup PNG, pre-rendered from assets/logo/vezir-logo.svg
+        # and shipped as package-data inside vezir/client/assets/.  Falls
+        # back to a textual label if the asset is missing (e.g. running
+        # from a dev checkout where the PNG hasn't been regenerated).
+        self._logo_img = _load_logo_image()
+        if self._logo_img is not None:
+            tk.Label(header, image=self._logo_img, bd=0).pack(side="left")
+        else:
+            tk.Label(header, text="vezir", font=("Sans", 11, "bold")).pack(side="left")
         self.identity_lbl = tk.Label(header, text="", fg="#666", font=("Mono", 9))
         self.identity_lbl.pack(side="right")
         tk.Button(header, text="⚙", width=2, command=self._open_settings, relief="flat").pack(side="right", padx=4)
@@ -316,7 +348,7 @@ class ScribeWindow:
 
     def _first_launch_prompt(self):
         messagebox.showinfo(
-            "vezir scribe — first launch",
+            "vezir — first launch",
             "Server URL and token are not configured.\n"
             "You will be prompted to enter them now.",
             parent=self.root,
@@ -649,7 +681,7 @@ def launch() -> int:
     try:
         ScribeWindow(root)
     except Exception as exc:
-        messagebox.showerror("vezir scribe failed to launch", str(exc))
+        messagebox.showerror("vezir failed to launch", str(exc))
         return 1
     root.mainloop()
     return 0

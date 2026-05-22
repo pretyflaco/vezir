@@ -55,7 +55,14 @@ where = ["."]
 include = ["vezir*"]
 
 [tool.setuptools.package-data]
-vezir = ["web/templates/*.html", "web/static/*"]
+vezir = [
+    "web/templates/*.html",
+    "web/static/*",
+    # Pre-rendered logo PNGs for the Tkinter desktop client.  Source
+    # SVGs live in assets/logo/ outside the package; the 400/800-px
+    # variants are checked in so vezir installs need no SVG renderer.
+    "client/assets/*.png",
+]
 
 [tool.setuptools.dynamic]
 # Single source of truth lives at vezir/__init__.py:__version__.
