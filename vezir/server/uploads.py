@@ -20,7 +20,7 @@ import ulid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from .. import config
-from . import auth, queue, web_sessions
+from . import auth, queue, ratelimit, web_sessions
 
 log = logging.getLogger("vezir.uploads")
 
@@ -90,7 +90,7 @@ def _parse_bool_form(v: str | None, default: bool) -> bool:
     return default
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(ratelimit.limit_upload)])
 async def upload(
     request: Request,
     audio: UploadFile = File(...),

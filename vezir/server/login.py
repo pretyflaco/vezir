@@ -33,10 +33,10 @@ import logging
 import os
 import re
 
-from fastapi import APIRouter, Cookie, Form, Request, status
+from fastapi import APIRouter, Cookie, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import auth, web_sessions
+from . import auth, ratelimit, web_sessions
 from .templating import templates
 
 log = logging.getLogger("vezir.login")
@@ -98,7 +98,11 @@ def _render_form(request: Request, *, error: str | None, next_path: str,
     )
 
 
-@router.get("/login", response_class=HTMLResponse)
+@router.get(
+    "/login",
+    response_class=HTMLResponse,
+    dependencies=[Depends(ratelimit.limit_login)],
+)
 def login_get(
     request: Request,
     code: str | None = None,
@@ -160,7 +164,11 @@ def login_get(
     return _render_form(request, error=None, next_path=safe_next)
 
 
-@router.post("/login", response_class=HTMLResponse)
+@router.post(
+    "/login",
+    response_class=HTMLResponse,
+    dependencies=[Depends(ratelimit.limit_login)],
+)
 def login_post(
     request: Request,
     token: str = Form(...),

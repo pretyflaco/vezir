@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .. import config
-from . import auth, queue, worker
+from . import auth, queue, ratelimit, worker
 from .templating import templates
 
 log = logging.getLogger("vezir.sessions")
@@ -63,7 +63,7 @@ def session_detail(
     )
 
 
-@router.get("/api/sessions")
+@router.get("/api/sessions", dependencies=[Depends(ratelimit.limit_api)])
 def api_sessions(
     limit: int = 50,
     github: str = Depends(auth.require_bearer),
@@ -71,7 +71,10 @@ def api_sessions(
     return {"sessions": [_decorate(r) for r in queue.list_recent(limit=limit)]}
 
 
-@router.get("/api/sessions/{session_id}")
+@router.get(
+    "/api/sessions/{session_id}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
 def api_session(
     session_id: str,
     github: str = Depends(auth.require_bearer),
