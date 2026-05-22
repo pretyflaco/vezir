@@ -14,48 +14,172 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.7). Designed for small teams that want to keep meeting audio
+Alpha (0.1.11). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one private mesh VPN + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
+
+**Highlights of the 0.1.9 - 0.1.11 line:**
+
+- **Summarization preset selector** (per upload) — pick between
+  `high-quality` (Sonnet 4.6), `confidential` (DeepSeek V4 Pro in a
+  Tinfoil hardware-attested TEE), or `alternative` (Kimi K2.6).
+  CLI: `--preset`; GUI: dropdown; Android: dropdown.  When the
+  `confidential` preset is chosen the PDF carries a red CONFIDENTIAL
+  watermark on every page.
+- **Auto-label opt-out** (per upload) — `--no-auto-label` skips
+  server-side voiceprint matching and always routes the session to
+  manual labeling.
+- **Sync opt-out** (per upload) — `--no-sync` keeps the session
+  `local-only` on the dashboard; artifacts stay on the vezir server
+  and aren't pushed to the configured destination repo.
+  Retroactively syncable from the dashboard's "Sync now" button.
+- **Brand-lockup PNG in the GUI header** (replaces the older
+  "vezir scribe" text label).
 
 Supported VPN options:
 - [nostr-vpn](https://github.com/mmalmi/nostr-vpn) — decentralized,
   no accounts or fees, Nostr keys for identity (see `infra/nvpn/README.md`)
 - [Tailscale](https://tailscale.com/) — established, easy setup,
   requires third-party account
-Linux clients fully supported. macOS Apple Silicon is supported for both
-client and server roles; on Apple Silicon the server auto-selects MLX
-Whisper ASR + PyTorch MPS when available, falling back to CPU/MPS-split
-mode otherwise.
 
-Requires `meetscribe-offline >= 0.6.0` (pinned via the `[server]` extra)
-which adds matching auto-defaults for `--device` and `--torch-device`, so
-the `VEZIR_MEET_DEVICE` / `VEZIR_MEET_TORCH_DEVICE` env vars are now
-optional even on Macs (still respected as explicit overrides).
+Linux and macOS Apple Silicon clients are fully supported.  An
+Android thin client lives at
+[vezir-android](https://github.com/pretyflaco/vezir-android) (v0.1.4
+ships the same three opt-outs + preset selector).  On Apple Silicon
+the server auto-selects MLX Whisper ASR + PyTorch MPS when available,
+falling back to CPU/MPS-split mode otherwise.
+
+Requires **`meetscribe-offline >= 0.8.1`** (pinned via the `[server]`
+extra).  0.8.x adds the preset system, the Tinfoil TEE backend, the
+CONFIDENTIAL PDF watermark, and several voiceprint / relabel
+correctness fixes that vezir's worker depends on.
 
 ## Architecture
 
 ```
-[Scribe laptop]                       [GPU server]
+[Scribe laptop / phone]               [GPU server]
   vezir scribe / gui / upload ──▶     vezir serve (FastAPI)
-   (wraps meet record)                  │
-                                        ├── sqlite job queue
-                                        │
-                                        ▼
-                                      worker
-                                        │ shells out via HOME-shim
-                                        ▼
-                                      meet transcribe (unmodified)
-                                      meet label --auto
-                                      meet sync     ──▶ private git repo
-                                        │
-                                        ▼
-                                      web UI (labeling, dashboard)
-                                       ◀── scribe browser
+   (wraps meet record;                   │   form fields:
+    sends summary_preset,                │     summary_preset
+    auto_label, sync as                  │     auto_label
+    multipart form fields)               │     sync
+                                         ├── sqlite job queue
+                                         │   (summary_preset,
+                                         │    auto_label_enabled,
+                                         │    sync_enabled columns)
+                                         ▼
+                                       worker
+                                         │ shells out via HOME-shim
+                                         ▼
+                                       meet transcribe --summary-preset <id>
+                                       meet label --auto  (if auto_label_enabled)
+                                       meet sync          (if sync_enabled
+                                                           and VEZIR_SKIP_SYNC unset)
+                                                ──▶ private git repo
+                                                    OR sit at `done (local-only)`
+                                                       on the dashboard
+                                         │
+                                         ▼
+                                       web UI (labeling, dashboard,
+                                               "Sync now" button)
+                                        ◀── scribe browser
 ```
 
 Meetscribe is invoked as an unmodified subprocess. Vezir owns its own
-job queue, voiceprint database, team roster, and browser auth.
+job queue, voiceprint database, team roster, and browser auth, and
+exposes the three per-upload toggles end-to-end (client → form field
+→ queue column → worker gate).
+
+## Summarization presets
+
+A preset picks the backend + model the server will use for the AI
+summary.  The client sends the preset id as the multipart form field
+`summary_preset`; the worker passes it to
+`meet transcribe --summary-preset <id>` which meetscribe resolves to
+a `(backend, model)` pair.
+
+| Preset | Backend | Model | Use case |
+|---|---|---|---|
+| `high-quality` | claudemax | Sonnet 4.6 | Default on desktop; highest summary quality (requires a Claude Max subscription on the server) |
+| `confidential` | tinfoil | DeepSeek V4 Pro | Hardware-attested TEE — prompts not visible to model provider / cloud operator.  Default on Android.  PDF gains a red CONFIDENTIAL header + footer on every page. |
+| `alternative` | openrouter | Kimi K2.6 | Cheapest cloud option (~$0.017/meeting); useful when claudemax credentials are unavailable on the server |
+
+When a preset is explicitly chosen, the server **does not silently
+fall back** to a different backend on failure — a silent
+tinfoil → claudemax fallback would defeat the entire point of the
+Confidential preset.  Jobs whose chosen preset fails end up in
+`error` state on the dashboard with a clear reason.
+
+Set the preset via:
+- CLI: `vezir scribe --preset confidential`, `vezir upload --preset alternative <file>`
+- GUI: dropdown above the record button (stickied to last choice via
+  `~/.config/vezir/client.json`)
+- Android: dropdown above the title field (stickied to
+  EncryptedSharedPreferences; default `confidential` on Android)
+
+The server needs the matching backend credentials/SDK installed.  On
+muscle, the Tinfoil SDK is pulled by the `[tee]` extra of meetscribe-
+offline (`pip install 'meetscribe-offline[tee]'`) and the API key
+lives in `TINFOIL_API_KEY` or at `~/models/tinfoil/tinfoil.txt`.
+
+## Privacy toggles
+
+Two further per-upload toggles, both **default ON** (preserves
+pre-0.1.11 behavior):
+
+| Toggle | Default | When OFF |
+|---|---|---|
+| `auto_label` | ON  | Server skips `meet label --auto`; session always routes to manual labeling.  Useful when you don't want the server attempting to identify speakers from previously enrolled voiceprints. |
+| `sync` | ON | Server keeps the session local-only (status `done (local-only)` on the dashboard).  Artifacts stay on the vezir server but aren't pushed to the configured destination repo. |
+
+CLI: `--auto-label/--no-auto-label` and `--sync/--no-sync` on both
+`scribe` and `upload`.  Explicit choices are persisted to
+`~/.config/vezir/client.json` so the next session remembers them.
+
+GUI: two checkboxes between the preset combobox and the recorder row.
+
+Android: two `Switch` rows on the record screen, persisted in
+EncryptedSharedPreferences.
+
+### Retroactive sync
+
+A session uploaded with `--no-sync` can be promoted to git later from
+the dashboard.  The session detail page (`/s/<id>`) renders a
+"Sync now" button when the session reached `done` with `sync_enabled=0`.
+Clicking it POSTs to `/session/<id>/sync`, which flips the queue row's
+`sync_enabled = 1` and re-runs the finalize-sync flow in a background
+thread.  The page polls and refreshes through `syncing → done`.
+
+The status badge reads `local-only` (purple) instead of `done`
+(green) for these sessions so they're visually distinct in the
+dashboard.
+
+### Operator-side kill switches
+
+The two **server-side** env vars are unchanged:
+
+- `VEZIR_SKIP_SYNC=1` — global sync kill switch.  Wins over the
+  per-job `sync_enabled = 1`.  Both must allow sync for sync to
+  happen.
+- `VEZIR_DELETE_AUDIO=1` — delete recorded audio after artifacts are
+  produced (storage retention policy).
+
+## Compatibility
+
+The 0.1.11 wire format is forward- and backward-compatible:
+
+- **Older clients (< 0.1.11) talking to a 0.1.11 server** don't send
+  the `summary_preset` / `auto_label` / `sync` fields; the server
+  treats absent fields as the safe defaults (no preset → server
+  default backend; auto_label=ON; sync=ON).
+- **A 0.1.11 client talking to an older server (< 0.1.11)** sends the
+  fields but the older server ignores them.  Behavior is exactly
+  today's: server uses its default backend, always auto-labels,
+  always syncs.
+
+Both cases are silent — no errors.  If a teammate is on an older
+client and you want them to use a preset / opt-out, ask them to
+`pip install --upgrade vezir`.
 
 ## Repo layout
 
@@ -172,7 +296,21 @@ vezir scribe --title "what this meeting is about"
 # By default, the recorded WAV is compressed to OGG/Opus before upload.
 # Use --no-compress to upload the raw WAV instead.
 
-# Or GUI scribe (always-on-top widget)
+# Pick a summarization preset.  Default is whatever the GUI/CLI last
+# used (sticky in ~/.config/vezir/client.json); flag overrides for one
+# session and updates the stickied value.
+vezir scribe --preset confidential --title "board meeting"
+
+# Privacy toggles.  Both default ON; passing the negative form opts out
+# AND stickies the OFF state for next session until explicitly toggled
+# back on.
+vezir scribe --no-auto-label --title "research interview"
+vezir scribe --no-sync --title "draft notes"
+vezir scribe --preset confidential --no-sync --no-auto-label    # paranoid mode
+
+# GUI scribe (always-on-top widget): preset dropdown + 'Auto-label
+# speakers' + 'Sync to git' checkboxes are visible directly above the
+# Record button; choices persist across launches.
 vezir gui
 
 # Or upload an existing recording (WAV/OGG)
@@ -180,6 +318,9 @@ vezir upload ./previous-meeting.wav --title "previous meeting"
 
 # Compress an existing WAV before uploading it
 vezir upload ./previous-meeting.wav --compress --title "previous meeting"
+
+# Same flags work on upload:
+vezir upload ./private-call.wav --preset confidential --no-sync --title "1:1"
 ```
 
 When the recording is uploaded, vezir prints a dashboard URL. Open it in
@@ -236,6 +377,7 @@ For end-to-end local transcription on Apple Silicon (no server needed), see
 | `VEZIR_PORT` | `8000` | Port for `vezir serve` |
 | `VEZIR_URL` | `http://localhost:8000` | Server URL for `vezir scribe` clients |
 | `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` clients |
+| `VEZIR_SUMMARY_PRESET` | unset | Default summarization preset (`high-quality` \| `confidential` \| `alternative`).  Read by both CLI commands and the GUI as the initial value when `~/.config/vezir/client.json` has no `summary_preset` key.  CLI `--preset` flag takes precedence. |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
 | `VEZIR_MEET_BIN` | `$(which meet)` | Path to meetscribe `meet` binary |
 | `VEZIR_MEET_DEVICE` | `mps` on Apple Silicon when supported by the installed meetscribe stack, `cuda` when CUDA is available elsewhere, otherwise `cpu` | Device passed to `meet transcribe` |
