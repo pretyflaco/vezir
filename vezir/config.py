@@ -6,8 +6,15 @@ Environment variables:
     VEZIR_DATA          Base dir for all runtime state (default ~/vezir-data)
     VEZIR_URL           Server URL for `vezir scribe` clients
     VEZIR_TOKEN         Bearer token for `vezir scribe` clients
-    VEZIR_HOST          Bind address for `vezir serve` (default 0.0.0.0)
+    VEZIR_HOST          Bind address for `vezir serve` (default 127.0.0.1
+                        from 0.1.12 onward, when no Caddy reverse proxy is
+                        configured; previously 0.0.0.0). Set explicitly to
+                        0.0.0.0 to opt back into the old behavior.
     VEZIR_PORT          Port for `vezir serve` (default 8000)
+    VEZIR_COOKIE_SECURE Set to 1 to add ``Secure`` to the session cookie
+                        (recommended when serving over HTTPS via Caddy).
+    VEZIR_DISABLE_RATELIMIT  Set to 1 to disable the in-process rate
+                             limiter. Tests use this; do not set in prod.
     VEZIR_MEET_BIN      Path to meetscribe `meet` binary (default: from PATH)
     VEZIR_MEET_DEVICE   Device for `meet transcribe` (default: mps on Apple
                         Silicon when supported by the installed meetscribe
@@ -85,7 +92,20 @@ def queue_db_path() -> Path:
 
 
 def host() -> str:
-    return os.environ.get("VEZIR_HOST", "0.0.0.0")
+    """Bind address for `vezir serve`.
+
+    Default changed in 0.1.12 from ``0.0.0.0`` (listen on all interfaces)
+    to ``127.0.0.1`` (loopback only). The intended deployment is now to
+    front vezir with Caddy (which listens on the VPN-reachable address
+    and forwards to localhost). Operators who deliberately want vezir
+    directly on the VPN can set ``VEZIR_HOST=0.0.0.0`` to opt back in.
+
+    Rationale: pre-0.1.12 anyone on the mesh could speak HTTP directly
+    to FastAPI. With Caddy in front we gain TLS, edge rate limits, and
+    the ability to scrub Authorization headers from access logs — but
+    only if FastAPI is not also reachable on the same port.
+    """
+    return os.environ.get("VEZIR_HOST", "127.0.0.1")
 
 
 def port() -> int:
