@@ -135,9 +135,27 @@ _POLL_INTERVAL = 5.0  # seconds, matches GUI
 
 
 def _login_url(server_url: str, token: str, next_path: str) -> str:
-    """Build a /login?token=...&next=... URL for browser hand-off."""
+    """Get a /login?code=vzx_...&next=... URL via the server exchange-code API.
+
+    Falls back to a code-free /login?next=... URL (user pastes token
+    manually) if the server is unreachable or running pre-0.1.12.
+    """
+    import httpx
+
     base = server_url.rstrip("/")
-    return f"{base}/login?token={quote(token)}&next={quote(next_path)}"
+    try:
+        r = httpx.post(
+            f"{base}/api/exchange-code",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"next": next_path},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return r.json().get("login_url") or f"{base}/login?next={quote(next_path)}"
+    except Exception:
+        pass
+    # Fallback: code-free URL. User lands on the paste-token form.
+    return f"{base}/login?next={quote(next_path)}"
 
 
 def poll_status(

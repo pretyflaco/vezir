@@ -6,18 +6,20 @@ GET  /api/sessions           → JSON list (for clients)
 GET  /api/sessions/<id>      → JSON session detail
 GET  /artifact/<id>/<name>   → download a generated artifact
 POST /session/<id>/sync      → retroactive sync of a local-only session
+POST /api/exchange-code      → mint a short-lived login code for browser hand-off
 """
 from __future__ import annotations
 
 import json
 import logging
 import threading
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .. import config
-from . import auth, queue, ratelimit, worker
+from . import auth, queue, ratelimit, web_sessions, worker
 from .templating import templates
 
 log = logging.getLogger("vezir.sessions")
@@ -155,3 +157,33 @@ def sync_now(
     if "text/html" in (request.headers.get("accept") or ""):
         return RedirectResponse(url=f"/s/{session_id}", status_code=303)
     return {"session_id": session_id, "queued": True}
+
+
+# ── exchange-code minting ───────────────────────────────────────────────────
+
+
+@router.post(
+    "/api/exchange-code",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def mint_exchange_code(
+    request: Request,
+    next: str | None = None,
+    github: str = Depends(auth.require_bearer),
+):
+    """Mint a one-time, 60-second exchange code for browser hand-off.
+
+    The client calls this when it needs a login URL (e.g. to print a
+    "Label speakers" link in the terminal). The returned ``login_url``
+    contains ``?code=vzx_...`` — the bearer never enters the URL.
+
+    Query parameter ``next`` is the page the browser should land on
+    after consuming the code (e.g. ``/label/<session_id>``).
+    """
+    auth_header = request.headers.get("authorization", "")
+    bearer = auth_header.split(None, 1)[1].strip() if " " in auth_header else ""
+    code = web_sessions.mint_exchange_code(bearer)
+    base = str(request.base_url).rstrip("/")
+    safe_next = quote(next or "/", safe="")
+    login_url = f"{base}/login?code={quote(code, safe='')}&next={safe_next}"
+    return {"login_url": login_url}

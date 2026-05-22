@@ -384,6 +384,48 @@ def test_api_still_requires_bearer_not_session_cookie(client_factory, tmp_data):
     assert resp2.status_code == 200
 
 
+# ── POST /api/exchange-code ─────────────────────────────────────────────────
+
+
+def test_exchange_code_endpoint_returns_code_url(client_factory):
+    from vezir.server import auth
+    client = client_factory()
+    tok = auth.issue("alice")
+    resp = client.post(
+        "/api/exchange-code?next=/label/abc123",
+        headers=_bearer(tok),
+    )
+    assert resp.status_code == 200
+    url = resp.json()["login_url"]
+    assert "code=vzx_" in url
+    assert tok not in url
+    assert "%2Flabel%2Fabc123" in url
+
+
+def test_exchange_code_endpoint_rejects_missing_bearer(client_factory):
+    client = client_factory()
+    resp = client.post("/api/exchange-code?next=/")
+    assert resp.status_code == 401
+
+
+def test_exchange_code_endpoint_code_is_consumable(client_factory):
+    """The code returned by /api/exchange-code must actually work at /login."""
+    from vezir.server import auth
+    client = client_factory()
+    tok = auth.issue("alice")
+    resp = client.post(
+        "/api/exchange-code?next=/s/test",
+        headers=_bearer(tok),
+    )
+    login_url = resp.json()["login_url"]
+    # Extract the relative path (TestClient needs relative URLs).
+    from urllib.parse import urlparse
+    path_and_query = urlparse(login_url)._replace(scheme="", netloc="").geturl()
+    r2 = client.get(path_and_query)
+    assert r2.status_code == 303
+    assert r2.headers["location"] == "/s/test"
+
+
 # ── Patch 3: rate limiting ──────────────────────────────────────────────────
 
 
