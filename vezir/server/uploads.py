@@ -101,11 +101,13 @@ async def upload(
     # that don't send these fields.
     auto_label: str | None = Form(default=None),
     sync: str | None = Form(default=None),
+    personal: str | None = Form(default=None),
     audio_bytes: int | None = Form(default=None),
     github: str = Depends(auth.require_bearer),
 ):
     auto_label_enabled = _parse_bool_form(auto_label, default=True)
     sync_enabled = _parse_bool_form(sync, default=True)
+    is_personal = _parse_bool_form(personal, default=False)
     config.ensure_dirs()
     max_bytes = config.max_upload_bytes()
     content_length = request.headers.get("content-length")
@@ -157,9 +159,9 @@ async def upload(
 
     log.info(
         "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r "
-        "summary_preset=%r auto_label=%s sync=%s",
+        "summary_preset=%r auto_label=%s sync=%s personal=%s",
         session_id, github, bytes_written, ext, title, summary_preset,
-        auto_label_enabled, sync_enabled,
+        auto_label_enabled, sync_enabled, is_personal,
     )
 
     queue.enqueue(
@@ -169,6 +171,7 @@ async def upload(
         summary_preset=summary_preset,
         auto_label_enabled=auto_label_enabled,
         sync_enabled=sync_enabled,
+        personal=is_personal,
     )
 
     base = str(request.base_url).rstrip("/")

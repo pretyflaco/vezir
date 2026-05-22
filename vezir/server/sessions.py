@@ -70,7 +70,17 @@ def api_sessions(
     limit: int = 50,
     github: str = Depends(auth.require_bearer),
 ):
-    return {"sessions": [_decorate(r) for r in queue.list_recent(limit=limit)]}
+    """Return recent sessions visible to the authenticated user.
+
+    Visibility rule: all non-personal sessions PLUS the user's own
+    personal sessions. Other users' personal sessions are hidden.
+    """
+    return {
+        "sessions": [
+            _decorate(r)
+            for r in queue.list_recent(limit=limit, viewer_github=github)
+        ],
+    }
 
 
 @router.get(
@@ -157,6 +167,40 @@ def sync_now(
     if "text/html" in (request.headers.get("accept") or ""):
         return RedirectResponse(url=f"/s/{session_id}", status_code=303)
     return {"session_id": session_id, "queued": True}
+
+
+# ── personal → team sharing ──────────────────────────────────────────────────
+
+
+@router.post(
+    "/api/sessions/{session_id}/share",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def share_with_team(
+    session_id: str,
+    github: str = Depends(auth.require_bearer),
+):
+    """Un-personal a session so it becomes visible to the whole team.
+
+    Only the original uploader can share their own personal sessions.
+    Sets ``personal=0``; does NOT automatically enable sync — the user
+    can then click "Sync now" separately if they also want the artifacts
+    pushed to git.
+    """
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    if row.get("github") != github:
+        raise HTTPException(
+            403,
+            "only the original uploader can share a personal session",
+        )
+    if not row.get("personal"):
+        return {"ok": True, "session_id": session_id, "already_shared": True}
+
+    queue.set_personal(session_id, False)
+    log.info("session=%s shared with team by %s", session_id, github)
+    return {"ok": True, "session_id": session_id}
 
 
 # ── exchange-code minting ───────────────────────────────────────────────────

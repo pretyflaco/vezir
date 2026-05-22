@@ -15,6 +15,10 @@ Schema:
                          pipeline completes; session goes to `done` with
                          no git push.  Default 1.  Operator-side env var
                          VEZIR_SKIP_SYNC overrides to 0 globally.
+    personal             0/1.  When 1, the session is hidden from other team
+                         members' session lists (only the uploader sees it).
+                         Personal sessions force sync_enabled=0 server-side.
+                         Default 0.
     status               one of: queued, transcribing, needs_labeling, syncing,
                          done, error
     created_at           ISO timestamp
@@ -89,6 +93,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
                 "ALTER TABLE jobs ADD COLUMN summary_preset TEXT",
                 "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
             ):
                 try:
                     conn.execute(ddl)
@@ -108,22 +113,29 @@ def enqueue(
     summary_preset: str | None = None,
     auto_label_enabled: bool = True,
     sync_enabled: bool = True,
+    personal: bool = False,
 ) -> None:
     """Add a new job in `queued` state.
 
     Booleans are stored as 0/1 (SQLite convention).  Callers may pass
     None implicitly via missing form fields — those land here as True by
     default, preserving the pre-opt-out worker behavior.
+
+    ``personal=True`` forces ``sync_enabled=False`` server-side: personal
+    recordings should not be pushed to the shared git repo.
     """
+    if personal:
+        sync_enabled = False
     with _conn() as c:
         c.execute(
             "INSERT INTO jobs (id, github, title, summary_preset, "
-            "auto_label_enabled, sync_enabled, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            "auto_label_enabled, sync_enabled, personal, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
             (
                 job_id, github, title, summary_preset,
                 1 if auto_label_enabled else 0,
                 1 if sync_enabled else 0,
+                1 if personal else 0,
                 _now(), _now(),
             ),
         )
@@ -192,9 +204,42 @@ def set_sync_enabled(job_id: str, enabled: bool) -> None:
         )
 
 
-def list_recent(limit: int = 50, github: str | None = None) -> list[dict]:
+def set_personal(job_id: str, personal: bool) -> None:
+    """Flip the personal flag on an existing job.
+
+    Used by ``POST /api/sessions/{id}/share`` to un-personal a session
+    ("Share with team").
+    """
     with _conn() as c:
-        if github:
+        c.execute(
+            "UPDATE jobs SET personal = ?, updated_at = ? WHERE id = ?",
+            (1 if personal else 0, _now(), job_id),
+        )
+
+
+def list_recent(
+    limit: int = 50,
+    github: str | None = None,
+    viewer_github: str | None = None,
+) -> list[dict]:
+    """Return recent jobs, filtered for visibility.
+
+    ``viewer_github``: when set, applies the personal-visibility rule:
+    return all non-personal sessions PLUS personal sessions owned by
+    ``viewer_github``. This is the filter used by ``/api/sessions``.
+
+    ``github``: when set (without ``viewer_github``), returns only
+    sessions uploaded by that handle (admin / per-user view). This is
+    the legacy filter used by ``vezir status``.
+    """
+    with _conn() as c:
+        if viewer_github:
+            rows = c.execute(
+                "SELECT * FROM jobs WHERE personal = 0 OR github = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (viewer_github, limit),
+            ).fetchall()
+        elif github:
             rows = c.execute(
                 "SELECT * FROM jobs WHERE github = ? "
                 "ORDER BY created_at DESC LIMIT ?",

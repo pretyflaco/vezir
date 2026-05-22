@@ -217,6 +217,19 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
 _LABELABLE_STATUSES = ("needs_labeling", "done", "error")
 
 
+@router.get(
+    "/api/team",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def api_team(github: str = Depends(auth.require_bearer)):
+    """Return the team handles list (for autocomplete in native clients).
+
+    Reads from ~/vezir-data/team.json. Same data that the HTML labeling
+    page uses for its <datalist>.
+    """
+    return {"team": _team_handles()}
+
+
 @router.post("/label/{session_id}")
 async def submit_labels(
     request: Request,
