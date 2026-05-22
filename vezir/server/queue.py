@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id              TEXT PRIMARY KEY,
     github          TEXT NOT NULL,
     title           TEXT,
+    summary_preset  TEXT,
     status          TEXT NOT NULL,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
@@ -71,19 +72,25 @@ def _conn() -> Iterator[sqlite3.Connection]:
         conn.row_factory = sqlite3.Row
         try:
             conn.executescript(SCHEMA)
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN summary_preset TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
             yield conn
             conn.commit()
         finally:
             conn.close()
 
 
-def enqueue(job_id: str, github: str, title: str | None = None) -> None:
+def enqueue(job_id: str, github: str, title: str | None = None,
+            summary_preset: str | None = None) -> None:
     """Add a new job in `queued` state."""
     with _conn() as c:
         c.execute(
-            "INSERT INTO jobs (id, github, title, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'queued', ?, ?)",
-            (job_id, github, title, _now(), _now()),
+            "INSERT INTO jobs (id, github, title, summary_preset, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'queued', ?, ?)",
+            (job_id, github, title, summary_preset, _now(), _now()),
         )
 
 

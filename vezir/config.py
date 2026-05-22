@@ -24,6 +24,7 @@ Environment variables:
     VEZIR_MEET_ASR_BACKEND ASR backend for `meet transcribe` when supported
                         (auto-selects mlx on Apple Silicon when available)
     VEZIR_MEET_MLX_MODEL MLX Whisper model path/repo when using mlx ASR
+    VEZIR_SUMMARY_PRESET    Summary quality preset (high-quality|confidential|alternative)
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
 """
@@ -316,6 +317,11 @@ def meet_mlx_model(asr_backend: str | None = None) -> str | None:
     if not meet_supports_option("--mlx-model"):
         return None
     return explicit
+
+
+def summary_preset() -> str | None:
+    """Return the configured summarization preset, or None for the default."""
+    return os.environ.get("VEZIR_SUMMARY_PRESET")
 
 
 def log_level() -> str:

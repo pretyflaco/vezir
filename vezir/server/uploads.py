@@ -77,6 +77,7 @@ async def upload(
     request: Request,
     audio: UploadFile = File(...),
     title: str | None = Form(default=None),
+    summary_preset: str | None = Form(default=None),
     audio_bytes: int | None = Form(default=None),
     github: str = Depends(auth.require_bearer),
 ):
@@ -134,7 +135,7 @@ async def upload(
         session_id, github, bytes_written, ext, title,
     )
 
-    queue.enqueue(session_id, github=github, title=title)
+    queue.enqueue(session_id, github=github, title=title, summary_preset=summary_preset)
 
     base = str(request.base_url).rstrip("/")
     # `dashboard_url` is the canonical session detail path; clients with a

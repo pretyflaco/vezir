@@ -213,7 +213,7 @@ def process_one(job: dict) -> None:
 
     try:
         # 1. transcribe
-        rc = meet_runner.transcribe(sd, job_id, log_path)
+        rc = meet_runner.transcribe(sd, job_id, log_path, summary_preset=job.get("summary_preset"))
         if rc != 0:
             queue.update_status(
                 job_id, "error",
