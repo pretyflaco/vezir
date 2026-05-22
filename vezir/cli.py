@@ -56,9 +56,13 @@ def serve(host, port, reload):
               help="Max seconds to wait for processing (default: 600)")
 @click.option("--open-labeling", is_flag=True, default=False,
               help="Auto-open labeling page in browser when speakers need labeling")
+@click.option("--preset",
+    type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
+    default=None,
+    help="Summarization quality/privacy preset")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
 def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
-           open_labeling, record_args):
+           open_labeling, preset, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
@@ -76,6 +80,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
             wait=wait,
             wait_timeout=float(wait_timeout),
             open_labeling=open_labeling,
+            summary_preset=preset,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)
@@ -96,6 +101,10 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
               help="Optional meeting title")
 @click.option("--compress", is_flag=True,
               help="Compress WAV input to OGG/Opus before upload")
+@click.option("--preset",
+    type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
+    default=None,
+    help="Summarization quality/privacy preset")
 @click.option("--wait/--no-wait", default=False,
               help="Wait for server processing and report status (default: off)")
 @click.option("--wait-timeout", default=600, type=int,
@@ -104,7 +113,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_cmd(server_url, token, title, compress, wait, wait_timeout, audio_file):
+def upload_cmd(server_url, token, title, compress, preset, wait, wait_timeout, audio_file):
     """Upload an existing WAV/OGG recording to vezir."""
     from .client import uploader
 
@@ -159,6 +168,7 @@ def upload_cmd(server_url, token, title, compress, wait, wait_timeout, audio_fil
             token,
             audio_file,
             title=title,
+            summary_preset=preset,
             progress=progress,
             on_retry=on_retry,
         )

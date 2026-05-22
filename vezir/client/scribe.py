@@ -233,6 +233,7 @@ def run_scribe(
     wait: bool = True,
     wait_timeout: float = 600.0,
     open_labeling: bool = False,
+    summary_preset: str | None = None,
 ) -> dict:
     """Record locally, then upload. Returns the upload response dict."""
     server_url = server_url or config.server_url()
@@ -310,6 +311,7 @@ def run_scribe(
             token,
             audio,
             title=title,
+            summary_preset=summary_preset,
             progress=_progress_line,
             on_retry=_retry_line,
         )

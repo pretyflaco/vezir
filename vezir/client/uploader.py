@@ -104,6 +104,7 @@ def upload(
     token: str,
     audio_path: Path,
     title: str | None = None,
+    summary_preset: str | None = None,
     timeout: float = 600.0,
     retries: int = 5,
     progress: ProgressCallback | None = None,
@@ -134,6 +135,8 @@ def upload(
                 data = {"audio_bytes": str(expected_bytes)}
                 if title:
                     data["title"] = title
+                if summary_preset:
+                    data["summary_preset"] = summary_preset
                 with httpx.Client(timeout=timeout) as client:
                     resp = client.post(url, headers=headers, files=files, data=data)
             if resp.status_code == 200:

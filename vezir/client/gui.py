@@ -50,6 +50,12 @@ from tkinter import messagebox
 
 from .. import config
 
+_PRESET_LABEL_TO_ID = {
+    "High Quality \u2014 Sonnet 4.6": "high-quality",
+    "Confidential \u2014 DeepSeek V4 Pro (TEE)": "confidential",
+    "Alternative \u2014 Kimi K2.6": "alternative",
+}
+
 
 # ─── Persistent client config ────────────────────────────────────────────────
 
@@ -240,6 +246,21 @@ class ScribeWindow:
         self.title_var = tk.StringVar()
         self.title_entry = tk.Entry(title_frame, textvariable=self.title_var)
         self.title_entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        # ─── Summarization preset dropdown ─────
+        preset_frame = tk.Frame(root)
+        preset_frame.pack(fill="x", padx=8, pady=(2, 4))
+        tk.Label(preset_frame, text="Summarization:", anchor="w").pack(side="left")
+        self._preset_var = tk.StringVar(value="High Quality \u2014 Sonnet 4.6")
+        _PRESET_LABELS = [
+            "High Quality \u2014 Sonnet 4.6",
+            "Confidential \u2014 DeepSeek V4 Pro (TEE)",
+            "Alternative \u2014 Kimi K2.6",
+        ]
+        import tkinter.ttk as ttk
+        preset_combo = ttk.Combobox(preset_frame, textvariable=self._preset_var,
+                                    values=_PRESET_LABELS, state="readonly", width=38)
+        preset_combo.pack(side="left", padx=(8, 0), fill="x", expand=True)
 
         # ─── Recorder row ────
         rec_frame = tk.Frame(root)
@@ -446,12 +467,14 @@ class ScribeWindow:
                         f"upload attempt {attempt}/{retries} failed; retrying from byte 0",
                     ))
 
+                preset_id = _PRESET_LABEL_TO_ID.get(self._preset_var.get(), "high-quality")
                 self._gui_queue.put(("status", "uploading"))
                 result = do_upload(
                     self.url,
                     self.token,
                     audio_path,
                     title=title,
+                    summary_preset=preset_id,
                     progress=progress,
                     on_retry=on_retry,
                 )
