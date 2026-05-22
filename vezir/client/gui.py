@@ -64,17 +64,22 @@ def _load_logo_image() -> "tk.PhotoImage | None":
     (e.g. running from a checkout where the PNG has not been generated).
     Caller falls back to a textual label.
 
+    Sizing: the 88x28 variant is chosen to roughly match the Record
+    button's height so the header stays compact and the lockup reads as
+    a piece of UI chrome rather than a hero element.  Larger 176/400/800
+    variants are also shipped (package-data) for places that want a
+    bigger lockup (e.g. an About dialog) — pick the variant by filename.
+
     The PNG is shipped as package-data; we resolve it through
     importlib.resources so it works the same in a wheel install, an
     editable install, and a zipapp.
     """
     try:
-        from importlib.resources import files as _pkg_files
-        resource = _pkg_files("vezir.client.assets") / "vezir-logo-400.png"
+        from importlib.resources import files as _pkg_files, as_file
+        resource = _pkg_files("vezir.client.assets") / "vezir-logo-88.png"
         # importlib.resources may return a MultiplexedPath / Traversable
         # that is not a plain filesystem path.  as_file() yields a real
         # path even when the resource is shipped inside a zip.
-        from importlib.resources import as_file
         with as_file(resource) as p:
             return tk.PhotoImage(file=str(p))
     except Exception:
