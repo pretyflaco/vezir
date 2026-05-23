@@ -114,10 +114,13 @@ def _client_key(request: Request, name_prefix: str) -> str:
     """
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
-        bearer = auth_header.split(None, 1)[1].strip()
-        # Hash the bearer to avoid keeping the plaintext as a dict key.
-        import hashlib
-        return f"{name_prefix}:tok:{hashlib.sha256(bearer.encode()).hexdigest()[:16]}"
+        parts = auth_header.split(None, 1)
+        bearer = parts[1].strip() if len(parts) > 1 else ""
+        if bearer:
+            # Hash the bearer to avoid keeping the plaintext as a dict key.
+            import hashlib
+            return f"{name_prefix}:tok:{hashlib.sha256(bearer.encode()).hexdigest()[:16]}"
+    # Empty / malformed bearer falls through to per-IP keying.
     ip = request.client.host if request.client else "?"
     return f"{name_prefix}:ip:{ip}"
 

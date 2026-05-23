@@ -253,6 +253,7 @@ def process_one(job: dict) -> None:
         # partial success: mark the job `done` with a `summary_error` so
         # the user gets their transcript and can retry the summary later.
         summary_err_msg: str | None = None
+        sync_err_msg: str | None = None
 
         if rc != 0:
             has_transcript = bool(list(sd.glob("*.txt"))) and bool(list(sd.glob("*.json")))
@@ -325,35 +326,36 @@ def process_one(job: dict) -> None:
             queue.update_status(job_id, "syncing", artifacts=artifacts)
             rc = meet_runner.sync(sd, job_id, log_path)
             if rc != 0:
-                queue.update_status(
-                    job_id, "error",
-                    error=_error_with_tail(f"meet sync exited {rc}", log_path),
-                    artifacts=artifacts,
+                sync_err_msg = _error_with_tail(
+                    f"meet sync exited {rc}", log_path,
                 )
-                return
-            # `meet sync` may exit 0 even when git clone/push failed.
-            # Inspect the log for failure markers; if found, mark error
-            # so the operator can retry.
-            failure = _sync_log_indicates_failure(log_path)
-            if failure:
-                log.warning("job %s: sync silent failure: %s", job_id, failure)
-                queue.update_status(
-                    job_id, "error",
-                    error=_error_with_tail(
+                log.warning("job %s: sync failed: %s", job_id, sync_err_msg)
+            else:
+                # `meet sync` may exit 0 even when git clone/push failed.
+                # Inspect the log for failure markers.
+                failure = _sync_log_indicates_failure(log_path)
+                if failure:
+                    sync_err_msg = _error_with_tail(
                         f"meet sync failed silently: {failure}", log_path,
-                    ),
-                    artifacts=artifacts,
-                )
-                return
+                    )
+                    log.warning(
+                        "job %s: sync silent failure: %s", job_id, failure,
+                    )
 
         # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1)
         _delete_audio(sd)
         queue.update_status(
             job_id, "done", artifacts=artifacts,
             summary_error=summary_err_msg,
+            sync_error=sync_err_msg,
         )
+        parts = []
         if summary_err_msg:
-            log.info("job %s done (summary failed: %s)", job_id, summary_err_msg)
+            parts.append(f"summary failed: {summary_err_msg}")
+        if sync_err_msg:
+            parts.append(f"sync failed: {sync_err_msg}")
+        if parts:
+            log.info("job %s done (%s)", job_id, "; ".join(parts))
         else:
             log.info("job %s done", job_id)
     except Exception as exc:
@@ -449,6 +451,7 @@ def retry_summary_for_session(session_id: str) -> None:
 
         # If the session was previously done and now has a summary, re-run
         # sync if enabled (the summary artifact is new content).
+        sync_err_msg: str | None = None
         sync_enabled = bool(job.get("sync_enabled", 1))
         if _skip_sync():
             log.info("retry-summary %s: VEZIR_SKIP_SYNC set", session_id)
@@ -458,27 +461,29 @@ def retry_summary_for_session(session_id: str) -> None:
             queue.update_status(session_id, "syncing", artifacts=artifacts)
             src = meet_runner.sync(sd, session_id, log_path)
             if src != 0:
-                queue.update_status(
-                    session_id, "error",
-                    error=_error_with_tail(f"meet sync exited {src}", log_path),
-                    artifacts=artifacts,
+                sync_err_msg = _error_with_tail(
+                    f"meet sync exited {src}", log_path,
                 )
-                return
-            failure = _sync_log_indicates_failure(log_path)
-            if failure:
-                queue.update_status(
-                    session_id, "error",
-                    error=_error_with_tail(
+                log.warning(
+                    "retry-summary %s: sync failed: %s",
+                    session_id, sync_err_msg,
+                )
+            else:
+                failure = _sync_log_indicates_failure(log_path)
+                if failure:
+                    sync_err_msg = _error_with_tail(
                         f"meet sync failed silently: {failure}", log_path,
-                    ),
-                    artifacts=artifacts,
-                )
-                return
+                    )
+                    log.warning(
+                        "retry-summary %s: sync silent failure: %s",
+                        session_id, failure,
+                    )
 
         queue.update_status(
             session_id, "done",
             artifacts=artifacts,
             summary_error=None,
+            sync_error=sync_err_msg,
         )
         log.info("retry-summary %s succeeded", session_id)
     except Exception as exc:
@@ -506,6 +511,7 @@ def finalize_after_labeling(session_id: str) -> None:
         # per-job sync_enabled flag can independently veto).
         job = queue.get(session_id) or {}
         sync_enabled = bool(job.get("sync_enabled", 1))
+        sync_err_msg: str | None = None
         if _skip_sync():
             log.info(
                 "post-labeling: VEZIR_SKIP_SYNC set, skipping meet sync for %s",
@@ -520,25 +526,29 @@ def finalize_after_labeling(session_id: str) -> None:
             queue.update_status(session_id, "syncing")
             rc = meet_runner.sync(sd, session_id, log_path)
             if rc != 0:
-                queue.update_status(
-                    session_id, "error",
-                    error=_error_with_tail(
-                        f"meet sync exited {rc}", log_path,
-                    ),
+                sync_err_msg = _error_with_tail(
+                    f"meet sync exited {rc}", log_path,
                 )
-                return
-            failure = _sync_log_indicates_failure(log_path)
-            if failure:
-                queue.update_status(
-                    session_id, "error",
-                    error=_error_with_tail(
+                log.warning(
+                    "post-labeling sync %s failed: %s",
+                    session_id, sync_err_msg,
+                )
+            else:
+                failure = _sync_log_indicates_failure(log_path)
+                if failure:
+                    sync_err_msg = _error_with_tail(
                         f"meet sync failed silently: {failure}", log_path,
-                    ),
-                )
-                return
+                    )
+                    log.warning(
+                        "post-labeling sync %s silent failure: %s",
+                        session_id, failure,
+                    )
         artifacts = _find_artifacts(sd)
         _delete_audio(sd)
-        queue.update_status(session_id, "done", artifacts=artifacts)
+        queue.update_status(
+            session_id, "done", artifacts=artifacts,
+            sync_error=sync_err_msg,
+        )
     except Exception as exc:
         log.exception("post-labeling sync failed for %s", session_id)
         queue.update_status(session_id, "error", error=str(exc))

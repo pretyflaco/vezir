@@ -36,9 +36,10 @@ def _decorate(row: dict) -> dict:
             row["artifacts_dict"] = {}
     else:
         row["artifacts_dict"] = {}
-    # Ensure summary_error is present (may be absent in old DB rows
-    # created before the column was added).
+    # Ensure summary_error / sync_error are present (may be absent in
+    # old DB rows created before the columns were added).
     row.setdefault("summary_error", None)
+    row.setdefault("sync_error", None)
     return row
 
 

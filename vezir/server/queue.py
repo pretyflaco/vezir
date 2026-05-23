@@ -29,6 +29,10 @@ Schema:
                          stores the failure message and the job proceeds to
                          done (transcript artifacts are still usable). The
                          user can retry summary generation later.
+    sync_error           Sync-specific failure message. When the pipeline
+                         completes but `meet sync` fails (e.g. DNS, git auth),
+                         this field stores the failure and the job proceeds to
+                         done.  The user can retry via "Sync now".
     artifacts            JSON-encoded dict of artifact paths (relative to session
                          dir): txt, srt, json, summary, pdf
 """
@@ -59,6 +63,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at          TEXT NOT NULL,
     error               TEXT,
     summary_error       TEXT,
+    sync_error          TEXT,
     artifacts           TEXT
 );
 
@@ -101,6 +106,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
                 "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
+                "ALTER TABLE jobs ADD COLUMN sync_error TEXT",
             ):
                 try:
                     conn.execute(ddl)
@@ -175,13 +181,14 @@ def update_status(
     error: str | None = None,
     artifacts: dict | None = None,
     summary_error: str | None = ...,
+    sync_error: str | None = ...,
 ) -> None:
-    """Update a job's status (and optionally error / artifacts / summary_error).
+    """Update a job's status (and optionally error / artifacts / summary_error / sync_error).
 
-    ``summary_error`` uses a sentinel default (``...``) so callers can
-    distinguish "don't touch summary_error" from "clear it to None".
-    Pass ``None`` explicitly to clear a previous summary_error (e.g. after
-    a successful retry).
+    ``summary_error`` and ``sync_error`` use a sentinel default (``...``)
+    so callers can distinguish "don't touch" from "clear it to None".
+    Pass ``None`` explicitly to clear a previous error (e.g. after a
+    successful retry).
     """
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status}")
@@ -196,6 +203,9 @@ def update_status(
         if summary_error is not ...:
             sets.append("summary_error = ?")
             params.append(summary_error)
+        if sync_error is not ...:
+            sets.append("sync_error = ?")
+            params.append(sync_error)
         params.append(job_id)
         c.execute(
             f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?",

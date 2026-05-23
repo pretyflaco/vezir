@@ -3,6 +3,40 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.14 — graceful sync failures, ratelimit fix
+
+Mirrors the 0.1.13 summary-failure work for the sync step: when `meet
+sync` fails (DNS, git auth, network) but all artifacts are on disk, the
+job completes as `done` with a `sync_error` field instead of `error`.
+The user can retry via the dashboard's "Sync now" button or the Android
+app.
+
+### Added
+
+* **`sync_error` column** on the jobs table (`queue.py`). Same sentinel-
+  default pattern as `summary_error`. Idempotent migration for existing
+  DBs.
+
+### Changed
+
+* **Worker no longer treats sync failures as hard errors.** In
+  `process_one()`, `finalize_after_labeling()`, and
+  `retry_summary_for_session()`, sync failures are captured into
+  `sync_error` and the job proceeds to `done`. The existing
+  `POST /session/{id}/sync` endpoint already serves as the retry
+  mechanism.
+* **`summary_error` is no longer lost when sync fails.** Previously,
+  if summary failed and then sync also failed, the early-return in the
+  sync-error path skipped the `done` update that would have persisted
+  `summary_error`. Both fields are now written in a single final update.
+
+### Fixed
+
+* **Ratelimit crash on empty bearer token** (`ratelimit.py`).
+  `Authorization: Bearer ` (trailing space, no token) caused an
+  `IndexError` in `_client_key()` returning a 500. Now falls through
+  to per-IP keying.
+
 ## 0.1.13 — graceful summary failures, retry-summary endpoint
 
 When `meet transcribe` succeeds but the summary backend is unreachable
