@@ -30,6 +30,80 @@ from vezir.client.api import (
 # ─── Result-tag plumbing ─────────────────────────────────────────────────────
 
 
+# ─── CA / verify resolution ──────────────────────────────────────────────────
+
+
+def test_resolve_verify_defaults_to_true_with_no_env(monkeypatch):
+    """No CA env vars -> httpx's certifi-backed default (verify=True)."""
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
+    from vezir.client.api import VezirClient
+    assert VezirClient._resolve_verify(None) is True
+
+
+def test_resolve_verify_picks_up_ssl_cert_file(monkeypatch, tmp_path):
+    """Standard OpenSSL convention: SSL_CERT_FILE -> use it as the CA bundle."""
+    ca = tmp_path / "ca.crt"
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
+    from vezir.client.api import VezirClient
+    assert VezirClient._resolve_verify(None) == str(ca)
+
+
+def test_resolve_verify_picks_up_vezir_caddy_path(monkeypatch, tmp_path):
+    """Vezir-specific env var (set by Caddy-deployed boxes)."""
+    ca = tmp_path / "vezir-ca.crt"
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca))
+    from vezir.client.api import VezirClient
+    assert VezirClient._resolve_verify(None) == str(ca)
+
+
+def test_resolve_verify_ssl_cert_file_wins_over_vezir_var(monkeypatch, tmp_path):
+    """Standard env var takes precedence over the vezir-specific one."""
+    a = tmp_path / "a.crt"
+    a.write_text("a")
+    b = tmp_path / "b.crt"
+    b.write_text("b")
+    monkeypatch.setenv("SSL_CERT_FILE", str(a))
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(b))
+    from vezir.client.api import VezirClient
+    assert VezirClient._resolve_verify(None) == str(a)
+
+
+def test_resolve_verify_explicit_overrides_env(monkeypatch, tmp_path):
+    """Caller-passed verify wins even when env vars are set."""
+    ca = tmp_path / "ca.crt"
+    ca.write_text("x")
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    from vezir.client.api import VezirClient
+    assert VezirClient._resolve_verify(False) is False
+    assert VezirClient._resolve_verify(True) is True
+    assert VezirClient._resolve_verify("/some/other/path") == "/some/other/path"
+
+
+def test_resolve_verify_ignores_nonexistent_file(monkeypatch):
+    """SSL_CERT_FILE pointing at a missing file -> fall through to True
+    rather than crash with a confusing httpx error later."""
+    monkeypatch.setenv("SSL_CERT_FILE", "/tmp/definitely-not-here.crt")
+    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
+    from vezir.client.api import VezirClient
+    assert VezirClient._resolve_verify(None) is True
+
+
+def test_vezir_client_uses_resolved_verify(monkeypatch, tmp_path):
+    """Constructor should call _resolve_verify and store the result."""
+    ca = tmp_path / "ca.crt"
+    ca.write_text("x")
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
+    from vezir.client.api import VezirClient
+    c = VezirClient("https://test", "vzr_x")
+    assert c._verify == str(ca)
+
+
 def test_apiresult_success_is_truthy():
     r = ApiResult.success({"hello": "world"})
     assert r.is_ok()

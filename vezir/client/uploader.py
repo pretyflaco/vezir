@@ -112,6 +112,7 @@ def upload(
     retries: int = 5,
     progress: ProgressCallback | None = None,
     on_retry: RetryCallback | None = None,
+    verify: bool | str | None = None,
 ) -> dict:
     """POST audio to <server_url>/upload. Returns the JSON response.
 
@@ -157,7 +158,14 @@ def upload(
                 # set so the wire stays clean for the common case.
                 if personal:
                     data["personal"] = "true"
-                with httpx.Client(timeout=timeout) as client:
+                # Reuse VezirClient's CA discovery so internal-CA
+                # setups (Caddy) work without per-call wiring.  Lazy
+                # import avoids a circular dependency at module load.
+                from .api import VezirClient
+                resolved_verify = VezirClient._resolve_verify(verify)
+                with httpx.Client(
+                    timeout=timeout, verify=resolved_verify,
+                ) as client:
                     resp = client.post(url, headers=headers, files=files, data=data)
             if resp.status_code == 200:
                 result = resp.json()
