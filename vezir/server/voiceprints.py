@@ -39,23 +39,48 @@ def list_known_names() -> list[str]:
     return sorted(data.keys())
 
 
-def seed_from(source: Path) -> int:
-    """One-shot copy of an existing meetscribe profiles file into vezir.
+def seed_from(source: Path, *, merge: bool = False) -> dict:
+    """Copy or merge an existing meetscribe profiles file into vezir.
 
-    Returns the number of profiles copied. Will not overwrite an existing
-    central DB; raises FileExistsError if one is already present.
+    Args:
+        source: Path to the source profiles file.
+        merge: When True, merge into the existing central DB.  Per-name
+            policy: the profile with the higher ``n_sessions`` wins (it
+            has more training data).  When False (default), refuses if
+            the central DB is already populated.
+
+    Returns:
+        Dict with keys ``added``, ``updated``, ``kept``, ``total``.
     """
     target = config.speaker_profiles_path()
+    existing: dict = {}
     if target.exists():
         existing = json.loads(target.read_text(encoding="utf-8") or "{}")
-        if existing:
+        if existing and not merge:
             raise FileExistsError(
                 f"central profile DB already populated at {target}"
             )
+
+    source_data = json.loads(source.read_text(encoding="utf-8"))
+    stats = {"added": 0, "updated": 0, "kept": 0, "total": 0}
+
+    for name, info in source_data.items():
+        src_n = info.get("n_sessions", 1)
+        if name not in existing:
+            existing[name] = info
+            stats["added"] += 1
+        else:
+            dst_n = existing[name].get("n_sessions", 1)
+            if src_n > dst_n:
+                existing[name] = info
+                stats["updated"] += 1
+            else:
+                stats["kept"] += 1
+
+    stats["total"] = len(existing)
     config.secure_mkdir(target.parent)
-    data = json.loads(source.read_text(encoding="utf-8"))
     config.secure_write_text(
         target,
-        json.dumps(data, indent=2, ensure_ascii=False),
+        json.dumps(existing, indent=2, ensure_ascii=False),
     )
-    return len(data)
+    return stats

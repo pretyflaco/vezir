@@ -504,11 +504,20 @@ def voiceprints():
     type=click.Path(exists=True, path_type=Path),
     help="Path to an existing meetscribe speaker_profiles.json to copy in",
 )
-def voiceprints_seed(source):
-    """Seed the central voiceprint DB from an existing meetscribe profile file."""
+@click.option(
+    "--merge", is_flag=True, default=False,
+    help="Merge into the existing central DB instead of refusing when it is populated. "
+    "Per-name policy: the profile with the higher n_sessions wins.",
+)
+def voiceprints_seed(source, merge):
+    """Seed or merge the central voiceprint DB from an existing meetscribe profile file."""
     from .server import voiceprints as vp_mod
-    n = vp_mod.seed_from(source)
-    click.echo(f"Seeded {n} profile(s) into {config.speaker_profiles_path()}")
+    stats = vp_mod.seed_from(source, merge=merge)
+    click.echo(
+        f"Done: {stats['added']} added, {stats['updated']} updated, "
+        f"{stats['kept']} kept (source had fewer sessions). "
+        f"Central DB now has {stats['total']} profile(s) at {config.speaker_profiles_path()}"
+    )
 
 
 @voiceprints.command("list")

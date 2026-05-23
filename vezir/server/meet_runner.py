@@ -129,6 +129,10 @@ def _env_for_meet(home: Path) -> dict:
     env["HOME"] = str(home)
     # Make sure XDG_CONFIG_HOME doesn't override our shim.
     env.pop("XDG_CONFIG_HOME", None)
+    # Belt-and-suspenders: explicitly tell meetscribe where the profile DB
+    # lives, in addition to the symlink in the HOME shim.  The env var is
+    # respected by meetscribe >=0.8.2's _default_profiles_path().
+    env["MEET_PROFILES_PATH"] = str(config.speaker_profiles_path())
     return env
 
 

@@ -190,6 +190,7 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
                     transcript.segments,
                     label_map,
                     channel_map,
+                    profiles_path=config.speaker_profiles_path(),
                 )
             else:
                 log.warning(

@@ -3,6 +3,38 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.16 — fix voiceprint DB drift, merge command
+
+Requires **meetscribe-offline >= 0.8.2**.
+
+### Fixed
+
+* **Voiceprint updates went to the wrong file.** `labels.py`'s
+  in-process call to `update_profiles_from_confirmed_labels()` used the
+  module-level `PROFILES_PATH` constant from `meet/voiceprint.py`, which
+  was frozen at import time to `~/.config/meet/speaker_profiles.json`
+  (the real `$HOME`).  The per-job `HOME` shim had no effect on
+  in-process calls.  Result: the central vezir DB
+  (`~/vezir-data/speaker_profiles.json`) went stale while the real-home
+  DB accumulated 47 new labeling sessions, causing auto-label confidence
+  to drift below the 0.65 threshold for some speakers.
+
+  **Fix**: pass `profiles_path=config.speaker_profiles_path()` explicitly
+  to `update_profiles_from_confirmed_labels()` (new kwarg in meetscribe
+  0.8.2).  Also set `MEET_PROFILES_PATH` in the subprocess env for
+  belt-and-suspenders.
+
+### Added
+
+* **`vezir voiceprints seed --merge`** flag.  Merges an external
+  profiles file into the existing central DB (per-name policy: higher
+  `n_sessions` wins).  Without `--merge`, the existing behavior is
+  preserved (refuses if the target is populated).
+
+### Changed
+
+* **Dependency pin**: `meetscribe-offline>=0.8.2`.
+
 ## 0.1.15 — fix retry-summary, new summarizing status, DNS warmup
 
 ### Fixed
