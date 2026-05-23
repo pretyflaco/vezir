@@ -96,4 +96,16 @@ server = [
 # but some (Debian/Ubuntu minimal) require `apt install python3-tk`.
 # No new pip deps needed.
 gui = []
+# TUI thin client: Textual-based desktop client that matches vezir-android
+# 0.2.5 feature parity. Replaces `vezir gui` for everything except the
+# always-on-top floating record widget. `pip install vezir[tui]` pulls
+# textual; the optional `serve` mode additionally needs textual-serve
+# (install separately when you want to publish the TUI over HTTP).
+tui = ["textual>=0.80"]
 dev = ["ruff", "pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+# Auto-collect `async def` tests written for textual.pilot without
+# requiring a per-test @pytest.mark.asyncio decorator. Matches the
+# pattern Textual's own test suite uses.
+asyncio_mode = "auto"

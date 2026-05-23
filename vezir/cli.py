@@ -269,6 +269,44 @@ def gui():
     sys.exit(launch())
 
 
+# ── tui ───────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option(
+    "--serve", is_flag=True, default=False,
+    help="Publish the TUI over HTTP via textual-serve (requires "
+         "`pip install textual-serve`); use to browse-share the same "
+         "interface (drop-in for the web dashboard once v0.5 lands).",
+)
+@click.option(
+    "--host", default="127.0.0.1", show_default=True,
+    help="Bind address for --serve (ignored without --serve).",
+)
+@click.option(
+    "--port", default=8800, show_default=True, type=int,
+    help="Port for --serve (ignored without --serve).",
+)
+def tui(serve: bool, host: str, port: int):
+    """Launch the vezir Textual TUI (terminal-native thin client).
+
+    Replaces the Tkinter `vezir gui` for everything except the
+    always-on-top floating record widget.  Provides feature parity
+    with vezir-android 0.2.5: session list, detail, retry-summary
+    with preset picker, share, native speaker labeling with audio
+    clip playback, artifact viewer.
+    """
+    try:
+        from .client.tui import launch_tui
+    except ImportError as exc:
+        click.echo(
+            f"vezir tui requires textual, which is not available: {exc}\n"
+            "Install with: pip install 'vezir[tui]'  or  pip install textual",
+            err=True,
+        )
+        sys.exit(1)
+    sys.exit(launch_tui(serve=serve, host=host, port=port))
+
+
 # ── token ─────────────────────────────────────────────────────────────────────
 
 @main.group()
