@@ -110,6 +110,7 @@ class DetailScreen(Screen):
         Binding("y", "sync_now", "Sync now"),
         Binding("p", "share_with_team", "Share"),
         Binding("l", "open_labeling", "Label"),
+        Binding("c", "copy_session_id", "Copy id"),
         # NOTE: do NOT bind "enter" here.  DataTable has its own
         # built-in `enter -> select_cursor` binding which fires
         # RowSelected (handled by `on_data_table_row_selected` below).
@@ -219,6 +220,19 @@ class DetailScreen(Screen):
             )
             return
         self._action_worker("share with team", "share_with_team")
+
+    def action_copy_session_id(self) -> None:
+        """Copy the session id to the system clipboard (OSC 52)."""
+        try:
+            self.app.copy_to_clipboard(self.session_id)
+        except Exception as exc:
+            self.notify(f"Copy failed: {exc}", severity="error")
+            return
+        self.notify(
+            f"Copied session id: {self.session_id}",
+            severity="information",
+            timeout=4,
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id

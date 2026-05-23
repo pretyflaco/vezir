@@ -321,16 +321,144 @@ async def test_no_enter_binding_on_sessions_body(app, mock_server):
 
 
 async def test_force_quit_binding_exists(app, mock_server):
-    """ctrl+c must be wired up as a priority=True force-quit on the app.
+    """ctrl+shift+q must be wired as the priority=True emergency exit.
 
     This is the user's escape hatch when a screen wedges.  Without it,
     a hung screen leaves the user with no way out short of `kill`.
+
+    The key changed from ctrl+c to ctrl+shift+q in PR6 because the
+    PR4 ctrl+c binding shadowed TextArea's built-in copy-selection
+    binding and Textual's app-level selection-aware copy convention.
+    A three-key chord avoids both collisions.
     """
     from vezir.client.tui.app import VezirTuiApp
     by_key = {b.key: b for b in VezirTuiApp.BINDINGS}
-    assert "ctrl+c" in by_key
-    assert by_key["ctrl+c"].priority is True
-    assert by_key["ctrl+c"].action == "force_quit"
+    assert "ctrl+shift+q" in by_key
+    assert by_key["ctrl+shift+q"].priority is True
+    assert by_key["ctrl+shift+q"].action == "force_quit"
+
+
+async def test_ctrl_c_is_NOT_force_quit_anymore(app, mock_server):
+    """Regression guard for the PR4 -> PR6 swap.
+
+    If anyone re-adds a priority=True ctrl+c binding on the app,
+    they will silently break the native ctrl+c copy semantics inside
+    TextArea / Input widgets.  This test fails first.
+    """
+    from vezir.client.tui.app import VezirTuiApp
+    for b in VezirTuiApp.BINDINGS:
+        assert not (b.key == "ctrl+c" and b.action == "force_quit"), (
+            "VezirTuiApp has ctrl+c bound to force_quit -- this shadows "
+            "TextArea's built-in copy-selection.  Use ctrl+shift+q instead."
+        )
+
+
+async def test_copy_selection_binding_exists(app, mock_server):
+    """ctrl+shift+c must route to Screen.action_copy_text so users can
+    copy a mouse-selected region (selection-aware copy)."""
+    from vezir.client.tui.app import VezirTuiApp
+    by_key = {b.key: b for b in VezirTuiApp.BINDINGS}
+    assert "ctrl+shift+c" in by_key
+    assert "copy_text" in by_key["ctrl+shift+c"].action
+
+
+async def test_artifact_screen_c_copies_body(app, mock_server, monkeypatch):
+    """Pressing `c` on ArtifactScreen with a loaded text artifact calls
+    app.copy_to_clipboard with the full body."""
+    from vezir.client.tui.artifact_screen import ArtifactScreen
+    copied: list[str] = []
+    monkeypatch.setattr(
+        app, "copy_to_clipboard", lambda text: copied.append(text),
+    )
+    screen = ArtifactScreen("01X", "summary.md")
+    screen._body = "# Summary\n\nLorem ipsum dolor sit amet."
+    # Mount a tiny fake app context for self.notify.  Easier path:
+    # invoke the action directly; notify is best-effort so we just
+    # patch it to a no-op on the screen.
+    monkeypatch.setattr(screen, "notify", lambda *a, **k: None)
+    # Also stub self.app on the un-mounted screen so action's
+    # self.app.copy_to_clipboard goes to our list.
+    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
+    screen.action_copy_artifact()
+    assert copied == ["# Summary\n\nLorem ipsum dolor sit amet."]
+
+
+async def test_artifact_screen_c_copies_path_for_binary(app, mock_server, monkeypatch):
+    """For binary artifacts (no body, only tmp_path), `c` copies the path."""
+    from pathlib import Path
+    from vezir.client.tui.artifact_screen import ArtifactScreen
+    copied: list[str] = []
+    monkeypatch.setattr(
+        app, "copy_to_clipboard", lambda text: copied.append(text),
+    )
+    screen = ArtifactScreen("01X", "report.pdf")
+    screen._tmp_path = Path("/tmp/vezir-artifact-xyz.pdf")
+    monkeypatch.setattr(screen, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
+    screen.action_copy_artifact()
+    assert copied == ["/tmp/vezir-artifact-xyz.pdf"]
+
+
+async def test_artifact_screen_c_noop_when_nothing_loaded(app, mock_server, monkeypatch):
+    """No body and no tmp_path -> warning notify, no clipboard write."""
+    from vezir.client.tui.artifact_screen import ArtifactScreen
+    copied: list[str] = []
+    notified: list[tuple] = []
+    monkeypatch.setattr(
+        app, "copy_to_clipboard", lambda text: copied.append(text),
+    )
+    screen = ArtifactScreen("01X", "x.md")
+    monkeypatch.setattr(screen, "notify",
+                        lambda *a, **k: notified.append((a, k)))
+    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
+    screen.action_copy_artifact()
+    assert copied == []
+    assert notified and "Nothing loaded" in notified[0][0][0]
+
+
+async def test_detail_screen_c_copies_session_id(app, mock_server, monkeypatch):
+    """Pressing `c` on DetailScreen copies the session id."""
+    from vezir.client.tui.detail_screen import DetailScreen
+    copied: list[str] = []
+    monkeypatch.setattr(
+        app, "copy_to_clipboard", lambda text: copied.append(text),
+    )
+    screen = DetailScreen(session_id="01KSBABCDEF")
+    monkeypatch.setattr(screen, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
+    screen.action_copy_session_id()
+    assert copied == ["01KSBABCDEF"]
+
+
+async def test_sessions_body_c_copies_selected_id(app, mock_server, monkeypatch):
+    """Pressing `c` on SessionsBody copies the cursor row's session id.
+
+    Exercised through a real app.run_test so the DataTable cursor /
+    row_index is actually populated -- the action reads from
+    ``self._table.cursor_coordinate`` which requires a mounted widget.
+    """
+    mock_server["sessions"] = [
+        {"id": "01ROW0", "status": "done", "title": "row 0", "github": "alice"},
+        {"id": "01ROW1", "status": "done", "title": "row 1", "github": "bob"},
+    ]
+    copied: list[str] = []
+    monkeypatch.setattr(
+        app, "copy_to_clipboard", lambda text: copied.append(text),
+    )
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+s")  # switch to sessions tab
+        await pilot.pause(0.5)
+        # Cursor lands on row 0 by default.
+        from textual.widgets import TabbedContent
+        tabs = app.screen.query_one(TabbedContent)
+        from vezir.client.tui.sessions_screen import SessionsBody
+        sess_body = tabs.active_pane.query_one(SessionsBody)
+        # Don't pop notifications -- patch notify into a no-op.
+        monkeypatch.setattr(sess_body, "notify", lambda *a, **k: None)
+        sess_body.action_copy_selected_id()
+        assert copied == ["01ROW0"], (
+            f"expected ['01ROW0'], got {copied}"
+        )
 
 
 async def test_binary_artifact_does_not_block_event_loop(

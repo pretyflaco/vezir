@@ -135,14 +135,22 @@ class VezirTuiApp(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit"),
-        # Emergency hard-exit.  priority=True so it fires even when a
-        # focused widget would otherwise swallow ctrl+c (Input widgets
-        # historically use it for "clear").  This is the user's escape
-        # hatch when a screen wedges -- always works, restores terminal
-        # state on the way out.  Trade-off: Input widgets lose their
-        # default ctrl+c semantic; users can backspace / select-all
-        # instead.  Acceptable for the reliability win.
-        Binding("ctrl+c", "force_quit", "Force quit", priority=True, show=False),
+        # Emergency hard-exit.  priority=True so it fires regardless of
+        # which widget has focus.  Originally bound to ctrl+c in PR4,
+        # but that shadowed TextArea's built-in ctrl+c-copy-selection
+        # AND Textual's own selection-aware ctrl+c convention (a
+        # priority-True ctrl+c eats every native copy path the
+        # framework provides).  Moved to ctrl+shift+q -- three-key
+        # chord, can't collide with anything common, and intuitively
+        # reads as "quit, no really".  PR6.
+        Binding("ctrl+shift+q", "force_quit", "Force quit", priority=True, show=False),
+        # Selection-aware copy.  Textual's Screen exposes
+        # ``action_copy_text`` which reads the current cross-widget
+        # selection (populated as you mouse-drag or shift+arrow-key
+        # through text) and writes it to the clipboard via OSC 52.
+        # ctrl+shift+c is the conventional terminal "copy" keystroke
+        # so it composes naturally with the user's muscle memory.
+        Binding("ctrl+shift+c", "screen.copy_text", "Copy selection", show=False),
         Binding("f1", "help", "Help"),
         Binding("question_mark", "help", show=False),
     ]

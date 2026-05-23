@@ -80,6 +80,7 @@ class SessionsBody(Vertical):
         # Binding `enter` at the body level would cause a
         # double-dispatch: DetailScreen gets pushed twice, leading
         # to a stuck UI state.  Smoked on muscle 2026-05-23.
+        Binding("c", "copy_selected_id", "Copy id"),
     ]
 
     DEFAULT_CSS = """
@@ -134,6 +135,35 @@ class SessionsBody(Vertical):
             return
         from .detail_screen import DetailScreen
         self.app.push_screen(DetailScreen(session_id=session.id))
+
+    def action_copy_selected_id(self) -> None:
+        """Copy the cursor-row's session id to the clipboard.
+
+        Symmetric with DetailScreen's ``c`` binding so the user can
+        get an id from either screen without breaking flow.
+        """
+        if self._table is None:
+            return
+        try:
+            row_key = self._table.coordinate_to_cell_key(
+                self._table.cursor_coordinate,
+            ).row_key
+        except Exception:
+            return
+        session = self._row_index.get(str(row_key.value)) if row_key.value else None
+        if session is None:
+            self.app.bell()
+            return
+        try:
+            self.app.copy_to_clipboard(session.id)
+        except Exception as exc:
+            self.notify(f"Copy failed: {exc}", severity="error")
+            return
+        self.notify(
+            f"Copied session id: {session.id}",
+            severity="information",
+            timeout=4,
+        )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         session = self._row_index.get(str(event.row_key.value))

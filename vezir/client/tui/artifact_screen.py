@@ -79,6 +79,7 @@ class ArtifactScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("s", "save_to_disk", "Save as…"),
+        Binding("c", "copy_artifact", "Copy"),
     ]
 
     CSS = """
@@ -133,6 +134,39 @@ class ArtifactScreen(Screen):
             self.notify(f"Saved to {dest}", severity="information")
         except Exception as exc:
             self.notify(f"Save failed: {exc}", severity="error")
+
+    def action_copy_artifact(self) -> None:
+        """Copy the artifact body (text) or temp path (binary) to clipboard.
+
+        Text artifacts: the full decoded body goes to the clipboard so
+        the user can paste a transcript or summary directly into chat /
+        notes / a code editor.
+
+        Binary artifacts: copying multi-megabyte PDF bytes through OSC
+        52 is unsupported by most terminals (size cap is typically ~64K
+        bytes) and useless anyway since the user wants the file, not
+        the bytes inline.  Copy the local temp-file path instead so the
+        user can run `evince <paste>` or `cp <paste> ~/somewhere`.
+        """
+        if self._body is not None:
+            payload = self._body
+            kind = "text"
+        elif self._tmp_path is not None:
+            payload = str(self._tmp_path)
+            kind = "path"
+        else:
+            self.notify("Nothing loaded yet.", severity="warning")
+            return
+        try:
+            self.app.copy_to_clipboard(payload)
+        except Exception as exc:
+            self.notify(f"Copy failed: {exc}", severity="error")
+            return
+        self.notify(
+            f"Copied {self.artifact_name} ({kind}, {len(payload)} chars)",
+            severity="information",
+            timeout=4,
+        )
 
     @work(thread=True, exclusive=True, group="artifact")
     def _text_worker(self) -> None:
