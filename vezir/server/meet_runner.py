@@ -212,20 +212,6 @@ def label_auto(session_dir: Path, job_id: str, log_path: Path) -> int:
     )
 
 
-def retry_summary(session_dir: Path, job_id: str, log_path: Path,
-                  *, summary_preset: str | None = None) -> int:
-    """Re-run only the summarization step for an already-transcribed session.
-
-    Uses ``meet label --auto --no-audio`` (with summary regeneration) to
-    re-generate the summary and PDF without re-transcribing. Speaker labels
-    remain unchanged since --auto is a no-op when labels are already applied.
-    """
-    args = ["label", "--auto", "--no-audio", str(session_dir)]
-    if summary_preset:
-        args.insert(-1, "--summary-preset")
-        args.insert(-1, summary_preset)
-    return run_meet(args, job_id=job_id, log_path=log_path)
-
 
 def _ulid_to_utc_datetime(ulid_str: str):
     """Decode a ULID's embedded timestamp to a UTC datetime, or None."""

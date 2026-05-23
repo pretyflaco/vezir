@@ -369,8 +369,46 @@ _worker_thread: threading.Thread | None = None
 _stop_flag = threading.Event()
 
 
+_DNS_WARMUP_HOSTS = ("huggingface.co", "github.com")
+_DNS_WARMUP_TIMEOUT = 60  # seconds total
+_DNS_WARMUP_INTERVAL = 3  # seconds between retries
+
+
+def _dns_warmup() -> None:
+    """Block until key external hosts resolve, or timeout.
+
+    After a server restart, systemd-resolved may take several seconds to
+    become fully operational.  Jobs that run immediately will fail with
+    ``[Errno -2] Name or service not known`` on HuggingFace (pyannote
+    model check) or Tinfoil (summary router).  This warmup loop ensures
+    DNS is working before the worker starts claiming jobs.
+    """
+    import socket
+
+    deadline = time.monotonic() + _DNS_WARMUP_TIMEOUT
+    for host in _DNS_WARMUP_HOSTS:
+        while time.monotonic() < deadline:
+            try:
+                socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+                log.debug("dns warmup: %s OK", host)
+                break
+            except socket.gaierror:
+                remaining = max(0, int(deadline - time.monotonic()))
+                log.info(
+                    "dns warmup: %s not resolvable yet, retrying (%ds left)",
+                    host, remaining,
+                )
+                time.sleep(_DNS_WARMUP_INTERVAL)
+        else:
+            log.warning(
+                "dns warmup: %s still unresolvable after %ds; proceeding anyway",
+                host, _DNS_WARMUP_TIMEOUT,
+            )
+
+
 def _loop() -> None:
     log.info("vezir worker started")
+    _dns_warmup()
     while not _stop_flag.is_set():
         try:
             job = queue.claim_next()
@@ -408,8 +446,11 @@ def retry_summary_for_session(session_id: str) -> None:
     """Re-run summary generation for a completed session.
 
     Called when the user requests a summary retry (e.g. after a transient
-    Tinfoil/network failure). The transcription artifacts must already
-    exist on disk.
+    Tinfoil/network failure).  Uses meetscribe's ``apply_labels()`` API
+    directly (in-process, not via subprocess) with an empty label_map and
+    ``regenerate_summary=True``.  This avoids the interactive-prompt bug
+    that made the previous subprocess approach (``meet label --auto``)
+    abort on unrecognized speakers.
     """
     sd = _session_dir(session_id)
     log_path = _job_log_path(session_id)
@@ -422,23 +463,38 @@ def retry_summary_for_session(session_id: str) -> None:
 
         requested_preset = job.get("summary_preset")
         queue.update_status(
-            session_id, "transcribing",
+            session_id, "summarizing",
             summary_error=None,  # clear previous summary error
         )
 
-        rc = meet_runner.retry_summary(
-            sd, session_id, log_path,
-            summary_preset=requested_preset,
-        )
-        if rc != 0:
-            # Summary retry failed again.
-            summary_err = _extract_summary_error(log_path) or (
-                f"summary retry failed (exit {rc})"
+        # Run apply_labels in-process with the HOME shim so meetscribe
+        # picks up the correct voiceprint DB and config paths.
+        summary_err: str | None = None
+        home = meet_runner.build_home_shim(session_id)
+        saved_env = {k: os.environ.get(k) for k in ("HOME", "XDG_CONFIG_HOME")}
+        try:
+            os.environ["HOME"] = str(home)
+            os.environ.pop("XDG_CONFIG_HOME", None)
+            from meet.label import apply_labels
+            apply_labels(
+                sd,
+                label_map={},
+                regenerate_summary=True,
+                summary_preset=requested_preset,
             )
-            log.warning(
-                "retry-summary %s failed: %s", session_id, summary_err,
-            )
-            artifacts = _find_artifacts(sd)
+        except Exception as exc:
+            summary_err = f"summary retry failed: {exc}"
+            log.warning("retry-summary %s failed: %s", session_id, summary_err)
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        artifacts = _find_artifacts(sd)
+
+        if summary_err:
             queue.update_status(
                 session_id, "done",
                 artifacts=artifacts,
@@ -446,11 +502,7 @@ def retry_summary_for_session(session_id: str) -> None:
             )
             return
 
-        # Summary succeeded — update artifacts and clear summary_error.
-        artifacts = _find_artifacts(sd)
-
-        # If the session was previously done and now has a summary, re-run
-        # sync if enabled (the summary artifact is new content).
+        # Summary succeeded.  Re-sync if enabled (new summary artifact).
         sync_err_msg: str | None = None
         sync_enabled = bool(job.get("sync_enabled", 1))
         if _skip_sync():

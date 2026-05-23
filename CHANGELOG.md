@@ -3,6 +3,42 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.15 — fix retry-summary, new summarizing status, DNS warmup
+
+### Fixed
+
+* **Retry-summary was broken: interactive prompt aborted the subprocess.**
+  `retry_summary()` shelled out to `meet label --auto --no-audio
+  --summary-preset <preset>`, but `meet label --auto` always runs voice
+  identification from scratch. When the speaker label (e.g. "Kemal") was
+  assigned via the Android/web UI rather than a voiceprint auto-match,
+  the speaker appeared as "unrecognized" and meetscribe dropped into an
+  interactive `click.prompt()` which immediately aborted on the piped
+  stdin.  The summary step was never reached.
+
+  **Fix**: replaced the subprocess call with an in-process call to
+  meetscribe's `apply_labels(label_map={}, regenerate_summary=True,
+  summary_preset=...)` API.  This is the same codepath used by the
+  labeling web/API handlers.  With an empty `label_map`, no relabeling
+  occurs — only summary regeneration.
+
+### Added
+
+* **`summarizing` job status** (`queue.py`).  `retry_summary_for_session()`
+  now sets status to `summarizing` (not `transcribing`) while the summary
+  is being generated.  Android 0.2.3 renders this as a green badge.
+
+* **DNS warmup at worker startup** (`worker.py`).  After a server restart,
+  `systemd-resolved` may take several seconds to become operational.  The
+  worker now blocks (up to 60 s) until `huggingface.co` and `github.com`
+  resolve successfully before claiming its first job.  This prevents the
+  cascade of summary and sync failures that occurred on every restart.
+
+### Removed
+
+* **`meet_runner.retry_summary()`** — replaced by in-process
+  `apply_labels()` in `retry_summary_for_session()`.
+
 ## 0.1.14 — graceful sync failures, ratelimit fix
 
 Mirrors the 0.1.13 summary-failure work for the sync step: when `meet

@@ -19,8 +19,8 @@ Schema:
                          members' session lists (only the uploader sees it).
                          Personal sessions force sync_enabled=0 server-side.
                          Default 0.
-    status               one of: queued, transcribing, needs_labeling, syncing,
-                         done, error
+    status               one of: queued, transcribing, summarizing,
+                         needs_labeling, syncing, done, error
     created_at           ISO timestamp
     updated_at           ISO timestamp
     error                Last error message, if any
@@ -75,6 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
 VALID_STATUSES = {
     "queued",
     "transcribing",
+    "summarizing",
     "needs_labeling",
     "syncing",
     "done",
