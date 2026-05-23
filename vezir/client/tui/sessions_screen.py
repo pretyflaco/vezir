@@ -189,7 +189,7 @@ class SessionsBody(Vertical):
         self.app.sub_title = "refresh failed"
         self.query_one("#empty-state", Static).update(
             f"[red]Failed to fetch sessions: {message.error}[/red]\n"
-            f"Press ctrl+r to retry.",
+            f"Press [b]ctrl+l[/b] to retry.",
         )
 
     def _render_table(self) -> None:
@@ -197,9 +197,16 @@ class SessionsBody(Vertical):
         self._table.clear()
         self._row_index.clear()
         if not self.sessions:
+            # PR9: the hint used to say "ctrl+r to refresh" but that
+            # binding actually switches to the Record tab.  The real
+            # refresh shortcut is ctrl+l (refresh_current at MainScreen)
+            # -- though with PR9's auto-refresh-on-tab-activation +
+            # auto-refresh-on-upload-complete, manual refresh is now
+            # the exception rather than the rule.
             self.query_one("#empty-state", Static).update(
                 "[dim]No sessions yet.  "
-                "Press [b]r[/b] to record one, or [b]ctrl+r[/b] to refresh.[/dim]",
+                "Press [b]ctrl+r[/b] to switch to Record, or "
+                "[b]ctrl+l[/b] to refresh.[/dim]",
             )
             return
         self.query_one("#empty-state", Static).update("")

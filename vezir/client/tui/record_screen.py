@@ -117,6 +117,21 @@ class ServerStatus(Message):
     extra: str = ""
 
 
+@dataclass
+class SessionUploadComplete(Message):
+    """Posted by ``_poll_worker`` when the server reaches a terminal
+    status for a freshly uploaded session.  Bubbles up to MainScreen
+    so it can refresh the Sessions tab and toast the user.
+
+    Background: PR9 (2026-05-24) — user reported that a session
+    recorded in the TUI didn't appear in the Sessions list until the
+    TUI was restarted.  Root cause: SessionsBody only refreshed on
+    its own ``on_mount``, never reacting to upload completion.
+    """
+    session_id: str
+    status: str  # "done" | "error" | "needs_labeling"
+
+
 # ─── Screen ──────────────────────────────────────────────────────────────────
 
 
@@ -535,10 +550,17 @@ class RecordBody(Vertical):
 
     @work(thread=True, exclusive=True, group="poll")
     def _poll_worker(self, session_id: str) -> None:
-        """Poll /api/sessions/{id} until terminal status."""
+        """Poll /api/sessions/{id} until terminal status.
+
+        Terminal statuses include ``needs_labeling`` because the
+        server is then waiting on the human; there's nothing more
+        for the poll worker to track.  Previously this kept polling
+        forever for any session whose auto-label didn't reach
+        confident voiceprint matches (PR9 latent bug).
+        """
         import time as _t
 
-        terminal = {"done", "error"}
+        terminal = {"done", "error", "needs_labeling"}
         last_status = ""
         deadline = _t.time() + 600
         while _t.time() < deadline:
@@ -554,6 +576,13 @@ class RecordBody(Vertical):
                     extra=session.error or session.summary_error or "",
                 ))
             if session.status in terminal:
+                # PR9: notify the rest of the UI that this session is
+                # now displayable (done) or failed (error) so the
+                # Sessions tab can refresh and the user gets a toast.
+                self.post_message(SessionUploadComplete(
+                    session_id=session_id,
+                    status=session.status,
+                ))
                 return
             _t.sleep(5)
 

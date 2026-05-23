@@ -118,6 +118,67 @@ class MainScreen(Screen):
         if callable(action):
             action()
 
+    def on_tabbed_content_tab_activated(
+        self, event: "TabbedContent.TabActivated"
+    ) -> None:
+        """Refresh the Sessions tab whenever the user switches to it.
+
+        PR9 (2026-05-24): the dogfood report was that a session
+        recorded in the TUI didn't appear in the Sessions list until
+        the TUI was restarted.  Root cause: SessionsBody refreshed
+        only on its own ``on_mount``, never reacting to tab changes.
+
+        Cost is one /api/sessions roundtrip per activation (≈50ms
+        over LAN); imperceptible.  No debounce: users don't tab-
+        flick fast enough for it to matter.
+        """
+        from .sessions_screen import SessionsBody
+        if event.pane.id != "sessions":
+            return
+        try:
+            body = event.pane.query_one(SessionsBody)
+        except Exception:
+            return
+        body.action_refresh()
+
+    def on_session_upload_complete(
+        self, message: "SessionUploadComplete"
+    ) -> None:
+        """Refresh the Sessions tab + toast the user when a freshly
+        uploaded session reaches terminal status on the server.
+
+        Posted from RecordBody._poll_worker; bubbles up to here.
+        """
+        from .sessions_screen import SessionsBody
+        # Refresh whether or not the Sessions tab is currently active
+        # -- the user may switch to it any moment, and SessionsBody
+        # caches its rendered rows.  Refresh is cheap.
+        try:
+            body = self.query_one(SessionsBody)
+            body.action_refresh()
+        except Exception:
+            pass
+
+        short = (message.session_id or "")[:8]
+        if message.status == "done":
+            self.notify(
+                f"Session {short}… is ready",
+                severity="information",
+                timeout=4,
+            )
+        elif message.status == "needs_labeling":
+            self.notify(
+                f"Session {short}… needs labeling",
+                severity="warning",
+                timeout=6,
+            )
+        elif message.status == "error":
+            self.notify(
+                f"Session {short}… errored",
+                severity="error",
+                timeout=8,
+            )
+
 
 # ─── App ─────────────────────────────────────────────────────────────────────
 

@@ -155,6 +155,129 @@ async def test_sessions_screen_lists_rows(app, mock_server):
         assert table.row_count == 2
 
 
+# ─── PR9 regression guards: sessions auto-refresh ─────────────────────────────
+#
+# Background: dogfood report 2026-05-24 -- a session recorded in the
+# TUI didn't appear in the Sessions list until the TUI was restarted.
+# Root cause: SessionsBody refreshed only on its own ``on_mount``;
+# nothing reacted to tab switches or upload completion.  PR9 added
+# ``MainScreen.on_tabbed_content_tab_activated`` and
+# ``MainScreen.on_session_upload_complete`` to fix both paths.
+
+
+async def _wait_for_row_count(app, pilot, *, target: int, attempts: int = 30):
+    """Poll until DataTable.row_count == target, or fail after attempts."""
+    from textual.widgets import DataTable
+    for _ in range(attempts):
+        await pilot.pause(0.1)
+        try:
+            table = app.screen.query_one("#sessions-table", DataTable)
+        except Exception:
+            continue
+        if table.row_count == target:
+            return table
+    raise AssertionError(
+        f"row_count never reached {target}; last seen "
+        f"{table.row_count if 'table' in dir() else 'no table'}"
+    )
+
+
+async def test_sessions_refreshes_on_tab_activation(app, mock_server):
+    """PR9: switching to Sessions tab must re-fetch /api/sessions.
+
+    Without this, a session added after the TUI's first mount stays
+    invisible until the user restarts the TUI (the exact dogfood
+    report from 2026-05-24).
+    """
+    mock_server["sessions"] = [
+        {"id": "01A", "status": "done", "title": "first", "github": "alice"},
+    ]
+    async with app.run_test() as pilot:
+        # Initial mount triggers a refresh that lands 1 row.
+        await pilot.press("ctrl+s")
+        await _wait_for_row_count(app, pilot, target=1)
+
+        # Simulate "a new session arrived on the server while the user
+        # was on the Record tab".
+        await pilot.press("ctrl+r")  # back to Record
+        await pilot.pause(0.1)
+        mock_server["sessions"].append({
+            "id": "01B", "status": "done",
+            "title": "fresh", "github": "alice",
+        })
+
+        # Switch back to Sessions -> PR9's TabActivated handler
+        # should fire action_refresh and the new row should appear.
+        await pilot.press("ctrl+s")
+        await _wait_for_row_count(app, pilot, target=2)
+
+
+async def test_sessions_refreshes_on_upload_complete(app, mock_server):
+    """PR9: when _poll_worker reports terminal status, SessionsBody
+    must refresh -- even if the Sessions tab isn't currently active.
+
+    Simulates the message arriving by posting SessionUploadComplete
+    directly to the screen; this is the contract between RecordBody
+    and MainScreen.
+    """
+    mock_server["sessions"] = []
+    async with app.run_test() as pilot:
+        # On Record tab initially.  Pre-populate the server so the
+        # refresh has something to land.
+        mock_server["sessions"] = [
+            {"id": "01FRESH", "status": "done",
+             "title": "just uploaded", "github": "alice"},
+        ]
+
+        # Post the completion message; bubbles to MainScreen's handler.
+        from vezir.client.tui.record_screen import SessionUploadComplete
+        app.screen.post_message(SessionUploadComplete(
+            session_id="01FRESH",
+            status="done",
+        ))
+        await pilot.pause(0.2)
+
+        # Now switch to Sessions -- the refresh should already have
+        # landed (or be in flight).  Wait up to 3s.
+        await pilot.press("ctrl+s")
+        await _wait_for_row_count(app, pilot, target=1)
+
+
+async def test_session_upload_complete_toasts_user(app, mock_server, monkeypatch):
+    """PR9: a terminal-status completion should produce a notification
+    so the user knows their session is ready without having to
+    eyeball the Sessions tab.
+    """
+    captured: list[tuple[str, str]] = []
+
+    from vezir.client.tui.app import VezirTuiApp
+    orig_notify = VezirTuiApp.notify
+
+    def fake_notify(self, message, *, severity="information", **kw):
+        captured.append((severity, str(message)))
+        return orig_notify(self, message, severity=severity, **kw)
+
+    monkeypatch.setattr(VezirTuiApp, "notify", fake_notify)
+
+    async with app.run_test() as pilot:
+        from vezir.client.tui.record_screen import SessionUploadComplete
+        app.screen.post_message(SessionUploadComplete(
+            session_id="01ABCDEFGHIJ",
+            status="done",
+        ))
+        await pilot.pause(0.2)
+
+        upload_toasts = [
+            (sev, msg) for sev, msg in captured if "01ABCDEF" in msg
+        ]
+        assert upload_toasts, (
+            f"no upload-completion toast captured; all: {captured}"
+        )
+        sev, msg = upload_toasts[0]
+        assert sev == "information"
+        assert "ready" in msg
+
+
 async def test_personal_checkbox_disables_sync(app, mock_server):
     """RecordBody: flipping personal greys out sync and forces it false."""
     from textual.widgets import Checkbox
