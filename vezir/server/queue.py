@@ -24,6 +24,11 @@ Schema:
     created_at           ISO timestamp
     updated_at           ISO timestamp
     error                Last error message, if any
+    summary_error        Summary-specific failure message. When transcription
+                         succeeds but summary generation fails, this field
+                         stores the failure message and the job proceeds to
+                         done (transcript artifacts are still usable). The
+                         user can retry summary generation later.
     artifacts            JSON-encoded dict of artifact paths (relative to session
                          dir): txt, srt, json, summary, pdf
 """
@@ -53,6 +58,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     error               TEXT,
+    summary_error       TEXT,
     artifacts           TEXT
 );
 
@@ -94,6 +100,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
                 "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
             ):
                 try:
                     conn.execute(ddl)
@@ -167,22 +174,33 @@ def update_status(
     status: str,
     error: str | None = None,
     artifacts: dict | None = None,
+    summary_error: str | None = ...,
 ) -> None:
-    """Update a job's status (and optionally error / artifacts)."""
+    """Update a job's status (and optionally error / artifacts / summary_error).
+
+    ``summary_error`` uses a sentinel default (``...``) so callers can
+    distinguish "don't touch summary_error" from "clear it to None".
+    Pass ``None`` explicitly to clear a previous summary_error (e.g. after
+    a successful retry).
+    """
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status}")
     with _conn() as c:
+        # Build the SET clause dynamically so we only touch columns the
+        # caller intends to change.
+        sets = ["status = ?", "updated_at = ?", "error = ?"]
+        params: list = [status, _now(), error]
         if artifacts is not None:
-            c.execute(
-                "UPDATE jobs SET status = ?, updated_at = ?, error = ?, artifacts = ? "
-                "WHERE id = ?",
-                (status, _now(), error, json.dumps(artifacts), job_id),
-            )
-        else:
-            c.execute(
-                "UPDATE jobs SET status = ?, updated_at = ?, error = ? WHERE id = ?",
-                (status, _now(), error, job_id),
-            )
+            sets.append("artifacts = ?")
+            params.append(json.dumps(artifacts))
+        if summary_error is not ...:
+            sets.append("summary_error = ?")
+            params.append(summary_error)
+        params.append(job_id)
+        c.execute(
+            f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
 
 
 def get(job_id: str) -> dict | None:

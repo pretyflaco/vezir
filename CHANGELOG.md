@@ -3,7 +3,49 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 0.1.12 — security hardening pass (unreleased)
+## 0.1.13 — graceful summary failures, retry-summary endpoint
+
+When `meet transcribe` succeeds but the summary backend is unreachable
+(e.g. transient DNS after a server restart), the job now completes as
+`done` instead of `error`. The transcript, SRT, JSON, and PDF artifacts
+are available immediately; only the AI summary is missing. Users can
+retry the summary from the Android app or API once connectivity is
+restored.
+
+### Added
+
+* **`summary_error` column** on the jobs table (`queue.py`). When the
+  summary step fails but the transcript succeeded, this field stores the
+  failure message. The session reaches `done` status (not `error`) so
+  transcript artifacts are accessible. Idempotent migration for existing
+  DBs.
+* **`POST /api/sessions/{id}/retry-summary`** endpoint (`sessions.py`).
+  Accepts sessions in `done` status with a non-empty `summary_error`.
+  Re-runs summary generation in a background thread. The client polls
+  `GET /api/sessions/{id}` to observe the transition:
+  `done` -> `transcribing` -> `done` (with `summary_error` cleared on
+  success).
+* **`retry_summary()` in `meet_runner.py`**: runs
+  `meet label --auto --no-audio --summary-preset <preset>` to regenerate
+  summary and PDF without re-transcribing.
+* **`retry_summary_for_session()` in `worker.py`**: full pipeline for
+  retrying summary, including re-sync if sync is enabled.
+* **`_extract_summary_error()` in `worker.py`**: parses the job log tail
+  for meetscribe's preset-guard RuntimeError or Tinfoil-specific DNS
+  failures.
+
+### Changed
+
+* **Worker no longer treats summary-only failures as hard errors.** When
+  `meet transcribe` exits non-zero but `.txt` + `.json` artifacts exist
+  on disk, the worker infers that transcription succeeded and only the
+  summary failed. The job proceeds through auto-labeling, unresolved-
+  speaker detection, and sync (if enabled) with `summary_error` set.
+* **`queue.update_status()` accepts a `summary_error` kwarg** with
+  sentinel default (`...`) to distinguish "don't touch" from "clear to
+  None".
+
+## 0.1.12 — security hardening pass
 
 This is a small follow-up to 0.1.11 focused on the auth / login surface
 and on getting TLS in front of vezir before non-founding-team members

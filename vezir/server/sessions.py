@@ -36,6 +36,9 @@ def _decorate(row: dict) -> dict:
             row["artifacts_dict"] = {}
     else:
         row["artifacts_dict"] = {}
+    # Ensure summary_error is present (may be absent in old DB rows
+    # created before the column was added).
+    row.setdefault("summary_error", None)
     return row
 
 
@@ -166,6 +169,57 @@ def sync_now(
     # the session page so the user sees the status transition.
     if "text/html" in (request.headers.get("accept") or ""):
         return RedirectResponse(url=f"/s/{session_id}", status_code=303)
+    return {"session_id": session_id, "queued": True}
+
+
+# ── retry summary ────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/api/sessions/{session_id}/retry-summary",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def retry_summary(
+    session_id: str,
+    github: str = Depends(auth.require_bearer),
+):
+    """Retry summary generation for a session whose summary previously failed.
+
+    The session must be in ``done`` status with a non-empty ``summary_error``
+    field (i.e. transcription succeeded but the summary step failed, typically
+    due to a transient network/DNS error reaching the LLM backend).
+
+    Runs the summary step in a background thread and returns immediately.
+    The client can poll ``GET /api/sessions/{id}`` to observe the status
+    transition: ``done`` -> ``transcribing`` -> ``done`` (with ``summary_error``
+    cleared on success, or updated on repeat failure).
+    """
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    if row["status"] != "done":
+        raise HTTPException(
+            409,
+            f"session status '{row['status']}' does not admit summary retry; "
+            "session must be in 'done' status",
+        )
+    if not row.get("summary_error"):
+        raise HTTPException(
+            409,
+            "session has no summary_error; summary already succeeded",
+        )
+
+    log.info(
+        "session=%s summary retry requested by %s", session_id, github,
+    )
+
+    threading.Thread(
+        target=worker.retry_summary_for_session,
+        args=(session_id,),
+        name=f"retry-summary-{session_id}",
+        daemon=True,
+    ).start()
+
     return {"session_id": session_id, "queued": True}
 
 

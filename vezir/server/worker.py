@@ -120,6 +120,34 @@ def _error_with_tail(prefix: str, log_path: Path) -> str:
     return f"{prefix}\n--- last lines of log ---\n{tail}"
 
 
+_SUMMARY_ERROR_RE = re.compile(
+    r"summary failed for preset '([^']+)':\s*(.*)",
+    re.IGNORECASE,
+)
+
+
+def _extract_summary_error(log_path: Path) -> str | None:
+    """Extract a human-readable summary error from the job log.
+
+    Scans the last ~2 KiB for meetscribe's preset-guard RuntimeError
+    message (e.g. "summary failed for preset 'confidential': ...").
+    Returns the full matched line, or None if not found.
+    """
+    tail = _last_log_lines(log_path)
+    if not tail:
+        return None
+    for line in reversed(tail.splitlines()):
+        m = _SUMMARY_ERROR_RE.search(line)
+        if m:
+            return line.strip()
+        # Also catch the tinfoil-specific error directly.
+        if "Failed to fetch router addresses" in line:
+            return line.strip()
+        if "Summary failed:" in line:
+            return line.strip()
+    return None
+
+
 def _session_dir(session_id: str) -> Path:
     return config.sessions_dir() / session_id
 
@@ -215,28 +243,45 @@ def process_one(job: dict) -> None:
         # 1. transcribe
         requested_preset = job.get("summary_preset")
         rc = meet_runner.transcribe(sd, job_id, log_path, summary_preset=requested_preset)
+
+        # Distinguish between transcription failures and summary-only
+        # failures.  When `meet transcribe` exits non-zero *and* a preset
+        # was requested, the failure may be summary-only (the preset guard
+        # in meetscribe raises RuntimeError after the transcript is already
+        # on disk).  If we have transcript artifacts (.txt, .json), the
+        # transcription itself succeeded and we should treat this as a
+        # partial success: mark the job `done` with a `summary_error` so
+        # the user gets their transcript and can retry the summary later.
+        summary_err_msg: str | None = None
+
         if rc != 0:
-            queue.update_status(
-                job_id, "error",
-                error=_error_with_tail(f"meet transcribe exited {rc}", log_path),
-            )
-            return
+            has_transcript = bool(list(sd.glob("*.txt"))) and bool(list(sd.glob("*.json")))
+            if requested_preset and has_transcript:
+                # Transcription OK, summary failed.  Treat as partial
+                # success: extract the summary error from the log tail,
+                # stash it in summary_error, and continue the pipeline.
+                summary_err_msg = _extract_summary_error(log_path) or (
+                    f"summary failed for preset '{requested_preset}' (exit {rc})"
+                )
+                log.warning(
+                    "job %s: transcription OK but summary failed: %s",
+                    job_id, summary_err_msg,
+                )
+            else:
+                # Genuine transcription failure.
+                queue.update_status(
+                    job_id, "error",
+                    error=_error_with_tail(f"meet transcribe exited {rc}", log_path),
+                )
+                return
 
         # Belt-and-suspenders: if a preset was explicitly requested but no
-        # summary file ended up on disk, mark the job as errored.  The CLI
-        # is expected to exit non-zero in this case (preset guard), but in
-        # case that contract is ever broken we surface the silent failure
-        # here rather than syncing an empty-summary PDF to GitHub.
-        if requested_preset and not list(sd.glob("*.summary.md")):
-            queue.update_status(
-                job_id, "error",
-                error=_error_with_tail(
-                    f"preset '{requested_preset}' requested but no summary "
-                    "was generated; see job log",
-                    log_path,
-                ),
+        # summary file ended up on disk AND we haven't already captured a
+        # summary error, record it as a summary_error (not a hard error).
+        if requested_preset and not list(sd.glob("*.summary.md")) and not summary_err_msg:
+            summary_err_msg = _extract_summary_error(log_path) or (
+                f"preset '{requested_preset}' requested but no summary was generated"
             )
-            return
 
         # 2. label --auto against central voiceprint DB (per-job opt-out)
         # The job row's auto_label_enabled flag is set at upload time from
@@ -259,7 +304,8 @@ def process_one(job: dict) -> None:
         # 3. unresolved speakers?
         if _has_unresolved_speakers(sd):
             queue.update_status(
-                job_id, "needs_labeling", artifacts=artifacts
+                job_id, "needs_labeling", artifacts=artifacts,
+                summary_error=summary_err_msg,
             )
             log.info("job %s needs labeling", job_id)
             return
@@ -302,8 +348,14 @@ def process_one(job: dict) -> None:
 
         # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1)
         _delete_audio(sd)
-        queue.update_status(job_id, "done", artifacts=artifacts)
-        log.info("job %s done", job_id)
+        queue.update_status(
+            job_id, "done", artifacts=artifacts,
+            summary_error=summary_err_msg,
+        )
+        if summary_err_msg:
+            log.info("job %s done (summary failed: %s)", job_id, summary_err_msg)
+        else:
+            log.info("job %s done", job_id)
     except Exception as exc:
         log.exception("job %s failed", job_id)
         queue.update_status(job_id, "error", error=str(exc))
@@ -348,6 +400,92 @@ def start_background_worker() -> None:
 
 def stop_background_worker() -> None:
     _stop_flag.set()
+
+
+def retry_summary_for_session(session_id: str) -> None:
+    """Re-run summary generation for a completed session.
+
+    Called when the user requests a summary retry (e.g. after a transient
+    Tinfoil/network failure). The transcription artifacts must already
+    exist on disk.
+    """
+    sd = _session_dir(session_id)
+    log_path = _job_log_path(session_id)
+
+    try:
+        job = queue.get(session_id)
+        if not job:
+            log.error("retry-summary: session %s not found", session_id)
+            return
+
+        requested_preset = job.get("summary_preset")
+        queue.update_status(
+            session_id, "transcribing",
+            summary_error=None,  # clear previous summary error
+        )
+
+        rc = meet_runner.retry_summary(
+            sd, session_id, log_path,
+            summary_preset=requested_preset,
+        )
+        if rc != 0:
+            # Summary retry failed again.
+            summary_err = _extract_summary_error(log_path) or (
+                f"summary retry failed (exit {rc})"
+            )
+            log.warning(
+                "retry-summary %s failed: %s", session_id, summary_err,
+            )
+            artifacts = _find_artifacts(sd)
+            queue.update_status(
+                session_id, "done",
+                artifacts=artifacts,
+                summary_error=summary_err,
+            )
+            return
+
+        # Summary succeeded — update artifacts and clear summary_error.
+        artifacts = _find_artifacts(sd)
+
+        # If the session was previously done and now has a summary, re-run
+        # sync if enabled (the summary artifact is new content).
+        sync_enabled = bool(job.get("sync_enabled", 1))
+        if _skip_sync():
+            log.info("retry-summary %s: VEZIR_SKIP_SYNC set", session_id)
+        elif not sync_enabled:
+            log.info("retry-summary %s: sync_enabled=0", session_id)
+        else:
+            queue.update_status(session_id, "syncing", artifacts=artifacts)
+            src = meet_runner.sync(sd, session_id, log_path)
+            if src != 0:
+                queue.update_status(
+                    session_id, "error",
+                    error=_error_with_tail(f"meet sync exited {src}", log_path),
+                    artifacts=artifacts,
+                )
+                return
+            failure = _sync_log_indicates_failure(log_path)
+            if failure:
+                queue.update_status(
+                    session_id, "error",
+                    error=_error_with_tail(
+                        f"meet sync failed silently: {failure}", log_path,
+                    ),
+                    artifacts=artifacts,
+                )
+                return
+
+        queue.update_status(
+            session_id, "done",
+            artifacts=artifacts,
+            summary_error=None,
+        )
+        log.info("retry-summary %s succeeded", session_id)
+    except Exception as exc:
+        log.exception("retry-summary %s failed", session_id)
+        queue.update_status(session_id, "error", error=str(exc))
+    finally:
+        meet_runner.cleanup_home_shim(session_id)
 
 
 def finalize_after_labeling(session_id: str) -> None:
