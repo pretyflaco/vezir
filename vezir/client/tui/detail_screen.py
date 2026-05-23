@@ -110,7 +110,12 @@ class DetailScreen(Screen):
         Binding("y", "sync_now", "Sync now"),
         Binding("p", "share_with_team", "Share"),
         Binding("l", "open_labeling", "Label"),
-        Binding("enter", "open_selected_artifact", "Open artifact"),
+        # NOTE: do NOT bind "enter" here.  DataTable has its own
+        # built-in `enter -> select_cursor` binding which fires
+        # RowSelected (handled by `on_data_table_row_selected` below).
+        # Binding `enter` at the screen level would cause a
+        # double-dispatch: ArtifactScreen gets pushed twice, leading
+        # to a stuck UI state.  Smoked on muscle 2026-05-23.
     ]
 
     CSS = """

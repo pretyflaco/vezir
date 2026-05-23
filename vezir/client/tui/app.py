@@ -135,6 +135,14 @@ class VezirTuiApp(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit"),
+        # Emergency hard-exit.  priority=True so it fires even when a
+        # focused widget would otherwise swallow ctrl+c (Input widgets
+        # historically use it for "clear").  This is the user's escape
+        # hatch when a screen wedges -- always works, restores terminal
+        # state on the way out.  Trade-off: Input widgets lose their
+        # default ctrl+c semantic; users can backspace / select-all
+        # instead.  Acceptable for the reliability win.
+        Binding("ctrl+c", "force_quit", "Force quit", priority=True, show=False),
         Binding("f1", "help", "Help"),
         Binding("question_mark", "help", show=False),
     ]
@@ -160,6 +168,16 @@ class VezirTuiApp(App):
     def action_help(self) -> None:
         from .help_screen import HelpScreen
         self.push_screen(HelpScreen())
+
+    def action_force_quit(self) -> None:
+        """Emergency hard-exit invoked by ctrl+c.
+
+        Logs the event so post-mortem analysis can correlate a hung
+        screen with the user's escape moment, then calls App.exit()
+        which restores terminal state on its way out.
+        """
+        log.warning("force_quit invoked (ctrl+c)")
+        self.exit()
 
     # ── exception handling ──
 

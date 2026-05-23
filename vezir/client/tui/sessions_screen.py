@@ -74,7 +74,12 @@ class SessionsBody(Vertical):
     """Browse team + own personal sessions (used inside MainScreen)."""
 
     BINDINGS = [
-        Binding("enter", "open_selected", "Open"),
+        # NOTE: do NOT bind "enter" here.  DataTable has its own
+        # built-in `enter -> select_cursor` binding which fires
+        # RowSelected (handled by `on_data_table_row_selected` below).
+        # Binding `enter` at the body level would cause a
+        # double-dispatch: DetailScreen gets pushed twice, leading
+        # to a stuck UI state.  Smoked on muscle 2026-05-23.
     ]
 
     DEFAULT_CSS = """

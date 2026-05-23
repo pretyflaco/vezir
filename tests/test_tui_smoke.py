@@ -286,3 +286,154 @@ async def test_label_screen_renders_without_crash(app, mock_server, monkeypatch)
             raise AssertionError(
                 f"speaker rows never populated; final count: {len(inputs)}"
             )
+
+
+# ─── PR4 regression guards: freeze fixes ─────────────────────────────────────
+
+
+async def test_no_enter_binding_on_detail_screen(app, mock_server):
+    """DetailScreen must NOT bind `enter` -- DataTable already handles it,
+    and a screen-level binding causes a double-push of ArtifactScreen.
+
+    Background: the muscle smoke on 2026-05-23 froze the TUI on PDF
+    click.  Root cause was the DataTable's built-in
+    `enter -> select_cursor` firing alongside our screen-level
+    `Binding('enter', 'open_selected_artifact')`, pushing
+    ArtifactScreen twice.  This test fails (in the negative sense)
+    if we ever re-add the binding.
+    """
+    from vezir.client.tui.detail_screen import DetailScreen
+    keys = [b.key for b in DetailScreen.BINDINGS]
+    assert "enter" not in keys, (
+        f"DetailScreen has an `enter` binding ({keys}); "
+        "DataTable already handles enter natively."
+    )
+
+
+async def test_no_enter_binding_on_sessions_body(app, mock_server):
+    """Same regression guard for SessionsBody."""
+    from vezir.client.tui.sessions_screen import SessionsBody
+    keys = [b.key for b in SessionsBody.BINDINGS]
+    assert "enter" not in keys, (
+        f"SessionsBody has an `enter` binding ({keys}); "
+        "DataTable already handles enter natively."
+    )
+
+
+async def test_force_quit_binding_exists(app, mock_server):
+    """ctrl+c must be wired up as a priority=True force-quit on the app.
+
+    This is the user's escape hatch when a screen wedges.  Without it,
+    a hung screen leaves the user with no way out short of `kill`.
+    """
+    from vezir.client.tui.app import VezirTuiApp
+    by_key = {b.key: b for b in VezirTuiApp.BINDINGS}
+    assert "ctrl+c" in by_key
+    assert by_key["ctrl+c"].priority is True
+    assert by_key["ctrl+c"].action == "force_quit"
+
+
+async def test_binary_artifact_does_not_block_event_loop(
+    app, mock_server, monkeypatch,
+):
+    """Pushing ArtifactScreen for a binary artifact must not block.
+
+    PR2 inlined subprocess.Popen in on_binary_ready.  If the launched
+    process takes the controlling terminal or stalls, the TUI freezes.
+    PR4 moves the launch into a worker so the message handler returns
+    immediately.
+
+    We stub the OS opener path (_os_opener_cmd) and a fake Popen so
+    no real process actually starts -- the test only verifies that
+    on_binary_ready returns control to the event loop quickly.
+    """
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["sessions"] = [
+        {
+            "id": "01BIN",
+            "status": "done",
+            "title": "binary test",
+            "github": "alice",
+            "artifacts": {"pdf": "report.pdf"},
+        },
+    ]
+
+    # Make the artifact endpoint return a small PDF-like blob.
+    import httpx
+    import vezir.client.api as api_mod
+    orig_factory = api_mod.httpx.Client
+    inner_orig = api_mod.httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p.startswith("/artifact/"):
+            return httpx.Response(200, content=b"%PDF-1.4\n%fake pdf body")
+        if p == "/api/sessions":
+            return httpx.Response(200, json={"sessions": mock_server["sessions"]})
+        if p.startswith("/api/sessions/"):
+            sid = p.split("/")[-1]
+            for s in mock_server["sessions"]:
+                if s["id"] == sid:
+                    return httpx.Response(200, json=s)
+            return httpx.Response(404, text="nf")
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return inner_orig(*args, **kwargs)
+
+    api_mod.httpx.Client = factory
+
+    # Stub the opener worker's Popen so no real process spawns and so
+    # we can assert that Popen WAS called -- proving the worker fires.
+    from vezir.client.tui import artifact_screen as art_mod
+    popen_calls: list[list[str]] = []
+
+    class _FakeProc:
+        def __init__(self, *a, **k):
+            self._dead = False
+            popen_calls.append(list(a[0]) if a else [])
+
+        def poll(self):
+            return 0 if self._dead else None
+
+    monkeypatch.setattr(art_mod, "_os_opener_cmd", lambda: ["true"])
+    monkeypatch.setattr(art_mod.subprocess, "Popen", _FakeProc)
+
+    try:
+        async with app.run_test() as pilot:
+            from vezir.client.tui.artifact_screen import ArtifactScreen
+            await app.push_screen(ArtifactScreen("01BIN", "report.pdf"))
+            # Pause to let workers fire.  Critical: the test must
+            # CONTINUE TO RESPOND TO EVENTS after the binary handler
+            # ran -- if the TUI froze, additional pilot operations
+            # would hang.  We probe by issuing pilot.press("escape").
+            for _ in range(20):
+                await pilot.pause(0.1)
+                if popen_calls:
+                    break
+            assert popen_calls, "opener worker never invoked Popen"
+            # Now prove the event loop is alive: escape pops the
+            # ArtifactScreen.  If we froze, this would hang the test.
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            assert app.screen.__class__.__name__ != "ArtifactScreen", (
+                "escape did not pop ArtifactScreen -- TUI appears frozen"
+            )
+    finally:
+        api_mod.httpx.Client = orig_factory
+
+
+async def test_opener_failed_message_dispatches_to_handler(app, mock_server):
+    """Sanity: OpenerFailed message class must have a non-underscored
+    name so its handler_name matches the screen's `on_opener_failed`.
+
+    Belt-and-braces for the leading-underscore Message bug we hit in
+    PR2.  If anyone ever re-prefixes the class with `_`, this test
+    fails before the next manual smoke does.
+    """
+    from vezir.client.tui.artifact_screen import OpenerLaunched, OpenerFailed
+    assert OpenerLaunched.handler_name == "on_opener_launched"
+    assert OpenerFailed.handler_name == "on_opener_failed"
