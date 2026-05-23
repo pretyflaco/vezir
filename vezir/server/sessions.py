@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from pydantic import BaseModel
 
 from .. import config
 from . import auth, queue, ratelimit, web_sessions, worker
@@ -24,6 +25,13 @@ from .templating import templates
 
 log = logging.getLogger("vezir.sessions")
 router = APIRouter()
+
+
+class _RetrySummaryBody(BaseModel):
+    preset: str | None = None
+
+
+_VALID_PRESETS = {"high-quality", "confidential", "alternative"}
 
 
 def _decorate(row: dict) -> dict:
@@ -182,6 +190,7 @@ def sync_now(
 )
 def retry_summary(
     session_id: str,
+    body: _RetrySummaryBody | None = None,
     github: str = Depends(auth.require_bearer),
 ):
     """Retry summary generation for a session whose summary previously failed.
@@ -210,6 +219,12 @@ def retry_summary(
             "session has no summary_error; summary already succeeded",
         )
 
+    preset_override = None
+    if body and body.preset:
+        if body.preset not in _VALID_PRESETS:
+            raise HTTPException(400, f"invalid preset: {body.preset}")
+        preset_override = body.preset
+
     log.info(
         "session=%s summary retry requested by %s", session_id, github,
     )
@@ -217,6 +232,7 @@ def retry_summary(
     threading.Thread(
         target=worker.retry_summary_for_session,
         args=(session_id,),
+        kwargs={"preset_override": preset_override},
         name=f"retry-summary-{session_id}",
         daemon=True,
     ).start()

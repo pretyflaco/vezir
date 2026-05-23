@@ -442,7 +442,7 @@ def stop_background_worker() -> None:
     _stop_flag.set()
 
 
-def retry_summary_for_session(session_id: str) -> None:
+def retry_summary_for_session(session_id: str, *, preset_override: str | None = None) -> None:
     """Re-run summary generation for a completed session.
 
     Called when the user requests a summary retry (e.g. after a transient
@@ -461,7 +461,12 @@ def retry_summary_for_session(session_id: str) -> None:
             log.error("retry-summary: session %s not found", session_id)
             return
 
-        requested_preset = job.get("summary_preset")
+        requested_preset = preset_override or job.get("summary_preset")
+        if preset_override:
+            log.info(
+                "retry-summary %s: using override preset '%s' (original: '%s')",
+                session_id, preset_override, job.get("summary_preset"),
+            )
         queue.update_status(
             session_id, "summarizing",
             summary_error=None,  # clear previous summary error
@@ -475,13 +480,24 @@ def retry_summary_for_session(session_id: str) -> None:
         try:
             os.environ["HOME"] = str(home)
             os.environ.pop("XDG_CONFIG_HOME", None)
+            def _progress(msg: str) -> None:
+                log.info("retry-summary %s: %s", session_id, msg)
+
             from meet.label import apply_labels
             apply_labels(
                 sd,
                 label_map={},
                 regenerate_summary=True,
                 summary_preset=requested_preset,
+                progress_callback=_progress,
             )
+            # Belt-and-suspenders: verify the summary file actually appeared.
+            if requested_preset and not list(sd.glob("*.summary.md")):
+                summary_err = (
+                    f"summary retry produced no .summary.md for preset "
+                    f"'{requested_preset}'"
+                )
+                log.warning("retry-summary %s: %s", session_id, summary_err)
         except Exception as exc:
             summary_err = f"summary retry failed: {exc}"
             log.warning("retry-summary %s failed: %s", session_id, summary_err)

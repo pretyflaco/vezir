@@ -166,11 +166,15 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
     try:
         os.environ["HOME"] = str(home)
         os.environ.pop("XDG_CONFIG_HOME", None)
+        def _progress(msg: str) -> None:
+            log.info("session=%s apply_labels: %s", session_id, msg)
+
         from meet.label import apply_labels
         apply_labels(
             _session_dir(session_id),
             label_map=label_map,
             regenerate_summary=False,
+            progress_callback=_progress,
         )
 
         try:

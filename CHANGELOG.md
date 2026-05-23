@@ -3,6 +3,31 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.17 — retry-summary fixes, preset override, progress callbacks
+
+Requires **meetscribe-offline >= 0.8.3**.
+
+### Fixed
+
+* **Retry-summary silently declared success without a summary.**
+  `apply_labels()` in meetscribe swallowed summary exceptions and
+  vezir had no post-condition check.  Now: (a) meetscribe 0.8.3
+  re-raises when `summary_preset` is set, (b) vezir checks that
+  `.summary.md` was actually produced, (c) `progress_callback` is
+  passed so diagnostics are visible in the worker log.
+
+### Added
+
+* **`POST /api/sessions/{id}/retry-summary` accepts optional preset
+  override** via JSON body `{"preset": "high-quality"}`.  Lets the user
+  switch to a different summarization backend when the original fails
+  (e.g. Tinfoil outage → retry with Claude Max).  Omitting the field
+  or sending an empty body uses the session's original preset.
+
+* **Progress callbacks** passed to `apply_labels()` in both
+  `retry_summary_for_session()` and `_apply_and_finalize()`.  Summary
+  generation progress is now visible in the worker log.
+
 ## 0.1.16 — fix voiceprint DB drift, merge command
 
 Requires **meetscribe-offline >= 0.8.2**.
