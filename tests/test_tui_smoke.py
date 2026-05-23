@@ -288,6 +288,72 @@ async def test_label_screen_renders_without_crash(app, mock_server, monkeypatch)
             )
 
 
+async def test_label_screen_inputs_have_visible_text_area(
+    app, mock_server, monkeypatch
+):
+    """PR8 regression: LabelScreen.speaker-row must be tall enough
+    to contain Textual's default Input (height: 3 = border-top +
+    content + border-bottom).
+
+    Previously the CSS had ``height: 3`` AND ``padding: 0 0 1 0`` on
+    the row, leaving only 2 rows of usable content space.  The
+    Input's content row (where typed text appears) was clipped
+    entirely so users saw no text while typing, and the Button's
+    top + bottom borders consumed both visible rows, rendering the
+    "▶ Play" label nowhere ("all black box" bug from the 2026-05-23
+    dogfood).
+    """
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["label_info"]["01LABEL2"] = {
+        "session_id": "01LABEL2",
+        "status": "needs_labeling",
+        "speakers": [
+            {"id": "SPEAKER_00", "channel": "mic",
+             "sample_text": "Hello team"},
+        ],
+        "team": ["alice", "bob", "kasita"],
+        "audio_available": True,
+    }
+    async with app.run_test(size=(120, 40)) as pilot:
+        from vezir.client.tui.label_screen import LabelScreen
+        from textual.widgets import Input, Button
+        await app.push_screen(LabelScreen(session_id="01LABEL2"))
+        # Poll until the speaker row mounts (worker thread).
+        for _ in range(20):
+            await pilot.pause(0.1)
+            inputs = list(app.screen.query(Input))
+            if inputs:
+                break
+        else:
+            raise AssertionError("speaker Input never mounted")
+
+        inp = inputs[0]
+        # Layout assertion: Input needs at least 3 rows (its default).
+        # Earlier (height:3 row + padding-bottom 1), Input was clipped
+        # to 2 rows -- content row hidden.
+        assert inp.region.height >= 3, (
+            f"Input clipped to height {inp.region.height}; "
+            "speaker-row CSS too short for Input's default height: 3."
+        )
+        # The play button must also have a non-trivial visible region.
+        btn = app.screen.query_one(Button)
+        assert btn.region.height >= 3, (
+            f"Play button clipped to height {btn.region.height}; "
+            "Button needs 3 rows (border-top + label + border-bottom)."
+        )
+
+        # Functional assertion: typing into the Input must update
+        # its .value reactive.  This is the user-observable bug --
+        # 'I type but see nothing'.
+        inp.focus()
+        await pilot.pause()
+        await pilot.press(*"alice")
+        await pilot.pause()
+        assert inp.value == "alice", (
+            f"Input did not receive typed text; value={inp.value!r}"
+        )
+
+
 # ─── PR4 regression guards: freeze fixes ─────────────────────────────────────
 
 

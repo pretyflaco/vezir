@@ -74,21 +74,36 @@ class LabelScreen(Screen):
     LabelScreen { padding: 1 2; }
     #speakers-container { height: 1fr; overflow-y: auto; }
     .speaker-row {
-        height: 3;
+        /* PR8: Textual's default Input has height: 3 (border-top +
+         * content row + border-bottom).  Previous height:3 with a
+         * padding-bottom of 1 left only 2 rows of usable content,
+         * clipping the Input's content row entirely so typed text
+         * was invisible, and squashing the Button's borders so its
+         * centered label rendered nowhere ("all black box").  Bump
+         * to 5 and use margin (which doesn't consume children's
+         * space) instead of padding for separation.  align middle
+         * vertically centers the 1-row Labels next to the 3-row
+         * Input. */
+        height: 5;
+        margin-bottom: 1;
         border-bottom: solid $surface;
-        padding: 0 0 1 0;
+        align: left middle;
     }
     .speaker-id {
         width: 14;
         color: $accent;
         text-style: bold;
+        height: 100%;
+        content-align: left middle;
     }
     .sample {
         color: $text-muted;
         width: 1fr;
+        height: 100%;
+        content-align: left middle;
     }
-    .play-btn { min-width: 8; }
-    .name-input { width: 28; }
+    .play-btn { min-width: 10; margin: 0 1; }
+    .name-input { width: 32; }
     #actions { height: 3; margin-top: 1; }
     """
 
@@ -269,6 +284,12 @@ class LabelScreen(Screen):
                 "▶ Play",
                 id=f"play-{sid}",
                 classes="play-btn",
+                # PR8: variant="primary" gives the button a colored
+                # background (theme $primary) so it's clearly visible
+                # even on terminals whose default ($surface) is near-
+                # identical to the screen background -- earlier it
+                # rendered as an indistinguishable black box.
+                variant="primary",
                 disabled=not play_available,
             )
             row.mount(play_btn)
