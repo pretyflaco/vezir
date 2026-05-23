@@ -968,3 +968,156 @@ async def test_discover_clipboard_cmd_caches_result(app, mock_server, monkeypatc
         f"discovery probed {probe_count['n']} times across 2 calls; "
         "expected exactly one round."
     )
+
+
+# ─── PR10 regression guards: open-in-browser ──────────────────────────────────
+
+
+async def test_detail_screen_o_opens_dashboard_url(app, mock_server, monkeypatch):
+    """PR10: pressing `o` on DetailScreen opens
+    ``{server_url}/s/{session_id}`` in the user's default browser.
+    """
+    from vezir.client.tui.detail_screen import DetailScreen
+
+    opened: list[tuple[str, int]] = []
+    import webbrowser
+    monkeypatch.setattr(
+        webbrowser, "open",
+        lambda url, new=0: opened.append((url, new)) or True,
+    )
+
+    screen = DetailScreen(session_id="01KSBROWSE")
+    # Avoid notify side effects (would need a mounted screen).
+    monkeypatch.setattr(screen, "notify", lambda *a, **k: None)
+    # Bind a fake app so action_open_in_browser can read server_url.
+    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
+    app.server_url = "http://test"
+
+    screen.action_open_in_browser()
+    assert opened == [("http://test/s/01KSBROWSE", 2)], (
+        f"expected 1 browser open with /s/01KSBROWSE, got {opened}"
+    )
+
+
+async def test_detail_open_in_browser_handles_no_server_url(
+    app, mock_server, monkeypatch
+):
+    """If server_url is missing, action must notify (not crash)."""
+    from vezir.client.tui.detail_screen import DetailScreen
+
+    opened: list = []
+    import webbrowser
+    monkeypatch.setattr(
+        webbrowser, "open",
+        lambda url, new=0: opened.append(url) or True,
+    )
+    notified: list[tuple[str, str]] = []
+
+    screen = DetailScreen(session_id="01NOPE")
+    monkeypatch.setattr(
+        screen, "notify",
+        lambda msg, *, severity="information", **kw:
+            notified.append((str(msg), severity)),
+    )
+    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
+    app.server_url = ""
+
+    screen.action_open_in_browser()
+    assert opened == [], (
+        f"webbrowser.open should not be called with empty server_url; "
+        f"got {opened}"
+    )
+    assert any("server URL" in msg.lower() or "no server" in msg.lower()
+               for msg, _ in notified), (
+        f"expected an error notification; got {notified}"
+    )
+
+
+async def test_sessions_body_o_opens_selected_in_browser(
+    app, mock_server, monkeypatch
+):
+    """PR10: pressing `o` on the Sessions list opens the cursor row's
+    session in the web dashboard.
+    """
+    mock_server["sessions"] = [
+        {"id": "01ROW0", "status": "done", "title": "row 0", "github": "alice"},
+        {"id": "01ROW1", "status": "done", "title": "row 1", "github": "bob"},
+    ]
+    opened: list[tuple[str, int]] = []
+    import webbrowser
+    monkeypatch.setattr(
+        webbrowser, "open",
+        lambda url, new=0: opened.append((url, new)) or True,
+    )
+    app.server_url = "http://test"
+
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.5)
+
+        from textual.widgets import TabbedContent
+        tabs = app.screen.query_one(TabbedContent)
+        from vezir.client.tui.sessions_screen import SessionsBody
+        sess_body = tabs.active_pane.query_one(SessionsBody)
+        monkeypatch.setattr(sess_body, "notify", lambda *a, **k: None)
+        sess_body.action_open_selected_in_browser()
+        assert opened == [("http://test/s/01ROW0", 2)], (
+            f"expected /s/01ROW0 open, got {opened}"
+        )
+
+
+# ─── PR11 regression guard: LabelScreen enter-to-submit ──────────────────────
+
+
+async def test_label_screen_enter_submits(app, mock_server, monkeypatch):
+    """PR11: pressing enter while typing in a github-handle input
+    submits all labels.  The dogfood pattern is: type the last
+    handle, hit enter, move on -- no mouse needed.
+    """
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["label_info"]["01ENTER"] = {
+        "session_id": "01ENTER",
+        "status": "needs_labeling",
+        "speakers": [
+            {"id": "SPEAKER_00", "channel": "mic",
+             "sample_text": "Hello team"},
+        ],
+        "team": ["alice", "bob"],
+        "audio_available": True,
+    }
+
+    submitted: list[dict] = []
+    # Patch the API client BEFORE pushing the screen (the screen
+    # captures self.app.api which is the same VezirClient instance).
+    def fake_submit(session_id, labels):
+        submitted.append({"id": session_id, "labels": labels})
+        from vezir.client.api import ApiResult
+        return ApiResult.success({"ok": True})
+    monkeypatch.setattr(app.api, "submit_labels", fake_submit)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        from vezir.client.tui.label_screen import LabelScreen
+        from textual.widgets import Input
+        await app.push_screen(LabelScreen(session_id="01ENTER"))
+        # Wait for speaker row to mount.
+        for _ in range(20):
+            await pilot.pause(0.1)
+            inputs = list(app.screen.query(Input))
+            if inputs:
+                break
+        else:
+            raise AssertionError("speaker Input never mounted")
+
+        inp = inputs[0]
+        inp.focus()
+        await pilot.pause()
+        await pilot.press(*"alice")
+        await pilot.press("enter")
+        # Submit worker is threaded; give it a moment.
+        for _ in range(20):
+            await pilot.pause(0.1)
+            if submitted:
+                break
+        assert submitted, "expected a submit call after pressing enter"
+        assert submitted[0]["id"] == "01ENTER"
+        assert submitted[0]["labels"] == {"SPEAKER_00": "alice"}

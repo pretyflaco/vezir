@@ -212,6 +212,28 @@ class LabelScreen(Screen):
 
     # ── buttons ──
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """PR11: pressing enter while typing a github handle submits.
+
+        Matches the dialog convention 'enter = primary action'.  The
+        Submit button is still present for mouse users + as an
+        affordance hint to the user that there's a single action
+        applied to all rows at once -- which the dogfood report
+        confirmed was non-obvious.
+        """
+        # Only react if the Input is one of our speaker-label inputs;
+        # ignore if it's something else (defensive, no other Inputs
+        # currently on this screen but future-proof).
+        if event.input.id and event.input.id.startswith("input-"):
+            self._do_submit()
+
+    def action_submit(self) -> None:
+        """Submit all entered labels.  Wraps ``_do_submit`` so the
+        action machinery (used by future keybindings or tests) has a
+        stable entry point.
+        """
+        self._do_submit()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
         if bid == "cancel-btn":

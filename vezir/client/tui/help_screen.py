@@ -30,10 +30,12 @@ _HELP_TEXT = """\
 [b cyan]Sessions list[/b cyan]
   [b]enter[/b]   Open selected session
   [b]c[/b]       Copy selected session id
+  [b]o[/b]       Open selected session in web browser
 
 [b cyan]Session detail[/b cyan]
   [b]enter[/b]   View highlighted artifact
   [b]c[/b]       Copy session id
+  [b]o[/b]       Open in web browser
   [b]l[/b]       Open labeling for this session
   [b]y[/b]       Sync now
   [b]e[/b]       Retry summary
@@ -52,9 +54,9 @@ _HELP_TEXT = """\
   [b]ctrl+x[/b]    Toggle personal flag
 
 [b cyan]Label screen[/b cyan]
-  [b]tab[/b]     Next speaker
-  [b]space[/b]   Play / stop clip
-  [b]enter[/b]   Submit all labels
+  [b]tab[/b]     Next field (Textual default focus traversal)
+  [b]enter[/b]   Submit all labels (from any handle input)
+  [b]click ▶[/b] Play / stop the speaker's audio clip
   [b]escape[/b]  Cancel
 """
 

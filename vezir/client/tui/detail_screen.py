@@ -111,6 +111,12 @@ class DetailScreen(Screen):
         Binding("p", "share_with_team", "Share"),
         Binding("l", "open_labeling", "Label"),
         Binding("c", "copy_session_id", "Copy id"),
+        # PR10: open this session in the web dashboard.  Useful while
+        # the dashboard is still around (deprecates in v0.4 / removes
+        # in v0.5).  Lazily constructed as ``{server_url}/s/{id}``
+        # since the Session dataclass doesn't carry dashboard_url
+        # (added per-upload via /api/upload response only).
+        Binding("o", "open_in_browser", "Open in browser"),
         # NOTE: do NOT bind "enter" here.  DataTable has its own
         # built-in `enter -> select_cursor` binding which fires
         # RowSelected (handled by `on_data_table_row_selected` below).
@@ -233,6 +239,41 @@ class DetailScreen(Screen):
             severity="information",
             timeout=4,
         )
+
+    def action_open_in_browser(self) -> None:
+        """Open the session's dashboard URL in the user's default browser.
+
+        PR10 (2026-05-24): the thin-client TUI is most useful when the
+        user can pivot to the full web dashboard for tasks the TUI
+        doesn't surface (raw log inspection, admin actions, etc.).
+        Constructed lazily from ``app.server_url`` because the Session
+        dataclass doesn't carry dashboard_url (server only emits it
+        as part of /api/upload responses, not /api/sessions/{id}).
+        """
+        import webbrowser
+        base = (self.app.server_url or "").rstrip("/")
+        if not base:
+            self.notify("No server URL configured.", severity="error")
+            return
+        url = f"{base}/s/{self.session_id}"
+        try:
+            opened = webbrowser.open(url, new=2)
+        except Exception as exc:
+            self.notify(f"Could not open browser: {exc}", severity="error")
+            return
+        if opened:
+            self.notify(
+                f"Opening {url}", severity="information", timeout=4,
+            )
+        else:
+            # webbrowser.open returns False when no usable browser was
+            # found (e.g. headless server).  Surface the URL so the
+            # user can copy/paste manually.
+            self.notify(
+                f"No browser available.  URL: {url}",
+                severity="warning",
+                timeout=8,
+            )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
