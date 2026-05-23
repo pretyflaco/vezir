@@ -178,14 +178,87 @@ class VezirTuiApp(App):
         self.push_screen(HelpScreen())
 
     def action_force_quit(self) -> None:
-        """Emergency hard-exit invoked by ctrl+c.
+        """Emergency hard-exit invoked by ctrl+shift+q.
 
         Logs the event so post-mortem analysis can correlate a hung
         screen with the user's escape moment, then calls App.exit()
         which restores terminal state on its way out.
         """
-        log.warning("force_quit invoked (ctrl+c)")
+        log.warning("force_quit invoked (ctrl+shift+q)")
         self.exit()
+
+    # ── clipboard ──
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Dual-write clipboard: OSC 52 + system clipboard utility.
+
+        Textual's default ``copy_to_clipboard`` writes only OSC 52 (an
+        escape sequence the terminal emulator interprets and forwards
+        to the system clipboard).  OSC 52 works in Ghostty, kitty,
+        WezTerm, alacritty, iTerm2, modern xterm -- but is DISABLED
+        BY DEFAULT in gnome-terminal / VTE-based terminals (for
+        security: any program writing to stdout could otherwise
+        silently exfil to the clipboard).
+
+        We additionally shell out to a discovered clipboard utility
+        (wl-copy / xclip / pbcopy) so the clipboard actually gets
+        populated on those terminals.  Both writes target the same
+        OS clipboard slot, so there's no conflict -- whichever path
+        the terminal honors wins, the other is a benign no-op.
+
+        Failure modes:
+          * empty payload -> skip subprocess (xclip with empty stdin
+            would clear the clipboard)
+          * no utility found -> silent; OSC 52 may still have worked
+          * subprocess hangs / errors -> swallowed at debug; the
+            caller already showed a toast and OSC 52 may have worked
+        """
+        super().copy_to_clipboard(text)  # OSC 52 via Textual driver
+        if not text:
+            return
+        cmd = self._discover_clipboard_cmd()
+        if cmd is None:
+            return
+        import subprocess
+        try:
+            subprocess.run(
+                cmd,
+                input=text.encode("utf-8"),
+                timeout=2,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            log.debug("clipboard subprocess failed: %s", exc)
+
+    def _discover_clipboard_cmd(self) -> list[str] | None:
+        """Pick a working clipboard write utility (or None).
+
+        Resolution order, first hit wins:
+          1. wl-copy   (Wayland; only when WAYLAND_DISPLAY is set --
+                        wl-copy raises if no compositor is running)
+          2. xclip     (X11; primary Linux deployment target)
+          3. pbcopy    (macOS; built in)
+
+        Cached on the app instance after the first call so we don't
+        re-probe shutil.which for every copy operation.
+        """
+        cached = getattr(self, "_clipboard_cmd_cache", "unset")
+        if cached != "unset":
+            return cached
+        import os
+        import shutil as _sh
+
+        cmd: list[str] | None = None
+        if os.environ.get("WAYLAND_DISPLAY") and _sh.which("wl-copy"):
+            cmd = ["wl-copy"]
+        elif _sh.which("xclip"):
+            cmd = ["xclip", "-selection", "clipboard"]
+        elif _sh.which("pbcopy"):
+            cmd = ["pbcopy"]
+        self._clipboard_cmd_cache = cmd
+        return cmd
 
     # ── exception handling ──
 

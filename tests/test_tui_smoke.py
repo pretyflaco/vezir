@@ -565,3 +565,217 @@ async def test_opener_failed_message_dispatches_to_handler(app, mock_server):
     from vezir.client.tui.artifact_screen import OpenerLaunched, OpenerFailed
     assert OpenerLaunched.handler_name == "on_opener_launched"
     assert OpenerFailed.handler_name == "on_opener_failed"
+
+
+# ─── PR7: clipboard dual-write regression guards ─────────────────────────────
+
+
+async def test_copy_dual_writes_to_xclip_on_linux_x11(app, mock_server, monkeypatch):
+    """On a Linux X11 box (xclip on PATH, no WAYLAND_DISPLAY), copy
+    should call BOTH the OSC 52 super() and subprocess.run with xclip.
+
+    Background: PR6 shipped OSC 52 via Textual's default
+    copy_to_clipboard.  That works in Ghostty but is disabled by
+    default in gnome-terminal / VTE.  PR7 adds a subprocess fallback
+    so the system clipboard gets populated regardless.
+    """
+    import shutil as _sh
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(
+        _sh, "which",
+        lambda name: "/usr/bin/xclip" if name == "xclip" else None,
+    )
+    # Clear the discovery cache so this test gets a fresh probe.
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    # Capture subprocess.run.
+    import subprocess as _sp
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["input"] = kwargs.get("input")
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+
+    # Also stub the Textual driver write so OSC 52 doesn't write to
+    # the real stdout.  We can't easily inspect _driver.write from
+    # outside (App._driver is None outside a run_test).
+    async with app.run_test() as pilot:
+        app.copy_to_clipboard("hello-world")
+        await pilot.pause(0.1)
+
+    assert captured["cmd"] == ["xclip", "-selection", "clipboard"]
+    assert captured["input"] == b"hello-world"
+
+
+async def test_copy_prefers_wl_copy_on_wayland(app, mock_server, monkeypatch):
+    """When WAYLAND_DISPLAY is set AND wl-copy is on PATH, wl-copy
+    must win over xclip (Wayland-first ordering)."""
+    import shutil as _sh
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr(
+        _sh, "which",
+        lambda name: {
+            "wl-copy": "/usr/bin/wl-copy",
+            "xclip": "/usr/bin/xclip",
+        }.get(name),
+    )
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    import subprocess as _sp
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["input"] = kwargs.get("input")
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    async with app.run_test() as pilot:
+        app.copy_to_clipboard("hello-wayland")
+        await pilot.pause(0.1)
+
+    assert captured["cmd"] == ["wl-copy"]
+    assert captured["input"] == b"hello-wayland"
+
+
+async def test_copy_falls_through_to_pbcopy_on_mac(app, mock_server, monkeypatch):
+    """No wl-copy, no xclip, but pbcopy present -> pbcopy used.
+
+    Simulated by patching shutil.which; we don't actually need to be
+    on macOS for this test.
+    """
+    import shutil as _sh
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(
+        _sh, "which",
+        lambda name: "/usr/bin/pbcopy" if name == "pbcopy" else None,
+    )
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    import subprocess as _sp
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["input"] = kwargs.get("input")
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    async with app.run_test() as pilot:
+        app.copy_to_clipboard("hello-mac")
+        await pilot.pause(0.1)
+
+    assert captured["cmd"] == ["pbcopy"]
+
+
+async def test_copy_no_utility_does_not_crash(app, mock_server, monkeypatch):
+    """All clipboard utilities missing -> no subprocess call, no
+    exception.  OSC 52 still attempted via super().
+    """
+    import shutil as _sh
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(_sh, "which", lambda name: None)
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    import subprocess as _sp
+    calls: list = []
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: calls.append((a, k)))
+    async with app.run_test() as pilot:
+        app.copy_to_clipboard("nowhere-to-go")
+        await pilot.pause(0.1)
+    assert calls == [], "subprocess.run should NOT have been called"
+
+
+async def test_copy_empty_payload_does_not_clear_clipboard(
+    app, mock_server, monkeypatch,
+):
+    """copy_to_clipboard('') must NOT shell out -- xclip with empty
+    stdin would clear the existing clipboard, which is hostile to
+    users who accidentally trigger a copy on an empty selection.
+    """
+    import shutil as _sh
+    monkeypatch.setattr(_sh, "which", lambda name: "/usr/bin/xclip")
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    import subprocess as _sp
+    calls: list = []
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: calls.append((a, k)))
+    async with app.run_test() as pilot:
+        app.copy_to_clipboard("")
+        await pilot.pause(0.1)
+    assert calls == [], (
+        "empty payload should NOT call xclip (would clear clipboard)"
+    )
+
+
+async def test_copy_subprocess_timeout_is_swallowed(
+    app, mock_server, monkeypatch,
+):
+    """If xclip hangs, copy_to_clipboard must not raise -- the toast
+    already fired and OSC 52 may have worked.  Log at debug, return.
+    """
+    import shutil as _sh
+    import subprocess as _sp
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(
+        _sh, "which",
+        lambda name: "/usr/bin/xclip" if name == "xclip" else None,
+    )
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    def hang(*a, **k):
+        raise _sp.TimeoutExpired(cmd="xclip", timeout=2)
+
+    monkeypatch.setattr(_sp, "run", hang)
+    async with app.run_test() as pilot:
+        # Should not raise.
+        app.copy_to_clipboard("payload that times out")
+        await pilot.pause(0.1)
+
+
+async def test_discover_clipboard_cmd_caches_result(app, mock_server, monkeypatch):
+    """The discovery probe should run at most once per app instance --
+    shutil.which is cheap but not free, and we copy frequently.
+    """
+    import shutil as _sh
+    probe_count = {"n": 0}
+
+    def counting_which(name):
+        probe_count["n"] += 1
+        return "/usr/bin/xclip" if name == "xclip" else None
+
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(_sh, "which", counting_which)
+    if hasattr(app, "_clipboard_cmd_cache"):
+        delattr(app, "_clipboard_cmd_cache")
+
+    # Two consecutive copies -> probe runs once.
+    cmd1 = app._discover_clipboard_cmd()
+    n_after_first = probe_count["n"]
+    cmd2 = app._discover_clipboard_cmd()
+    assert cmd1 == cmd2
+    assert probe_count["n"] == n_after_first, (
+        f"discovery probed {probe_count['n']} times across 2 calls; "
+        "expected exactly one round."
+    )
