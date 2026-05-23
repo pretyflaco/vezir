@@ -3,6 +3,136 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.0 — Textual TUI thin client, hybrid floating recorder, --personal flag
+
+The headline change is a native desktop thin client built on
+[Textual](https://textual.textualize.io/): `vezir tui` opens a
+terminal UI with feature parity to vezir-android 0.2.5
+(record / list sessions / view artifacts / label speakers) plus
+desktop-only niceties (xdg-open / `open` for artifacts, system
+clipboard integration, ffplay sample playback during labeling).
+
+The classic Tkinter `vezir gui` floating recorder is preserved
+and slimmed into `vezir scribe-widget` for users who want a
+small always-on-top recorder without the full TUI.
+
+The web dashboard remains but enters deprecation: v0.4 will
+restrict it to admin-only, v0.5 will remove it.  All new
+end-user features now ship to TUI + Android first.
+
+### Added
+
+* **`vezir tui`** — Textual TUI thin client, requires the
+  `[tui]` extra (`pip install vezir[tui]`).  Screens:
+  Record, Sessions, Detail, Artifact (text + binary via
+  `xdg-open`), Label (with ffplay sample playback + GitHub
+  handle autocomplete from team list), Help.  Background
+  poll surfaces "needs labeling" notifications via
+  `notify-send` (Linux) or `osascript` (macOS).  Set
+  `VEZIR_TUI_DISABLE_NOTIFY_POLL=1` to skip the poll.
+
+* **`vezir scribe-widget`** — slimmed Tkinter floating
+  recorder (start / pause / stop / upload) without the
+  full GUI's session-browsing pane.  Sibling to the TUI
+  for users who want a small always-on-top recorder.
+
+* **`vezir tui --serve`** — boots a local vezir server in
+  the background, useful for self-hosted single-machine
+  setups.
+
+* **`--personal` flag** on `vezir scribe`, `vezir upload`,
+  and the Tkinter GUI.  Marks a recording as personal:
+  sync-to-git is forced off (regardless of session default),
+  the session is tagged "Personal" in the UI, and the
+  flag is per-recording only (not persisted to client
+  config).  Matches the Android 0.2.5 behavior.
+
+* **`VezirClient`** httpx-based API client at
+  `vezir/client/api.py` — port of Android's
+  `SessionApi.kt`/`LabelApi.kt`/`VezirApi.kt` for use by
+  the TUI and scribe-widget.  Wraps session list/detail,
+  label info, retry endpoints, and team queries.  Honors
+  `SSL_CERT_FILE` then `VEZIR_CADDY_ROOT_CERT_PATH` for
+  internal-CA HTTPS endpoints (default httpx uses
+  `certifi.where()` which doesn't include internal CAs).
+
+* **Clipboard integration** in the TUI: `c` copies the
+  current item (session id / artifact body / temp path)
+  per-screen; `ctrl+shift+c` copies the current selection.
+  Both write via OSC 52 (works in Ghostty, kitty, iTerm2,
+  WezTerm, modern xterm) AND via a subprocess fallback to
+  `wl-copy` / `xclip` / `pbcopy` — necessary because
+  VTE-based terminals (gnome-terminal, xfce4-terminal,
+  Mate Terminal) disable OSC 52 by default.
+
+* **`ctrl+shift+q`** force-quit binding in the TUI (a
+  three-key chord chosen so it doesn't shadow TextArea's
+  native `ctrl+c` copy).
+
+### Changed
+
+* **`vezir scribe` recording is now library-direct** via
+  `meet_record.capture.RecordingSession` instead of
+  subprocessing `meet record`.  Adds an interactive `p`
+  keystroke for pause/resume.  Subprocess fallback retained
+  for older meetscribe-record deployments and for
+  `--virtual-sink` use cases that need the CLI surface.
+
+* **Sync coerced off when `--personal` is set**, regardless
+  of the session's default `sync_enabled`.
+
+### Fixed
+
+* **HTTPS verify against internal CAs.** `VezirClient` and
+  `uploader.upload` now check `SSL_CERT_FILE` →
+  `VEZIR_CADDY_ROOT_CERT_PATH` → True.  Fixes
+  "SSL CERTIFICATE VERIFY FAILED" against Caddy
+  internal-CA-fronted endpoints.
+
+* **Multiple Textual-API pitfalls** caught during dogfood:
+  - Never name a Screen/Widget helper `_render` (shadows
+    `Widget._render`, returns None, crashes compositor on
+    a real terminal).  Renamed to `_refresh_view`.
+  - Never prefix `Message` subclasses with `_`
+    (handler_name gets double-underscore, dispatcher
+    silently drops the event).
+  - Never assign `self.name = ...` on a Screen
+    (`Screen.name` is the install-name property).
+  - `priority=True` bindings need a written justification +
+    a regression test confirming they don't shadow
+    framework conventions.
+
+* **DataTable double-dispatch** on `enter` key (was pushing
+  ArtifactScreen twice, freezing the TUI).  Removed
+  redundant `enter` bindings; DataTable handles it natively.
+
+* **Binary-artifact open** moved off the UI thread to a
+  worker (was freezing on PDFs).
+
+* **LabelScreen layout clip** — speaker rows were sized
+  for 2 rows of content when the Input needed 3, so typed
+  text was invisible and the Play button rendered as a
+  black box.  Fixed in PR8.
+
+### Tests
+
+* 218 passing (was 142 in 0.1.17).  +76 tests covering
+  the TUI, clipboard, API client, scribe library path,
+  scribe-widget, and notify polling.
+
+### Dependencies
+
+* New optional `[tui]` extra: `textual>=0.86`.
+* Otherwise unchanged from 0.1.17.
+
+### Migration
+
+* No breaking changes.  Existing `vezir gui`, `vezir scribe`,
+  `vezir upload`, and server commands work as before.
+* To try the new TUI: `pip install -U vezir[tui] && vezir tui`.
+* Internal-CA HTTPS users: set `SSL_CERT_FILE` to the CA
+  bundle path (e.g. `/etc/caddy/certs/vezir-internal-ca.crt`).
+
 ## 0.1.17 — retry-summary fixes, preset override, progress callbacks
 
 Requires **meetscribe-offline >= 0.8.3**.
