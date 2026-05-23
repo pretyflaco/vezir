@@ -312,6 +312,11 @@ class ScribeWindow:
         self._sync_var = tk.BooleanVar(
             value=bool(prefs.get("sync", True))
         )
+        # Personal is a per-recording decision, NOT persisted across
+        # launches.  Matches vezir-android 0.2.0+ UX and prevents the
+        # "I forgot it was on last meeting" footgun for sync-disabling
+        # behavior.  Default off on every relaunch.
+        self._personal_var = tk.BooleanVar(value=False)
 
         def _persist_auto_label(*_a):
             p = self._client_prefs_load()
@@ -323,6 +328,19 @@ class ScribeWindow:
             p["sync"] = bool(self._sync_var.get())
             self._client_prefs_save(p)
 
+        def _on_personal_toggle(*_a):
+            # When personal flips ON, force-disable sync visually so the
+            # user sees that personal sessions can't be synced.  Matches
+            # server-side enforcement in vezir/server/queue.py::enqueue.
+            # When personal flips OFF, restore the persisted sync pref.
+            if self._personal_var.get():
+                self._sync_var.set(False)
+                self._sync_checkbox.configure(state="disabled")
+            else:
+                p = self._client_prefs_load()
+                self._sync_var.set(bool(p.get("sync", True)))
+                self._sync_checkbox.configure(state="normal")
+
         toggles_frame = tk.Frame(root)
         toggles_frame.pack(fill="x", padx=8, pady=(2, 4))
         tk.Checkbutton(
@@ -332,11 +350,19 @@ class ScribeWindow:
             command=_persist_auto_label,
             anchor="w",
         ).pack(side="left", padx=(0, 16))
-        tk.Checkbutton(
+        self._sync_checkbox = tk.Checkbutton(
             toggles_frame,
             text="Sync to git",
             variable=self._sync_var,
             command=_persist_sync,
+            anchor="w",
+        )
+        self._sync_checkbox.pack(side="left", padx=(0, 16))
+        tk.Checkbutton(
+            toggles_frame,
+            text="Personal",
+            variable=self._personal_var,
+            command=_on_personal_toggle,
             anchor="w",
         ).pack(side="left")
 
@@ -551,6 +577,13 @@ class ScribeWindow:
                 # affect this session's behavior.
                 auto_label = bool(self._auto_label_var.get())
                 sync = bool(self._sync_var.get())
+                personal = bool(self._personal_var.get())
+                # Mirror the server's hard rule that personal => never
+                # synced (vezir/server/queue.py::enqueue).  The checkbox
+                # state machine already greys out sync when personal is
+                # on, but the data model has the final say.
+                if personal:
+                    sync = False
                 self._gui_queue.put(("status", "uploading"))
                 result = do_upload(
                     self.url,
@@ -560,6 +593,7 @@ class ScribeWindow:
                     summary_preset=preset_id,
                     auto_label=auto_label,
                     sync=sync,
+                    personal=personal,
                     progress=progress,
                     on_retry=on_retry,
                 )
