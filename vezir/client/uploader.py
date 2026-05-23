@@ -107,12 +107,19 @@ def upload(
     summary_preset: str | None = None,
     auto_label: bool = True,
     sync: bool = True,
+    personal: bool = False,
     timeout: float = 600.0,
     retries: int = 5,
     progress: ProgressCallback | None = None,
     on_retry: RetryCallback | None = None,
 ) -> dict:
     """POST audio to <server_url>/upload. Returns the JSON response.
+
+    ``personal=True`` flags the session as private to the uploader; the
+    server forces ``sync_enabled=False`` for personal sessions regardless
+    of the ``sync`` argument (see vezir/server/queue.py::enqueue), so
+    callers should also pass ``sync=False`` to avoid a misleading log
+    line on the client side.  Matches vezir-android 0.2.0+ semantics.
 
     Retries on connection errors (including timeouts) and 5xx responses
     with exponential backoff capped at 30 s. Default 5 attempts give the
@@ -145,6 +152,11 @@ def upload(
                 # absent fields as True (back-compat with older clients).
                 data["auto_label"] = "true" if auto_label else "false"
                 data["sync"] = "true" if sync else "false"
+                # Personal flag: when true, the server forces sync_enabled
+                # to false (see vezir/server/uploads.py).  Only send when
+                # set so the wire stays clean for the common case.
+                if personal:
+                    data["personal"] = "true"
                 with httpx.Client(timeout=timeout) as client:
                     resp = client.post(url, headers=headers, files=files, data=data)
             if resp.status_code == 200:

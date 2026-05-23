@@ -66,9 +66,13 @@ def serve(host, port, reload):
 @click.option("--sync/--no-sync", "sync", default=None,
               help="Sync session artifacts to the configured destination "
                    "repo (default: on; persists across launches)")
+@click.option("--personal", is_flag=True, default=False,
+              help="Mark recording as personal (private to you, never synced; "
+                   "hidden from other team members' session lists). "
+                   "Per-recording flag; not persisted.")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
 def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
-           open_labeling, preset, auto_label, sync, record_args):
+           open_labeling, preset, auto_label, sync, personal, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `meet record`.
@@ -105,6 +109,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
             summary_preset=preset,
             auto_label=auto_label,
             sync=sync,
+            personal=personal,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)
@@ -139,12 +144,16 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
               help="Wait for server processing and report status (default: off)")
 @click.option("--wait-timeout", default=600, type=int,
               help="Max seconds to wait for processing (default: 600)")
+@click.option("--personal", is_flag=True, default=False,
+              help="Mark upload as personal (private to you, never synced; "
+                   "hidden from other team members' session lists). "
+                   "Per-upload flag; not persisted.")
 @click.argument(
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
 def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
-               wait, wait_timeout, audio_file):
+               wait, wait_timeout, personal, audio_file):
     """Upload an existing WAV/OGG recording to vezir."""
     from .client import uploader
     from .client.config import load_client_prefs, save_client_prefs
@@ -206,6 +215,11 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
                 f"vezir: compressed {fmt_bytes(before)} -> {fmt_bytes(after)} "
                 f"({ratio:.1f}x smaller)"
             )
+        if personal:
+            # Match server-side behavior: personal sessions are never
+            # synced regardless of the --sync flag.  Make the local
+            # log honest about it.
+            sync = False
         click.echo(f"vezir: uploading {audio_file} to {server_url} ...")
         result = uploader.upload(
             server_url,
@@ -215,6 +229,7 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
             summary_preset=preset,
             auto_label=auto_label,
             sync=sync,
+            personal=personal,
             progress=progress,
             on_retry=on_retry,
         )

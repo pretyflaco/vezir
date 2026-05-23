@@ -254,8 +254,19 @@ def run_scribe(
     summary_preset: str | None = None,
     auto_label: bool = True,
     sync: bool = True,
+    personal: bool = False,
 ) -> dict:
-    """Record locally, then upload. Returns the upload response dict."""
+    """Record locally, then upload. Returns the upload response dict.
+
+    ``personal=True`` marks the resulting session as private to the
+    uploader (hidden from other team members' session lists).  The
+    server forces ``sync_enabled=False`` for personal sessions
+    regardless of the ``sync`` argument; we propagate the same intent
+    locally by overriding ``sync`` to ``False`` when ``personal`` is
+    set, so log lines and prompts read consistently.
+    """
+    if personal:
+        sync = False
     server_url = server_url or config.server_url()
     token = token or config.client_token()
     if not token:
@@ -334,6 +345,7 @@ def run_scribe(
             summary_preset=summary_preset,
             auto_label=auto_label,
             sync=sync,
+            personal=personal,
             progress=_progress_line,
             on_retry=_retry_line,
         )
