@@ -3,6 +3,64 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.1 — auto-refresh Sessions, open-in-browser, enter-to-submit
+
+Pure paper-cut polish on top of v0.3.0.  No breaking changes.
+Two PRs, both shipped after dogfood-week feedback on the new TUI.
+
+### Added
+
+* **`o` key opens a session in the web dashboard** — both on the
+  Sessions list (cursor row) and the Session detail screen.
+  Builds `{server_url}/s/{session_id}` via Python's `webbrowser.open`.
+  Graceful fallback (notifies the URL) when no default browser is
+  available, e.g. headless servers.
+
+* **LabelScreen: pressing `enter` while typing a github handle
+  submits all labels.**  Matches the dialog convention; no more
+  mousing to the Submit button after typing the last handle.
+
+* **Toast notifications when a freshly uploaded session reaches
+  terminal status** (done / needs_labeling / error).  The user
+  no longer has to eyeball the Sessions tab to learn that an
+  upload is ready.
+
+### Changed
+
+* **Sessions tab auto-refreshes on activation.**  Switching to
+  the Sessions tab (`ctrl+s` or click) re-fetches
+  `/api/sessions` automatically.  Previously the list froze at
+  whatever was loaded on first mount, so a session recorded in
+  the TUI didn't appear until the TUI was restarted.
+
+* **Sessions tab auto-refreshes when a recently uploaded session
+  reaches terminal status.**  Even if you stayed on the Record
+  tab, the Sessions list is now fresh when you switch over.
+
+* **HelpScreen text now matches actual bindings.**  The earlier
+  text advertised `tab` / `space` / `enter` keybindings on
+  LabelScreen that didn't exist; the `ctrl+r` "refresh" hint on
+  the Sessions empty-state actually switched to the Record tab
+  (the real refresh shortcut is `ctrl+l`).  Both fixed.
+
+### Fixed
+
+* **`_poll_worker` polled forever on `needs_labeling` sessions.**
+  The terminal-status set was `{"done", "error"}` — sessions that
+  landed in `needs_labeling` kept the poll worker spinning for
+  the full 600s deadline.  Now `{"done", "error", "needs_labeling"}`.
+
+### Tests
+
+* 225 passing (was 218 in 0.3.0).  +7 tests covering tab-
+  activation refresh, upload-complete refresh + toast,
+  open-in-browser (both screens + missing-server-url fallback),
+  LabelScreen enter-to-submit.
+
+### Migration
+
+* Nothing to do.  `pip install -U vezir[tui]` and restart your TUI.
+
 ## 0.3.0 — Textual TUI thin client, hybrid floating recorder, --personal flag
 
 The headline change is a native desktop thin client built on
