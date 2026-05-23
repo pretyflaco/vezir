@@ -35,29 +35,29 @@ log = logging.getLogger("vezir.client.tui.label")
 
 
 @dataclass
-class _LabelInfoLoaded(Message):
+class LabelInfoLoaded(Message):
     info: LabelInfo
 
 
 @dataclass
-class _LabelLoadFailed(Message):
+class LabelLoadFailed(Message):
     error: str
 
 
 @dataclass
-class _ClipReady(Message):
+class ClipReady(Message):
     speaker_id: str
     path: Path
 
 
 @dataclass
-class _ClipFailed(Message):
+class ClipFailed(Message):
     speaker_id: str
     error: str
 
 
 @dataclass
-class _SubmitDone(Message):
+class SubmitDone(Message):
     ok: bool
     error: str = ""
 
@@ -134,44 +134,44 @@ class LabelScreen(Screen):
     def _info_worker(self) -> None:
         result = self.app.api.get_label_info(self.session_id)
         if not result.is_ok():
-            self.post_message(_LabelLoadFailed(error=result.error_message()))
+            self.post_message(LabelLoadFailed(error=result.error_message()))
             return
-        self.post_message(_LabelInfoLoaded(info=result.ok))
+        self.post_message(LabelInfoLoaded(info=result.ok))
 
     @work(thread=True, exclusive=False, group="label-clip")
     def _clip_worker(self, speaker_id: str) -> None:
         dest = self._tmpdir / f"{speaker_id}.wav"
         if dest.exists():
-            self.post_message(_ClipReady(speaker_id=speaker_id, path=dest))
+            self.post_message(ClipReady(speaker_id=speaker_id, path=dest))
             return
         result = self.app.api.save_clip(self.session_id, speaker_id, dest)
         if not result.is_ok():
-            self.post_message(_ClipFailed(
+            self.post_message(ClipFailed(
                 speaker_id=speaker_id, error=result.error_message(),
             ))
             return
-        self.post_message(_ClipReady(speaker_id=speaker_id, path=dest))
+        self.post_message(ClipReady(speaker_id=speaker_id, path=dest))
 
     @work(thread=True, exclusive=True, group="label-submit")
     def _submit_worker(self, labels: dict[str, str]) -> None:
         result = self.app.api.submit_labels(self.session_id, labels)
         if result.is_ok():
-            self.post_message(_SubmitDone(ok=True))
+            self.post_message(SubmitDone(ok=True))
         else:
-            self.post_message(_SubmitDone(ok=False, error=result.error_message()))
+            self.post_message(SubmitDone(ok=False, error=result.error_message()))
 
     # ── messages ──
 
-    def on_label_info_loaded(self, message: _LabelInfoLoaded) -> None:
+    def on_label_info_loaded(self, message: LabelInfoLoaded) -> None:
         self._info = message.info
-        self._render()
+        self._refresh_view()
 
-    def on_label_load_failed(self, message: _LabelLoadFailed) -> None:
+    def on_label_load_failed(self, message: LabelLoadFailed) -> None:
         self.query_one("#status-line", Static).update(
             f"[red]Failed to load speakers: {message.error}[/red]",
         )
 
-    def on_clip_ready(self, message: _ClipReady) -> None:
+    def on_clip_ready(self, message: ClipReady) -> None:
         self._clip_paths[message.speaker_id] = message.path
         try:
             self._player.play(message.path)
@@ -180,13 +180,13 @@ class LabelScreen(Screen):
         except Exception as exc:
             self.notify(f"Playback failed: {exc}", severity="error")
 
-    def on_clip_failed(self, message: _ClipFailed) -> None:
+    def on_clip_failed(self, message: ClipFailed) -> None:
         self.notify(
             f"Could not fetch clip for {message.speaker_id}: {message.error}",
             severity="error",
         )
 
-    def on_submit_done(self, message: _SubmitDone) -> None:
+    def on_submit_done(self, message: SubmitDone) -> None:
         if message.ok:
             self.notify("Labels submitted", severity="information")
             self.app.pop_screen()
@@ -234,7 +234,11 @@ class LabelScreen(Screen):
 
     # ── render ──
 
-    def _render(self) -> None:
+    def _refresh_view(self) -> None:
+        # See detail_screen.py:_refresh_view -- never name a screen helper
+        # ``_render``; it shadows the Textual Widget API and crashes
+        # rendering with ``AttributeError: NoneType has no attribute
+        # render_strips`` on any real terminal display.
         info = self._info
         if info is None:
             return

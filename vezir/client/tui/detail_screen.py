@@ -42,17 +42,17 @@ _PRESETS = [
 
 
 @dataclass
-class _DetailLoaded(Message):
+class DetailLoaded(Message):
     session: Session
 
 
 @dataclass
-class _DetailFailed(Message):
+class DetailFailed(Message):
     error: str
 
 
 @dataclass
-class _ActionDone(Message):
+class ActionDone(Message):
     label: str
     ok: bool
     detail: str = ""
@@ -232,9 +232,9 @@ class DetailScreen(Screen):
     def _fetch_worker(self) -> None:
         result = self.app.api.get_session(self.session_id)
         if not result.is_ok():
-            self.post_message(_DetailFailed(error=result.error_message()))
+            self.post_message(DetailFailed(error=result.error_message()))
             return
-        self.post_message(_DetailLoaded(session=result.ok))
+        self.post_message(DetailLoaded(session=result.ok))
 
     @work(thread=True, exclusive=False, group="detail-action")
     def _action_worker(
@@ -246,26 +246,26 @@ class DetailScreen(Screen):
         method = getattr(self.app.api, api_method)
         result = method(self.session_id, **kwargs)
         if result.is_ok():
-            self.post_message(_ActionDone(label=label, ok=True))
+            self.post_message(ActionDone(label=label, ok=True))
         else:
-            self.post_message(_ActionDone(
+            self.post_message(ActionDone(
                 label=label, ok=False, detail=result.error_message(),
             ))
 
     # ── message handlers ──
 
-    def on_detail_loaded(self, message: _DetailLoaded) -> None:
+    def on_detail_loaded(self, message: DetailLoaded) -> None:
         self.session = message.session
         self.app.sub_title = f"session {self.session_id}"
-        self._render()
+        self._refresh_view()
 
-    def on_detail_failed(self, message: _DetailFailed) -> None:
+    def on_detail_failed(self, message: DetailFailed) -> None:
         self.app.sub_title = "load failed"
         self.query_one("#meta", Static).update(
             f"[red]Failed to load session: {message.error}[/red]",
         )
 
-    def on_action_done(self, message: _ActionDone) -> None:
+    def on_action_done(self, message: ActionDone) -> None:
         if message.ok:
             self.notify(f"{message.label}: ok", severity="information")
             # Refresh to surface any state change (e.g. retry-summary
@@ -277,7 +277,14 @@ class DetailScreen(Screen):
                 severity="error",
             )
 
-    def _render(self) -> None:
+    def _refresh_view(self) -> None:
+        # NOTE: do NOT name this ``_render`` -- that shadows
+        # ``textual.widget.Widget._render()`` which the render pipeline
+        # calls to produce a Visual for ``to_strips()``.  Returning None
+        # from the override breaks the entire widget rendering and the
+        # app crashes with ``AttributeError: 'NoneType' object has no
+        # attribute 'render_strips'`` the moment the screen is shown
+        # on a real terminal.  Lesson learned the painful way in PR2.
         s = self.session
         if s is None:
             return

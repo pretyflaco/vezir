@@ -85,7 +85,7 @@ def test_uploader_sends_personal_true(tmp_path, monkeypatch):
     assert captured["data"].get("personal") == "true"
 
 
-def test_run_scribe_personal_overrides_sync_true(monkeypatch):
+def test_run_scribe_personal_overrides_sync_true(monkeypatch, tmp_path):
     """run_scribe(personal=True, sync=True) must coerce sync to False.
 
     The server enforces this anyway, but we want the client's own
@@ -94,8 +94,14 @@ def test_run_scribe_personal_overrides_sync_true(monkeypatch):
     """
     from vezir.client import scribe as scribe_mod
 
-    # Stub the whole run path so we only observe the kwargs that reach
-    # uploader.upload — that's where sync coercion has to land.
+    # Stub the recording layer entirely -- this test cares about
+    # personal/sync flag plumbing into uploader.upload(), nothing else.
+    audio_file = tmp_path / "meeting-fake.wav"
+    audio_file.write_bytes(b"RIFFsomewav")
+    monkeypatch.setattr(
+        scribe_mod, "_record_via_library", lambda *a, **k: audio_file,
+    )
+
     seen: dict = {}
 
     def fake_upload(*args, **kwargs):
@@ -106,34 +112,6 @@ def test_run_scribe_personal_overrides_sync_true(monkeypatch):
         }
 
     monkeypatch.setattr(scribe_mod.uploader, "upload", fake_upload)
-    monkeypatch.setattr(scribe_mod, "_check_meet_prerequisites", lambda *_a, **_k: None)
-    monkeypatch.setattr(scribe_mod, "_meet_bin", lambda: "/bin/true")
-
-    class _NoopProc:
-        returncode = 0
-
-        def wait(self, timeout=None):
-            return 0
-
-        def send_signal(self, sig):
-            pass
-
-        def kill(self):
-            pass
-
-    monkeypatch.setattr(scribe_mod.subprocess, "Popen", lambda *a, **k: _NoopProc())
-
-    # Plant a fake session dir with an audio file so _find_latest_session
-    # returns something.
-    import tempfile as _tf
-    tdir = Path(_tf.mkdtemp())
-    sdir = tdir / "meeting-fake"
-    sdir.mkdir()
-    (sdir / "meeting-fake.wav").write_bytes(b"RIFFsomewav")
-
-    monkeypatch.setattr(scribe_mod, "_default_output_dir", lambda: tdir)
-    monkeypatch.setattr(scribe_mod, "_find_latest_session", lambda *a, **k: sdir)
-    # Bypass validate_token_format's stderr nag.
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_" + "x" * 43)
 
     scribe_mod.run_scribe(
@@ -149,9 +127,15 @@ def test_run_scribe_personal_overrides_sync_true(monkeypatch):
     assert seen.get("sync") is False
 
 
-def test_run_scribe_personal_default_no_change(monkeypatch):
+def test_run_scribe_personal_default_no_change(monkeypatch, tmp_path):
     """personal=False (default) keeps sync as the caller provided."""
     from vezir.client import scribe as scribe_mod
+
+    audio_file = tmp_path / "meeting-fake.wav"
+    audio_file.write_bytes(b"RIFFsomewav")
+    monkeypatch.setattr(
+        scribe_mod, "_record_via_library", lambda *a, **k: audio_file,
+    )
 
     seen: dict = {}
 
@@ -160,30 +144,6 @@ def test_run_scribe_personal_default_no_change(monkeypatch):
         return {"session_id": "01TEST", "dashboard_url": "http://x"}
 
     monkeypatch.setattr(scribe_mod.uploader, "upload", fake_upload)
-    monkeypatch.setattr(scribe_mod, "_check_meet_prerequisites", lambda *_a, **_k: None)
-    monkeypatch.setattr(scribe_mod, "_meet_bin", lambda: "/bin/true")
-
-    class _NoopProc:
-        returncode = 0
-
-        def wait(self, timeout=None):
-            return 0
-
-        def send_signal(self, sig):
-            pass
-
-        def kill(self):
-            pass
-
-    monkeypatch.setattr(scribe_mod.subprocess, "Popen", lambda *a, **k: _NoopProc())
-
-    import tempfile as _tf
-    tdir = Path(_tf.mkdtemp())
-    sdir = tdir / "meeting-fake"
-    sdir.mkdir()
-    (sdir / "meeting-fake.wav").write_bytes(b"RIFFsomewav")
-    monkeypatch.setattr(scribe_mod, "_default_output_dir", lambda: tdir)
-    monkeypatch.setattr(scribe_mod, "_find_latest_session", lambda *a, **k: sdir)
 
     scribe_mod.run_scribe(
         server_url="http://x",

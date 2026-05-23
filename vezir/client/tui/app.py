@@ -84,6 +84,19 @@ class MainScreen(Screen):
                 yield SessionsBody.body_widget()
         yield Footer()
 
+    def on_mount(self) -> None:
+        # Start the background labeling-needed poll.  Skipped under
+        # test (VEZIR_TUI_DISABLE_NOTIFY_POLL=1) so unrelated tests
+        # don't accumulate timers that fire after teardown.
+        import os
+        if os.environ.get("VEZIR_TUI_DISABLE_NOTIFY_POLL") == "1":
+            return
+        try:
+            from .notify import install_labeling_poll
+            install_labeling_poll(self)
+        except Exception as exc:
+            log.warning("labeling poll setup failed: %s", exc)
+
     def action_show_tab(self, tab_id: str) -> None:
         tabs = self.query_one(TabbedContent)
         tabs.active = tab_id
@@ -147,3 +160,37 @@ class VezirTuiApp(App):
     def action_help(self) -> None:
         from .help_screen import HelpScreen
         self.push_screen(HelpScreen())
+
+    # ── exception handling ──
+
+    def _handle_exception(self, error: Exception) -> None:
+        """Catch unhandled exceptions so a single bug doesn't crash the TUI.
+
+        Textual calls ``App._handle_exception`` from its message-pump and
+        worker harness for uncaught errors.  Default behavior is to print
+        a Rich traceback and exit; we override to log the error and show
+        a transient notification so the user can keep working.  Errors
+        in the *render* pipeline still crash (the screen's compositor
+        path can't be recovered mid-flight), but everything else --
+        worker thread exceptions, action callbacks, message handlers --
+        stays survivable.
+
+        Test-only escape hatch: set ``VEZIR_TUI_CRASH_ON_ERROR=1`` to
+        restore the default fail-fast behavior; the test suite uses
+        this to ensure regressions surface rather than getting hidden.
+        """
+        import os
+        if os.environ.get("VEZIR_TUI_CRASH_ON_ERROR") == "1":
+            super()._handle_exception(error)
+            return
+        log.exception("uncaught TUI exception: %s", error)
+        try:
+            self.notify(
+                f"Internal error: {error}",
+                severity="error",
+                timeout=10,
+            )
+        except Exception:
+            # Notification itself failed -- last-resort fallback to
+            # the default traceback so the user at least sees something.
+            super()._handle_exception(error)

@@ -1,8 +1,19 @@
 """`vezir scribe` — record a meeting locally, then upload to the service.
 
-Wraps unmodified meetscribe (`meet record`) as a subprocess. After
-recording stops (Ctrl+C), locates the produced WAV file and uploads
-it to the configured vezir server.
+Records via the ``meet_record.capture`` library directly (gets
+pause/resume for free since meetscribe-record 0.3.0), then uploads
+to the configured vezir server.  Falls back to subprocess invocation
+of ``meet record`` when the library is not importable -- defensive
+behavior so older deployments keep working unchanged.
+
+Interactive keystrokes during recording:
+
+  Ctrl+C   stop, drain buffer, upload
+  p        toggle pause / resume
+
+The ``p`` key requires the controlling terminal to be a TTY in cbreak
+mode; if stdin isn't a TTY (piped, no controlling terminal) the
+``p``-keystroke loop is skipped and only Ctrl+C is honored.
 
 Behavior matches the previous-plan recommendation for client v0:
 record fully, then upload (option a). Streaming during the call is
@@ -16,6 +27,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -132,6 +144,206 @@ def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
 
 _TERMINAL_STATUSES = {"done", "error"}
 _POLL_INTERVAL = 5.0  # seconds, matches GUI
+
+
+# ─── library-direct recording with pause/resume ──────────────────────────────
+
+
+def _record_via_library(
+    output_dir: Path,
+    extra_record_args: list[str] | None,
+) -> Path | None:
+    """Record using meet_record.capture directly.
+
+    Gets pause/resume for free (the library exposes them since
+    meetscribe-record 0.3.0).  Interactive ``p`` keystroke toggles
+    pause; Ctrl+C stops and drains.
+
+    Returns the path of the produced audio file, or None if the library
+    is not importable -- caller should fall back to subprocess.
+
+    ``extra_record_args`` is currently NOT honored on the library path;
+    if the caller passes any (e.g. ``--virtual-sink``), we return None
+    and let the subprocess fallback handle it.  Most users don't pass
+    extras, so the common path takes the library route with pause/resume.
+    """
+    if extra_record_args:
+        log.debug(
+            "extra_record_args=%r -> skipping library path, "
+            "falling back to subprocess",
+            extra_record_args,
+        )
+        return None
+    try:
+        from meet_record.capture import create_session, check_prerequisites
+    except ImportError as exc:
+        log.debug("meet_record not importable (%s); using subprocess", exc)
+        return None
+
+    issues = check_prerequisites()
+    if issues:
+        # Surface to stderr just like the subprocess path's `meet check`.
+        print("vezir: recording prerequisites not met:", file=sys.stderr, flush=True)
+        for issue in issues:
+            print(f"  {issue}", file=sys.stderr, flush=True)
+        raise SystemExit(1)
+
+    session = create_session(output_dir=str(output_dir))
+    print(f"vezir: starting recording (output: {session.output_file})", flush=True)
+    print(
+        "vezir: press Ctrl+C to stop; press 'p' to pause/resume",
+        flush=True,
+    )
+
+    session.start()
+
+    stop_pause_thread = threading.Event()
+    pause_thread = threading.Thread(
+        target=_pause_keystroke_loop,
+        args=(session, stop_pause_thread),
+        name="vezir-pause-listener",
+        daemon=True,
+    )
+    pause_thread.start()
+
+    try:
+        # Block until Ctrl+C.  The pause_thread handles 'p' on stdin.
+        # We sleep in short slices so the watchdog can interject if
+        # the recording fails fatally (sets session.status().failed).
+        while True:
+            time.sleep(0.5)
+            st = session.status()
+            if st.failed:
+                print(
+                    f"vezir: WARNING: recorder failed: {st.fail_reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_pause_thread.set()
+
+    print("vezir: stopping recording (draining buffer) ...", flush=True)
+    out = session.stop()
+    if not out.exists() or out.stat().st_size == 0:
+        return None
+    return out
+
+
+def _pause_keystroke_loop(session, stop_event: "threading.Event") -> None:
+    """Read single-character keystrokes from stdin and toggle pause.
+
+    Skipped silently when stdin is not a TTY (piped, no controlling
+    terminal, or running under a wrapper that ate stdin).  The user
+    can still Ctrl+C to stop.
+
+    Implementation note: uses ``termios`` + ``select`` for non-blocking
+    cbreak-mode reads.  POSIX only -- the meetscribe-record audio
+    backends only support Linux + macOS anyway, so no Windows
+    compatibility shim is needed.
+    """
+    if not sys.stdin.isatty():
+        log.debug("stdin is not a TTY; pause keystroke listener disabled")
+        return
+    try:
+        import select
+        import termios
+        import tty
+    except ImportError:
+        log.debug("termios/tty not available; pause keystroke listener disabled")
+        return
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while not stop_event.is_set():
+            rd, _, _ = select.select([fd], [], [], 0.25)
+            if not rd:
+                continue
+            try:
+                ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+            except OSError:
+                break
+            if ch.lower() != "p":
+                continue
+            try:
+                st = session.status()
+                if st.paused:
+                    session.resume()
+                    print(
+                        "\nvezir: resumed",
+                        flush=True,
+                    )
+                else:
+                    session.pause()
+                    print(
+                        "\nvezir: paused (press 'p' to resume; Ctrl+C to stop)",
+                        flush=True,
+                    )
+            except Exception as exc:
+                log.warning("pause/resume failed: %s", exc)
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        except Exception:
+            pass
+
+
+# ─── subprocess fallback (existing behavior) ─────────────────────────────────
+
+
+def _record_via_subprocess(
+    meet_bin: str,
+    output_dir: Path,
+    extra_record_args: list[str] | None,
+) -> Path | None:
+    """Fallback: spawn ``meet record`` as a subprocess.
+
+    Used when:
+      * meet_record library is not importable (older deployments)
+      * caller passed extra_record_args that the library path can't honor
+
+    No pause/resume -- only Ctrl+C stops.  Same behavior as pre-0.3.0
+    ``vezir scribe``.
+    """
+    cmd = [meet_bin, "record", "-o", str(output_dir)]
+    if extra_record_args:
+        cmd.extend(extra_record_args)
+
+    print(f"vezir: starting recording (output: {output_dir})", flush=True)
+    print("vezir: press Ctrl+C to stop the recording", flush=True)
+
+    started = time.time()
+    proc = subprocess.Popen(cmd)
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        try:
+            proc.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    if proc.returncode not in (0, -signal.SIGINT):
+        print(
+            f"vezir: WARNING: meet record exited with code {proc.returncode}",
+            file=sys.stderr,
+        )
+
+    sdir = _find_latest_session(output_dir, started)
+    if sdir is None:
+        return None
+    audio_files = sorted(sdir.glob("*.wav")) or sorted(sdir.glob("*.ogg"))
+    if not audio_files:
+        return None
+    return audio_files[0]
 
 
 def _login_url(server_url: str, token: str, next_path: str) -> str:
@@ -276,48 +488,20 @@ def run_scribe(
     output_dir = output_dir or _default_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    meet_bin = _meet_bin()
-    _check_meet_prerequisites(meet_bin)
-
-    cmd = [meet_bin, "record", "-o", str(output_dir)]
-    if extra_record_args:
-        cmd.extend(extra_record_args)
-
-    print(f"vezir: starting recording (output: {output_dir})", flush=True)
-    print("vezir: press Ctrl+C to stop the recording", flush=True)
-
-    started = time.time()
-    proc = subprocess.Popen(cmd)
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        # Forward SIGINT to meet record so it does its drain-buffer cleanup.
-        try:
-            proc.send_signal(signal.SIGINT)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-    if proc.returncode not in (0, -signal.SIGINT):
-        print(
-            f"vezir: WARNING: meet record exited with code {proc.returncode}",
-            file=sys.stderr,
-        )
-
-    sdir = _find_latest_session(output_dir, started)
-    if sdir is None:
-        raise RuntimeError(
-            f"could not locate a session directory under {output_dir} from this run"
-        )
-    # Prefer WAV (what `meet record` writes), fall back to OGG (post-archive).
-    audio_files = sorted(sdir.glob("*.wav")) or sorted(sdir.glob("*.ogg"))
-    if not audio_files:
-        raise RuntimeError(f"no .wav or .ogg file found in {sdir}")
-    audio = audio_files[0]
+    # Try the library-direct path first (gets pause/resume).  Falls
+    # back to subprocess invocation of `meet record` when:
+    #   * meet_record library isn't importable, or
+    #   * caller passed extra_record_args we don't translate yet.
+    audio = _record_via_library(output_dir, extra_record_args)
+    if audio is None:
+        meet_bin = _meet_bin()
+        _check_meet_prerequisites(meet_bin)
+        audio = _record_via_subprocess(meet_bin, output_dir, extra_record_args)
+        if audio is None:
+            raise RuntimeError(
+                f"could not locate a session directory under {output_dir} "
+                f"from this run"
+            )
     print(
         f"vezir: recording captured: {audio} ({_fmt_bytes(audio.stat().st_size)})",
         flush=True,

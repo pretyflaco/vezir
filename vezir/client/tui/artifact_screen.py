@@ -43,19 +43,19 @@ def _os_opener_cmd() -> list[str] | None:
 
 
 @dataclass
-class _TextLoaded(Message):
+class TextLoaded(Message):
     name: str
     body: str
 
 
 @dataclass
-class _BinaryReady(Message):
+class BinaryReady(Message):
     name: str
     path: Path
 
 
 @dataclass
-class _LoadFailed(Message):
+class LoadFailed(Message):
     error: str
 
 
@@ -122,20 +122,20 @@ class ArtifactScreen(Screen):
     def _text_worker(self) -> None:
         result = self.app.api.download_artifact(self.session_id, self.name)
         if not result.is_ok():
-            self.post_message(_LoadFailed(error=result.error_message()))
+            self.post_message(LoadFailed(error=result.error_message()))
             return
         try:
             body = result.ok.decode("utf-8", errors="replace")
         except Exception as exc:
-            self.post_message(_LoadFailed(error=f"decode error: {exc}"))
+            self.post_message(LoadFailed(error=f"decode error: {exc}"))
             return
-        self.post_message(_TextLoaded(name=self.name, body=body))
+        self.post_message(TextLoaded(name=self.name, body=body))
 
     @work(thread=True, exclusive=True, group="artifact")
     def _binary_worker(self) -> None:
         result = self.app.api.download_artifact(self.session_id, self.name)
         if not result.is_ok():
-            self.post_message(_LoadFailed(error=result.error_message()))
+            self.post_message(LoadFailed(error=result.error_message()))
             return
         # Write to a temp file with the right extension so the OS opener
         # picks the right app (PDF -> Preview/Okular etc).
@@ -147,11 +147,11 @@ class ArtifactScreen(Screen):
             os.close(fd)
             Path(tmp).write_bytes(result.ok)
         except Exception as exc:
-            self.post_message(_LoadFailed(error=f"write tmp: {exc}"))
+            self.post_message(LoadFailed(error=f"write tmp: {exc}"))
             return
-        self.post_message(_BinaryReady(name=self.name, path=Path(tmp)))
+        self.post_message(BinaryReady(name=self.name, path=Path(tmp)))
 
-    def on_text_loaded(self, message: _TextLoaded) -> None:
+    def on_text_loaded(self, message: TextLoaded) -> None:
         self._body = message.body
         assert self._area is not None
         # TextArea.load_text in older textual, .text = … in newer; use .text.
@@ -161,7 +161,7 @@ class ArtifactScreen(Screen):
             f"[s] save  [escape] back"
         )
 
-    def on_binary_ready(self, message: _BinaryReady) -> None:
+    def on_binary_ready(self, message: BinaryReady) -> None:
         self._tmp_path = message.path
         assert self._area is not None
         cmd = _os_opener_cmd()
@@ -194,7 +194,7 @@ class ArtifactScreen(Screen):
             f"{message.name}  (handed to OS opener)"
         )
 
-    def on_load_failed(self, message: _LoadFailed) -> None:
+    def on_load_failed(self, message: LoadFailed) -> None:
         assert self._area is not None
         self._area.text = f"Failed to load artifact: {message.error}"
         self.query_one("#status-line", Static).update("load failed")
