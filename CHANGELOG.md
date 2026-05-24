@@ -3,6 +3,141 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.0 — multi-team support (β-minimal): team isolation, seed blink + twentyone
+
+Vezir grew up.  Previously every authenticated bearer token saw every
+non-personal session on the server.  v0.6.0 introduces a **team** as
+a first-class isolation primitive: each token belongs to exactly one
+team, each session lives in exactly one team, and the visibility
+filter scopes every query to the caller's team.  No cross-team
+sharing.  Per the design discussion in vezir_plan.md, this is
+β-minimal (single SQLite, single nvpn network, one team_id column);
+per-team voiceprint DB and per-team git sync target follow in v0.6.1.
+
+### Added
+
+* **Teams table + schema**: ``teams`` (id, name, sync_remote,
+  sync_meeting_type, created_at) and ``jobs.team_id`` column with
+  ``idx_jobs_team`` index.
+* **Token team_id**: every row in ``~/vezir-data/tokens.json`` now
+  carries ``team_id``; legacy rows without one are rejected at auth
+  time with a "re-issue with --team" 401.
+* **Admin endpoints**: ``GET /admin/teams``, ``POST /admin/teams``,
+  ``GET /admin/teams/{id}``, ``PATCH /admin/teams/{id}``.  All
+  gated by ``auth.require_admin``.
+* **CLI**: ``vezir team list``, ``vezir team create --id <slug>
+  --name <Name>``, ``vezir team set-sync --id <slug> --remote <url>
+  --meeting-type <prefix>``.  ``vezir token issue`` now takes
+  ``--team <slug>`` (auto-selects when only one team exists;
+  required when >1).
+* **Migration audit log**: ``~/vezir-data/logs/migration-0.6.0-multi-team.log``
+  records every change made by the one-shot v0.6.0 data migration
+  (job counts moved per team, tokens migrated/revoked, files
+  relocated).
+
+### Changed (auth + visibility chain)
+
+* **Visibility filter**: ``GET /api/sessions`` now scopes to the
+  caller's team_id derived server-side from the bearer token.
+  Cross-team sessions are entirely invisible (not just hidden — the
+  endpoint returns ``404`` on a session_id from another team to
+  avoid leaking existence).
+* **Every session-scoped endpoint** (artifact download, session
+  detail HTML page, sync-now, retry-summary, share, labeling page,
+  labeling clip, labeling submit — both HTML and JSON) now enforces
+  team membership via ``_enforce_team_visibility``.
+* **Auth dependencies**: added ``require_bearer_full`` and
+  ``require_bearer_or_cookie_full`` that return ``(github, team_id,
+  is_admin)``.  Legacy ``require_bearer`` / ``require_bearer_or_cookie``
+  still return just ``github`` and internally validate team_id presence.
+* **Web sessions** (``vezir_session`` cookie): the in-memory session
+  entry now captures team_id at /login time.  Cookies minted before
+  v0.6.0 in the same process lifetime are rejected with a "force
+  re-login" 401 so they can't silently leak across teams.
+* **Roster file**: ``~/vezir-data/team.json`` moved to
+  ``~/vezir-data/teams/blink/roster.json``; per-team rosters are
+  used by the labeling dropdown and ``/api/team`` autocomplete.
+  ``/api/team`` is now scoped to the caller's team.
+
+### Migration (one-shot, runs at first startup of v0.6.0)
+
+Decisions locked in vezir_plan.md (Q-1..Q-7 + Q-A..Q-G + Q-H, plus
+final γ-lite revoke scope confirmation):
+
+* **Seed teams**: ``blink`` and ``twentyone`` are created
+  automatically (no "default" team).
+* **Job backfill**:
+  - jobs where ``github = 'bettermorning'`` -> ``team_id =
+    'twentyone'``
+  - smoke-upload-test* jobs -> **deleted**
+  - everything else -> ``team_id = 'blink'``
+* **Token backfill**:
+  - bettermorning's tokens -> twentyone
+  - all other handles' tokens -> blink
+  - **pretyflaco's UNLABELED tokens are revoked** (γ-lite per user
+    decision: the labeled ``gpu-server`` admin token and
+    ``android-galaxy`` token stay in blink; the two label-less
+    pretyflaco tokens are dropped so the operator re-issues with
+    explicit ``--team`` for each device that needs cross-team
+    capability).
+* **Roster file move**: ``team.json`` -> ``teams/blink/roster.json``;
+  ``teams/twentyone/roster.json`` seeded with ``[{"github":
+  "pretyflaco"}, {"github": "bettermorning"}]``.
+* **Voiceprint DB**: unchanged in v0.6.0 (still
+  ``~/vezir-data/speaker_profiles.json`` shared across teams).
+  Per-team voiceprint DBs land in v0.6.1; until then, blink and
+  twentyone share the central voiceprint DB.  This is suboptimal
+  for strict bettermorning isolation but acceptable as a transition
+  state — no team-scoped queries touch the voiceprint DB in 0.6.0.
+* **Sync remote**: ``teams.sync_remote`` is a reserved schema slot
+  in v0.6.0.  Worker still reads ``VEZIR_SYNC_MEETING_TYPE`` env var
+  (single global value).  Per-team sync wiring lands in v0.6.1.
+
+The migration is **idempotent** and recorded in a new
+``schema_migrations`` table, so a restart that interrupts it (or a
+re-run after a successful one) is safe.  An audit log of every
+change made is written to ``~/vezir-data/logs/migration-0.6.0-multi-team.log``
+in JSON.
+
+### Deferred to v0.6.1
+
+* Per-team voiceprint DB (``teams/<id>/speaker_profiles.json``)
+  + worker shim wiring.  Until then, twentyone members will see
+  blink-trained voiceprints in their label dropdowns (no functional
+  cross-team data leakage; just shared training surface).
+* Per-team sync remote (read from ``teams.sync_remote``, not env
+  var).  Until then, both teams sync to the same remote if any.
+* ``vezir session move <id> --to-team <slug>``.
+* ``vezir team rename`` / ``vezir team delete``.
+
+### Deferred to v0.6.2 / v0.7.x
+
+* ``GET /api/me`` returning ``{github, team_id, team_name,
+  is_admin}`` for TUI title-bar display.
+* TUI team-switcher (``^t``) + ``~/.config/vezir/teams.json``
+  client config.
+
+### Operator notes
+
+When a v0.5.0 (or earlier) vezir is upgraded to v0.6.0:
+
+1. **Stop the running vezir** (the migration touches files that are
+   open by the running daemon; running migration against a live DB
+   can race).
+2. **Back up ``~/vezir-data/`` first**:
+   ``tar czf vezir-data-pre-0.6.0.tgz ~/vezir-data``.
+3. **Upgrade vezir**: ``pip install --upgrade vezir``.
+4. **Start vezir again**: the migration runs at first startup and
+   logs its outcome to ``~/vezir-data/logs/migration-0.6.0-multi-team.log``.
+5. **Verify**: ``vezir team list`` should show ``blink`` and
+   ``twentyone``; ``vezir status`` should show per-team job counts.
+6. **Re-token disrupted devices**: any pretyflaco devices using the
+   two revoked unlabeled tokens will get 401s; re-issue per-device
+   tokens with ``vezir token issue --github pretyflaco --team <slug>
+   --label <device>`` and update ``VEZIR_TOKEN`` on the device.
+
+---
+
 ## 0.5.0 — TUI: import existing audio file + preset Select fix + version line
 
 ### Changed (breaking UX)

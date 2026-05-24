@@ -105,27 +105,45 @@ def consume_exchange_code(code: str) -> str | None:
 # ── browser sessions ────────────────────────────────────────────────────────
 
 
-def open_session(github: str, *, is_admin: bool = False) -> str:
+def open_session(
+    github: str,
+    *,
+    team_id: str = "",
+    is_admin: bool = False,
+) -> str:
     """Create a new opaque session id bound to a github handle.
 
-    ``is_admin`` is captured at session-creation time (i.e. at /login)
-    from the bearer token that was presented. This lets ``require_admin``
-    check the specific token's admin flag rather than scanning all tokens
-    for the github handle.
+    ``team_id`` and ``is_admin`` are captured at session-creation time
+    (i.e. at /login) from the bearer token that was presented.  This
+    lets ``require_admin`` check the specific token's admin flag and
+    lets the visibility filter scope queries to the team the user
+    actually signed in with — without scanning all tokens for the
+    github handle.
+
+    ``team_id`` added in v0.6.0; required in normal use but the
+    parameter defaults to ``""`` for the migration window (cookies
+    minted before the upgrade have no captured team_id; the auth chain
+    rejects them with a "please /logout and sign in again" 401 so the
+    next session is properly tagged).
     """
     sid = _SESSION_PREFIX + secrets.token_urlsafe(24)
     with _lock:
-        _sessions[sid] = (github, _now(), bool(is_admin))
-    log.debug("opened session for %s (admin=%s)", github, is_admin)
+        _sessions[sid] = (github, _now(), bool(is_admin), team_id or "")
+    log.debug(
+        "opened session for %s (team=%s admin=%s)",
+        github, team_id, is_admin,
+    )
     return sid
 
 
-def lookup_session(sid: str | None) -> tuple[str, bool] | None:
-    """Resolve a session id to ``(github, is_admin)`` or None.
+def lookup_session(sid: str | None) -> tuple[str, str, bool] | None:
+    """Resolve a session id to ``(github, team_id, is_admin)`` or None.
 
-    Changed in 0.1.12-hotfix: returns a 2-tuple instead of just the
-    github string, so ``require_admin`` can check the per-token admin
-    flag that was captured at session creation time.
+    v0.6.0: returns a 3-tuple including ``team_id`` so the visibility
+    filter can scope to the team the user actually signed in with.
+    Sessions created before v0.6.0 (within the same process lifetime)
+    return ``team_id=""``; auth handlers reject those with a force-
+    re-login 401 to avoid silent cross-team leakage.
     """
     if not sid or not sid.startswith(_SESSION_PREFIX):
         return None
@@ -133,12 +151,14 @@ def lookup_session(sid: str | None) -> tuple[str, bool] | None:
         entry = _sessions.get(sid)
     if entry is None:
         return None
-    # entry is (github, created_at, is_admin) — is_admin may be missing
-    # in sessions created before this hotfix (within the same process
-    # lifetime). Treat those as non-admin.
+    # entry layout history:
+    #   pre-0.1.12-hotfix:  (github, created_at)
+    #   0.1.12-hotfix..0.5.x: (github, created_at, is_admin)
+    #   0.6.0+:             (github, created_at, is_admin, team_id)
     github = entry[0]
     is_admin = entry[2] if len(entry) > 2 else False
-    return (github, is_admin)
+    team_id = entry[3] if len(entry) > 3 else ""
+    return (github, team_id, is_admin)
 
 
 def close_session(sid: str | None) -> None:

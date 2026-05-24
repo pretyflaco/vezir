@@ -81,10 +81,22 @@ def _safe_next(next_value: str | None) -> str:
 
 
 def _redirect_with_session(
-    github: str, next_path: str, *, is_admin: bool = False,
+    github: str,
+    next_path: str,
+    *,
+    team_id: str = "",
+    is_admin: bool = False,
 ) -> RedirectResponse:
-    """Open a fresh in-memory session and 303 → next_path with the cookie."""
-    sid = web_sessions.open_session(github, is_admin=is_admin)
+    """Open a fresh in-memory session and 303 → next_path with the cookie.
+
+    v0.6.0: ``team_id`` is captured at session-open time and used by
+    every subsequent visibility check on this cookie's auth chain.
+    Sign-in flows that resolve a bearer pass the bearer's team_id; the
+    paste-form path resolves it via ``auth.lookup_full``.
+    """
+    sid = web_sessions.open_session(
+        github, team_id=team_id, is_admin=is_admin,
+    )
     resp = RedirectResponse(url=next_path, status_code=status.HTTP_303_SEE_OTHER)
     resp.set_cookie(value=sid, **_cookie_kwargs())
     return resp
@@ -128,8 +140,8 @@ def login_get(
                 next_path=safe_next,
                 status_code=401,
             )
-        github = auth.lookup(bearer)
-        if not github:
+        resolved = auth.lookup_full(bearer)
+        if not resolved:
             log.info("login: exchange code resolved to a revoked/invalid token")
             return _render_form(
                 request,
@@ -138,22 +150,51 @@ def login_get(
                 next_path=safe_next,
                 status_code=401,
             )
-        log.info("login: %s via exchange code, next=%s", github, safe_next)
+        github, team_id, is_admin = resolved
+        if not team_id:
+            log.warning(
+                "login: token for %s has no team_id; force re-token", github,
+            )
+            return _render_form(
+                request,
+                error="Your token has no team assignment. Ask the operator "
+                      "to re-issue it with `vezir token issue --team <id>`.",
+                next_path=safe_next,
+                status_code=401,
+            )
+        log.info(
+            "login: %s via exchange code (team=%s), next=%s",
+            github, team_id, safe_next,
+        )
         return _redirect_with_session(
-            github, safe_next, is_admin=auth.is_admin_token(bearer),
+            github, safe_next, team_id=team_id, is_admin=is_admin,
         )
 
     # Deprecated path: bearer plaintext in URL. Kept for one release.
     if token:
-        github = auth.lookup(token)
-        if github:
+        resolved = auth.lookup_full(token)
+        if resolved:
+            github, team_id, is_admin = resolved
+            if not team_id:
+                log.warning(
+                    "login: ?token= URL for %s has no team_id; force re-token",
+                    github,
+                )
+                return _render_form(
+                    request,
+                    error="Your token has no team assignment. Ask the "
+                          "operator to re-issue it with "
+                          "`vezir token issue --team <id>`.",
+                    next_path=safe_next,
+                    status_code=401,
+                )
             log.warning(
-                "login: %s via deprecated ?token= URL (bearer leaked to URL/log); "
+                "login: %s via deprecated ?token= URL (team=%s); "
                 "client should be upgraded to use the ?code= exchange flow",
-                github,
+                github, team_id,
             )
             resp = _redirect_with_session(
-                github, safe_next, is_admin=auth.is_admin_token(token),
+                github, safe_next, team_id=team_id, is_admin=is_admin,
             )
             resp.headers["Deprecation"] = "true"
             resp.headers["Warning"] = (
@@ -185,8 +226,8 @@ def login_post(
     """
     safe_next = _safe_next(next)
     token = token.strip()
-    github = auth.lookup(token)
-    if not github:
+    resolved = auth.lookup_full(token)
+    if not resolved:
         log.info(
             "login: invalid token via form, ip=%s",
             request.client.host if request.client else "?",
@@ -195,9 +236,23 @@ def login_post(
             request, error="Invalid token.",
             next_path=safe_next, status_code=401,
         )
-    log.info("login: %s via form, next=%s", github, safe_next)
+    github, team_id, is_admin = resolved
+    if not team_id:
+        log.warning(
+            "login: form token for %s has no team_id; force re-token", github,
+        )
+        return _render_form(
+            request,
+            error="Your token has no team assignment. Ask the operator to "
+                  "re-issue it with `vezir token issue --team <id>`.",
+            next_path=safe_next,
+            status_code=401,
+        )
+    log.info(
+        "login: %s via form (team=%s), next=%s", github, team_id, safe_next,
+    )
     return _redirect_with_session(
-        github, safe_next, is_admin=auth.is_admin_token(token),
+        github, safe_next, team_id=team_id, is_admin=is_admin,
     )
 
 

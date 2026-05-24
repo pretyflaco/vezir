@@ -144,7 +144,33 @@ def speaker_profiles_path() -> Path:
 
 
 def team_json_path() -> Path:
+    """Legacy global roster path (pre-v0.6.0).
+
+    Kept for the migration step that reads this file and writes
+    ``teams/<team_id>/roster.json`` per team.  Application code should
+    use :func:`team_roster_path` instead.
+    """
     return data_dir() / "team.json"
+
+
+def teams_dir() -> Path:
+    """Per-team data dir root (v0.6.0+).
+
+    Layout:
+        ~/vezir-data/teams/<team_id>/roster.json
+        ~/vezir-data/teams/<team_id>/speaker_profiles.json  # v0.6.1+
+    """
+    return data_dir() / "teams"
+
+
+def team_roster_path(team_id: str) -> Path:
+    """Per-team roster (label dropdown candidates).
+
+    Replaces the legacy global ``team.json`` in v0.6.0+.  Created by
+    the migration; subsequent edits via admin tooling (CLI to be
+    added in 0.6.1).
+    """
+    return teams_dir() / team_id / "roster.json"
 
 
 def tokens_json_path() -> Path:
@@ -553,5 +579,5 @@ def harden_umask() -> None:
 
 def ensure_dirs() -> None:
     """Create runtime directories if they don't exist."""
-    for d in (data_dir(), sessions_dir(), jobs_dir(), logs_dir()):
+    for d in (data_dir(), sessions_dir(), jobs_dir(), logs_dir(), teams_dir()):
         secure_mkdir(d)

@@ -136,7 +136,7 @@ def test_session_detail_with_bearer(client_and_token):
 
     from vezir.server import queue
 
-    queue.enqueue("01TESTSESSION", "alice", "demo meeting")
+    queue.enqueue("01TESTSESSION", "alice", "demo meeting", team_id="blink")
 
     resp = client.get("/s/01TESTSESSION", headers=_bearer(token))
     assert resp.status_code == 200

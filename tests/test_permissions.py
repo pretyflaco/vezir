@@ -18,7 +18,7 @@ def test_runtime_dirs_and_tokens_are_private(monkeypatch):
 
         config.ensure_dirs()
         auth.issue("alice")
-        queue.enqueue("01TEST", github="alice", title="test")
+        queue.enqueue("01TEST", github="alice", title="test", team_id="blink")
         voiceprints.ensure_db_exists()
 
         assert _mode(Path(d)) == 0o700

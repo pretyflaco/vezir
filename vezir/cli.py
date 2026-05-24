@@ -378,6 +378,12 @@ def _parse_duration(s: str) -> int:
 @token.command("issue")
 @click.option("--github", required=True, help="GitHub handle of the scribe")
 @click.option(
+    "--team", "team_id", default=None,
+    help="Team slug the token belongs to (e.g. 'blink', 'twentyone'). "
+         "Required when more than one team exists; auto-defaults to the "
+         "sole team when only one is configured.",
+)
+@click.option(
     "--expires-in", default=_DEFAULT_TOKEN_LIFETIME, show_default=True,
     help="Token lifetime (e.g. 30d, 12h, 45m, 'never'). Default 90d.",
 )
@@ -389,18 +395,60 @@ def _parse_duration(s: str) -> int:
     "--label", default=None,
     help="Free-text annotation (e.g. 'android-phone'); shown by `token list`.",
 )
-def token_issue(github, expires_in, is_admin, label):
+def token_issue(github, team_id, expires_in, is_admin, label):
     """Issue a new bearer token. Prints plaintext ONCE; not recoverable."""
     from .server import auth
+    from .server import queue as _queue
+
+    # v0.6.0: every token must be scoped to a team.  Auto-select when
+    # there's only one; require explicit choice when >1; refuse if zero
+    # (operator must `vezir team create` first).
+    if not team_id:
+        existing_teams = _queue.list_teams()
+        if not existing_teams:
+            click.echo(
+                "error: no teams exist on this server yet. "
+                "Run `vezir team create --id <slug> --name <Name>` first.",
+                err=True,
+            )
+            sys.exit(2)
+        if len(existing_teams) > 1:
+            slugs = ", ".join(t["id"] for t in existing_teams)
+            click.echo(
+                f"error: multiple teams exist; pass --team explicitly. "
+                f"Available: {slugs}",
+                err=True,
+            )
+            sys.exit(2)
+        team_id = existing_teams[0]["id"]
+        click.echo(f"(auto-selected sole team: {team_id})")
+    else:
+        # Validate slug shape + existence.
+        try:
+            _queue.validate_team_id(team_id)
+        except ValueError as exc:
+            click.echo(f"error: {exc}", err=True)
+            sys.exit(2)
+        if _queue.get_team(team_id) is None:
+            click.echo(
+                f"error: team {team_id!r} does not exist. "
+                f"Run `vezir team create --id {team_id} --name ...` first, "
+                "or pick an existing team with `vezir team list`.",
+                err=True,
+            )
+            sys.exit(2)
+
     seconds = _parse_duration(expires_in)
     plaintext = auth.issue(
         github,
+        team_id=team_id,
         expires_in_seconds=seconds if seconds > 0 else None,
         is_admin=is_admin,
         label=label,
     )
     click.echo(f"Token issued for github={github}")
     click.echo(f"  VEZIR_TOKEN={plaintext}")
+    click.echo(f"  team:     {team_id}")
     if seconds == 0:
         click.echo("  expires:  never")
     else:
@@ -427,6 +475,10 @@ def token_revoke(github):
 
 @token.command("enroll")
 @click.option("--github", required=True, help="GitHub handle of the scribe")
+@click.option(
+    "--team", "team_id", default=None,
+    help="Team slug the token belongs to.  Required when >1 team exists.",
+)
 @click.option("--server", "server_url", default=None,
               help="Server URL the device should connect to "
                    "(default $VEZIR_URL or computed). Used only to print "
@@ -439,7 +491,7 @@ def token_revoke(github):
     "--label", default=None,
     help="Free-text annotation (e.g. 'android-phone').",
 )
-def token_enroll(github, server_url, expires_in, label):
+def token_enroll(github, team_id, server_url, expires_in, label):
     """Issue a token and print enrollment instructions for a mobile device.
 
     Convenience wrapper around `vezir token issue` that also prints a
@@ -447,9 +499,44 @@ def token_enroll(github, server_url, expires_in, label):
     to display a QR code for the Android app to scan.
     """
     from .server import auth
+    from .server import queue as _queue
+
+    # Same team-selection rules as `vezir token issue`.
+    if not team_id:
+        existing = _queue.list_teams()
+        if not existing:
+            click.echo(
+                "error: no teams exist on this server yet. "
+                "Run `vezir team create --id <slug> --name <Name>` first.",
+                err=True,
+            )
+            sys.exit(2)
+        if len(existing) > 1:
+            slugs = ", ".join(t["id"] for t in existing)
+            click.echo(
+                f"error: multiple teams exist; pass --team explicitly. "
+                f"Available: {slugs}",
+                err=True,
+            )
+            sys.exit(2)
+        team_id = existing[0]["id"]
+    else:
+        try:
+            _queue.validate_team_id(team_id)
+        except ValueError as exc:
+            click.echo(f"error: {exc}", err=True)
+            sys.exit(2)
+        if _queue.get_team(team_id) is None:
+            click.echo(
+                f"error: team {team_id!r} does not exist.",
+                err=True,
+            )
+            sys.exit(2)
+
     seconds = _parse_duration(expires_in)
     plaintext = auth.issue(
         github,
+        team_id=team_id,
         expires_in_seconds=seconds if seconds > 0 else None,
         is_admin=False,  # device tokens are scribe-tier; admins re-issue separately
         label=label,
@@ -568,6 +655,103 @@ def token_list(dormant_days):
         )
 
 
+# ── team ──────────────────────────────────────────────────────────────────────
+
+@main.group()
+def team():
+    """Manage teams (v0.6.0+ multi-team support)."""
+
+
+@team.command("list")
+def team_list():
+    """List all configured teams."""
+    from .server import queue as _queue
+    rows = _queue.list_teams()
+    if not rows:
+        click.echo("(no teams configured)")
+        return
+    # Column widths
+    ids = [str(r.get("id") or "?") for r in rows]
+    names = [str(r.get("name") or "?") for r in rows]
+    remotes = [str(r.get("sync_remote") or "-") for r in rows]
+    id_w = max([len("id")] + [len(s) for s in ids])
+    name_w = max([len("name")] + [len(s) for s in names])
+    remote_w = max([len("sync_remote")] + [len(s) for s in remotes])
+    click.echo(
+        f"  {'id':<{id_w}}  {'name':<{name_w}}  "
+        f"{'sync_remote':<{remote_w}}  meeting_type"
+    )
+    for r in rows:
+        rid = str(r.get("id") or "?")
+        rname = str(r.get("name") or "?")
+        rremote = str(r.get("sync_remote") or "-")
+        rmt = str(r.get("sync_meeting_type") or "sandbox")
+        click.echo(
+            f"  {rid:<{id_w}}  {rname:<{name_w}}  "
+            f"{rremote:<{remote_w}}  {rmt}"
+        )
+
+
+@team.command("create")
+@click.option("--id", "team_id", required=True,
+              help="Slug (3-32 chars, lowercase alphanum + hyphen, "
+                   "starts with a letter). Immutable.")
+@click.option("--name", required=True, help="Human display name.")
+@click.option("--sync-remote", default=None,
+              help="Git URL for this team's millet sync target "
+                   "(reserved schema slot in v0.6.0; sync wiring lands "
+                   "in v0.6.1).")
+@click.option("--sync-meeting-type", default="sandbox", show_default=True,
+              help="Meeting-type prefix passed to `millet sync`.")
+def team_create(team_id, name, sync_remote, sync_meeting_type):
+    """Create a new team."""
+    from .server import queue as _queue
+    try:
+        _queue.create_team(
+            team_id, name,
+            sync_remote=sync_remote,
+            sync_meeting_type=sync_meeting_type,
+        )
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(f"team created: id={team_id} name={name!r}")
+    if sync_remote:
+        click.echo(f"  sync_remote: {sync_remote}")
+    click.echo(f"  sync_meeting_type: {sync_meeting_type}")
+
+
+@team.command("set-sync")
+@click.option("--id", "team_id", required=True, help="Team slug.")
+@click.option("--remote", "sync_remote", default=None,
+              help="Git URL.  Pass empty string to clear.")
+@click.option("--meeting-type", "sync_meeting_type", default=None,
+              help="Meeting-type prefix (sandbox / production / ...).")
+def team_set_sync(team_id, sync_remote, sync_meeting_type):
+    """Update sync_remote and/or sync_meeting_type on an existing team."""
+    from .server import queue as _queue
+    if _queue.get_team(team_id) is None:
+        click.echo(f"error: team {team_id!r} does not exist", err=True)
+        sys.exit(2)
+    kwargs: dict = {}
+    if sync_remote is not None:
+        kwargs["sync_remote"] = sync_remote or None
+    if sync_meeting_type is not None:
+        kwargs["sync_meeting_type"] = sync_meeting_type
+    if not kwargs:
+        click.echo("nothing to update (pass --remote and/or --meeting-type)")
+        return
+    try:
+        _queue.update_team_sync(team_id, **kwargs)
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    row = _queue.get_team(team_id)
+    click.echo(f"team updated: id={team_id}")
+    click.echo(f"  sync_remote: {row['sync_remote'] or '-'}")
+    click.echo(f"  sync_meeting_type: {row['sync_meeting_type']}")
+
+
 # ── voiceprints ───────────────────────────────────────────────────────────────
 
 @main.group()
@@ -620,13 +804,28 @@ def status():
     click.echo(f"sessions dir:  {config.sessions_dir()}")
     click.echo(f"profile DB:    {config.speaker_profiles_path()}")
     click.echo(f"queue DB:      {config.queue_db_path()}")
+    # v0.6.0: status is an admin-side overview, so it uses the global
+    # path (no team scope, no viewer filter) — see queue.list_recent
+    # docstring.  Per-team breakdown follows below.
     rows = queue.list_recent(limit=200)
     by_status: dict[str, int] = {}
+    by_team: dict[str, int] = {}
     for r in rows:
         by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+        t = r.get("team_id") or "(unassigned)"
+        by_team[t] = by_team.get(t, 0) + 1
     click.echo(f"recent jobs ({len(rows)} of last 200):")
     for k, v in sorted(by_status.items()):
-        click.echo(f"  {k}: {v}")
+        click.echo(f"  status={k}: {v}")
+    click.echo("by team:")
+    for k, v in sorted(by_team.items()):
+        click.echo(f"  team={k}: {v}")
+    click.echo("teams configured:")
+    teams = queue.list_teams()
+    if not teams:
+        click.echo("  (none — run `vezir team create`)")
+    for t in teams:
+        click.echo(f"  {t['id']:<16} {t['name']}")
 
 
 if __name__ == "__main__":

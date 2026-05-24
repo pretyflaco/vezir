@@ -16,8 +16,8 @@ def tmp_data(monkeypatch):
 
 def test_enqueue_and_claim(tmp_data):
     from vezir.server import queue
-    queue.enqueue("01HZ000000000000000000ABCD", github="alice", title="t1")
-    queue.enqueue("01HZ000000000000000000ABCE", github="bob", title="t2")
+    queue.enqueue("01HZ000000000000000000ABCD", github="alice", title="t1", team_id="blink")
+    queue.enqueue("01HZ000000000000000000ABCE", github="bob", title="t2", team_id="blink")
 
     job = queue.claim_next()
     assert job is not None
@@ -32,7 +32,7 @@ def test_enqueue_and_claim(tmp_data):
 
 def test_status_transitions(tmp_data):
     from vezir.server import queue
-    queue.enqueue("01HZ0000000000000000000XYZ", github="alice")
+    queue.enqueue("01HZ0000000000000000000XYZ", github="alice", team_id="blink")
     queue.update_status("01HZ0000000000000000000XYZ", "needs_labeling",
                         artifacts={"pdf": "x.pdf"})
     row = queue.get("01HZ0000000000000000000XYZ")
@@ -42,6 +42,6 @@ def test_status_transitions(tmp_data):
 
 def test_invalid_status(tmp_data):
     from vezir.server import queue
-    queue.enqueue("01HZ000000000000000000NOPE", github="alice")
+    queue.enqueue("01HZ000000000000000000NOPE", github="alice", team_id="blink")
     with pytest.raises(ValueError):
         queue.update_status("01HZ000000000000000000NOPE", "bogus")

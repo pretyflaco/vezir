@@ -11,7 +11,17 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, config
-from . import enroll, labels, login, sessions, uploads, voiceprints, worker
+from . import (
+    enroll,
+    labels,
+    login,
+    migrations,
+    sessions,
+    teams,
+    uploads,
+    voiceprints,
+    worker,
+)
 
 
 def create_app() -> FastAPI:
@@ -23,6 +33,10 @@ def create_app() -> FastAPI:
     log = logging.getLogger("vezir")
 
     config.ensure_dirs()
+    # v0.6.0: run schema + data migrations BEFORE anything touches the
+    # queue or roster files.  Migrations are idempotent and write an
+    # audit log per run.
+    migrations.run_pending_migrations()
     voiceprints.ensure_db_exists()
 
     app = FastAPI(
@@ -44,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(labels.router)
     app.include_router(enroll.router)
+    app.include_router(teams.router)
 
     static_dir = Path(__file__).resolve().parent.parent / "web" / "static"
     if static_dir.exists():

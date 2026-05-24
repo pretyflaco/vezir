@@ -34,9 +34,23 @@ log = logging.getLogger("vezir.labels")
 router = APIRouter()
 
 
-def _team_handles() -> list[str]:
-    """Read team.json roster of GitHub handles."""
-    p = config.team_json_path()
+def _team_handles(team_id: str | None = None) -> list[str]:
+    """Read roster of GitHub handles for the labeling dropdown.
+
+    v0.6.0+: reads ``~/vezir-data/teams/<team_id>/roster.json`` (the
+    per-team roster).  When called without ``team_id`` (back-compat
+    path for legacy callers within the same process), falls back to
+    the pre-v0.6.0 global ``team.json``.
+
+    Per-team rosters are populated by the v0.6.0 migration which moves
+    the old global ``team.json`` to ``teams/blink/roster.json`` and
+    creates ``teams/twentyone/roster.json`` with pretyflaco +
+    bettermorning seeded.
+    """
+    if team_id:
+        p = config.team_roster_path(team_id)
+    else:
+        p = config.team_json_path()
     if not p.exists():
         return []
     try:
@@ -83,15 +97,28 @@ def _get_speakers(session_id: str):
     return meet_get_speakers(_session_dir(session_id))
 
 
+def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
+    """Reject cross-team access with a 404 (mirror of sessions._enforce_team_visibility).
+
+    Duplicated here rather than imported to keep labels.py independent
+    of sessions.py — both have the same security obligation; the
+    duplication is intentional belt-and-suspenders.
+    """
+    if row.get("team_id") != viewer_team_id:
+        raise HTTPException(404, "session not found")
+
+
 @router.get("/label/{session_id}", response_class=HTMLResponse)
 def label_page(
     request: Request,
     session_id: str,
-    github: str = Depends(auth.require_bearer_or_cookie),
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
 ):
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     if row["status"] not in ("needs_labeling", "done", "error"):
         return templates.TemplateResponse(
             request,
@@ -108,7 +135,7 @@ def label_page(
             "row": row,
             "me": github,
             "speakers": speakers,
-            "team": _team_handles(),
+            "team": _team_handles(team_id),
         },
     )
 
@@ -120,11 +147,17 @@ def label_page(
 def label_clip(
     session_id: str,
     speaker_id: str,
-    github: str = Depends(auth.require_bearer_or_cookie),
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
 ):
     """Return an audio clip for a speaker. Generates and caches on first hit."""
+    _github, team_id, _admin = auth_triple
     if not re.match(r"^[A-Za-z0-9_]+$", speaker_id):
         raise HTTPException(400, "invalid speaker id")
+
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
 
     sdir = _session_dir(session_id)
     if not sdir.exists():
@@ -226,25 +259,29 @@ _LABELABLE_STATUSES = ("needs_labeling", "done", "error")
     "/api/team",
     dependencies=[Depends(ratelimit.limit_api)],
 )
-def api_team(github: str = Depends(auth.require_bearer)):
+def api_team(auth_triple: tuple = Depends(auth.require_bearer_full)):
     """Return the team handles list (for autocomplete in native clients).
 
-    Reads from ~/vezir-data/team.json. Same data that the HTML labeling
-    page uses for its <datalist>.
+    v0.6.0+: reads ``~/vezir-data/teams/<caller-team>/roster.json``.
+    The label dropdown is scoped to the caller's team so cross-team
+    handles don't appear in autocomplete.
     """
-    return {"team": _team_handles()}
+    _github, team_id, _admin = auth_triple
+    return {"team": _team_handles(team_id)}
 
 
 @router.post("/label/{session_id}")
 async def submit_labels(
     request: Request,
     session_id: str,
-    github: str = Depends(auth.require_bearer_or_cookie),
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
 ):
     """Apply user-assigned labels and trigger sync (HTML form POST)."""
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
 
     form = await request.form()
     label_map: dict[str, str] = {}
@@ -272,8 +309,9 @@ async def submit_labels(
 )
 def api_label_get(
     session_id: str,
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
+    github, team_id, _admin = auth_triple
     """Return the speaker list and team handles for native-client labeling.
 
     Response:
@@ -294,6 +332,7 @@ def api_label_get(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     if row["status"] not in _LABELABLE_STATUSES:
         raise HTTPException(
             409,
@@ -316,7 +355,7 @@ def api_label_get(
             }
             for sp in speakers
         ],
-        "team": _team_handles(),
+        "team": _team_handles(team_id),
         "audio_available": audio_available,
     }
 
@@ -328,7 +367,7 @@ def api_label_get(
 def api_label_post(
     session_id: str,
     labels: dict = Body(..., example={"labels": {"REMOTE_0": "kasita"}}),
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     """Apply labels from a JSON body (native clients).
 
@@ -337,9 +376,11 @@ def api_label_post(
 
     Empty or missing labels for a speaker keep the auto-assigned label.
     """
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     if row["status"] not in _LABELABLE_STATUSES:
         raise HTTPException(
             409,

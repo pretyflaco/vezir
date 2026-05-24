@@ -7,6 +7,7 @@ Tokens are stored hashed in ~/vezir-data/tokens.json:
         {
           "github": "kasita",
           "token_hash": "<sha256>",
+          "team_id": "blink",            # 0.6.0+, team this token belongs to
           "issued_at": "...",
           "expires_at": "..." | null,    # 0.1.12+, null = legacy no-expiry
           "last_used_at": "..." | null,  # 0.1.12+, debounced 60s
@@ -97,6 +98,7 @@ def _is_expired(entry: dict) -> bool:
 
 def issue(
     github: str,
+    team_id: str,
     expires_in_seconds: int | None = None,
     is_admin: bool = False,
     label: str | None = None,
@@ -108,6 +110,12 @@ def issue(
 
     Parameters
     ----------
+    github:
+        GitHub handle the token belongs to.
+    team_id:
+        Slug of the team this token is scoped to.  Added in v0.6.0.  All
+        sessions uploaded by this token, and all visibility queries this
+        token authorizes, are restricted to this team.  Required.
     expires_in_seconds:
         If given (>0), the token expires that many seconds from now.
         ``None`` or 0 means no expiry (matches pre-0.1.12 behavior).
@@ -119,6 +127,8 @@ def issue(
         for "android-phone" / "linux-laptop" style hints when one human
         owns multiple tokens. Never used in auth decisions.
     """
+    if not team_id:
+        raise ValueError("issue() requires team_id (added in v0.6.0)")
     data = _load_tokens()
     plaintext = "vzr_" + secrets.token_urlsafe(32)
     issued_at = _now_iso()
@@ -132,6 +142,7 @@ def issue(
         {
             "github": github,
             "token_hash": _hash(plaintext),
+            "team_id": team_id,
             "issued_at": issued_at,
             "expires_at": expires_at,
             "last_used_at": None,
@@ -216,6 +227,27 @@ def lookup(token: str) -> str | None:
     return entry.get("github")
 
 
+def lookup_full(token: str) -> tuple[str, str, bool] | None:
+    """Resolve a bearer token to ``(github, team_id, is_admin)``, or None.
+
+    v0.6.0: the single trusted path that maps a bearer to its
+    server-side identity.  Use this in handlers that need the team
+    discriminator (which is all of them — the whole point of v0.6.0 is
+    that nothing crosses team boundaries).
+
+    Side-effect: debounced ``last_used_at`` touch on hit.
+    """
+    entry = _lookup_entry(token)
+    if entry is None:
+        return None
+    _maybe_touch_last_used(entry.get("token_hash") or "")
+    return (
+        entry.get("github") or "",
+        entry.get("team_id") or "",
+        bool(entry.get("is_admin", False)),
+    )
+
+
 def is_admin_token(token: str) -> bool:
     """True iff the token resolves AND the matching row has ``is_admin=true``.
 
@@ -244,8 +276,29 @@ def require_bearer(authorization: str | None = Header(default=None)) -> str:
     Returns the GitHub handle of the authenticated scribe.
 
     Use for JSON / programmatic endpoints (e.g. /api/..., /upload). For
-    browser-facing routes prefer `require_bearer_or_cookie` so users can
-    click links from the GUI's dashboard URL.
+    browser-facing routes prefer ``require_bearer_or_cookie`` so users
+    can click links from the GUI's dashboard URL.
+
+    See also ``require_bearer_full`` for routes that also need the
+    token's team_id (v0.6.0+).  This dependency still works for legacy
+    handler signatures that only need the github handle — but the auth
+    chain underneath validates team_id presence so handlers stay safe.
+    """
+    github, _team, _admin = require_bearer_full(authorization)
+    return github
+
+
+def require_bearer_full(
+    authorization: str | None = Header(default=None),
+) -> tuple[str, str, bool]:
+    """FastAPI dependency: bearer auth returning ``(github, team_id, is_admin)``.
+
+    v0.6.0: the canonical bearer-only auth dependency for endpoints
+    that need to scope queries to the caller's team.  Use this for
+    every /api/sessions* and /upload route.
+
+    Raises 401 on missing/invalid token, and on tokens that lack a
+    team_id (pre-v0.6.0 tokens that didn't go through the migration).
     """
     token = _token_from_authorization(authorization)
     if not token:
@@ -254,14 +307,37 @@ def require_bearer(authorization: str | None = Header(default=None)) -> str:
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    github = lookup(token)
-    if not github:
+    resolved = lookup_full(token)
+    if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return github
+    github, team_id, admin = resolved
+    if not team_id:
+        # v0.6.0+: any token that survives the migration MUST have a
+        # team_id.  A missing one means either a hand-edited tokens.json
+        # or a migration bug.  Reject loudly so the operator notices,
+        # rather than silently letting cross-team leakage past the
+        # visibility filter.
+        log.warning(
+            "auth: token for %s has no team_id; rejecting "
+            "(re-issue via `vezir token issue --team <id>`)",
+            github,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "token has no team assignment; ask the operator to "
+                "re-issue it with `vezir token issue --team <id>`."
+            ),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    log.debug(
+        "auth: %s via header (team=%s admin=%s)", github, team_id, admin,
+    )
+    return github, team_id, admin
 
 
 def require_bearer_or_cookie(
@@ -284,54 +360,117 @@ def require_bearer_or_cookie(
     accepted as a bearer token until next major release.
 
     Returns the GitHub handle of the authenticated scribe.
+
+    See also ``require_bearer_or_cookie_full`` for the 3-tuple variant.
     """
-    github, _is_admin = _resolve_auth(authorization, vezir_session)
+    github, _team, _admin = _resolve_auth(authorization, vezir_session)
     return github
+
+
+def require_bearer_or_cookie_full(
+    authorization: str | None = Header(default=None),
+    vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> tuple[str, str, bool]:
+    """FastAPI dependency: bearer-or-cookie auth returning ``(github, team_id, is_admin)``.
+
+    v0.6.0: use this on browser-facing routes that also need the team
+    discriminator (dashboard, session detail, artifact download, etc.).
+    """
+    return _resolve_auth(authorization, vezir_session)
 
 
 def _resolve_auth(
     authorization: str | None,
     vezir_session: str | None,
-) -> tuple[str, bool]:
-    """Shared auth resolution returning ``(github, is_admin)``.
+) -> tuple[str, str, bool]:
+    """Shared auth resolution returning ``(github, team_id, is_admin)``.
 
-    The ``is_admin`` flag reflects the *specific token* or *specific
-    session* used for this request — not "any admin token for the
-    same github handle". This prevents a scribe-tier token from
-    inheriting admin access just because the same person also holds
-    an admin-tier token.
+    The ``is_admin`` and ``team_id`` flags reflect the *specific token*
+    or *specific session* used for this request — not "any token for
+    the same github handle".  This prevents a scribe-tier token from
+    inheriting admin access just because the same person also holds an
+    admin-tier token, and prevents a token issued to team A from being
+    silently treated as a token for team B if the same handle is in
+    both teams.
 
-    Raises 401 if no valid credential is found.
+    Raises 401 if no valid credential is found, or if the credential
+    resolves to a token without a team_id (must be re-issued per
+    v0.6.0).
     """
     # 1. Prefer the explicit Authorization header (programmatic clients).
     token = _token_from_authorization(authorization)
     if token:
-        github = lookup(token)
-        if not github:
+        resolved = lookup_full(token)
+        if not resolved:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        admin = is_admin_token(token)
-        log.debug("auth: %s via header (admin=%s)", github, admin)
-        return github, admin
+        github, team_id, admin = resolved
+        if not team_id:
+            log.warning(
+                "auth: token for %s has no team_id; rejecting", github,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "token has no team assignment; ask the operator to "
+                    "re-issue it with `vezir token issue --team <id>`."
+                ),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        log.debug(
+            "auth: %s via header (team=%s admin=%s)",
+            github, team_id, admin,
+        )
+        return github, team_id, admin
 
     # 2. Fall back to the session cookie.
     cookie_value = (vezir_session or "").strip()
     if cookie_value:
         result = web_sessions.lookup_session(cookie_value)
         if result is not None:
-            github, admin = result
-            log.debug("auth: %s via session cookie (admin=%s)", github, admin)
-            return github, admin
+            github, team_id, admin = result
+            if not team_id:
+                # A pre-0.6.0 cookie was minted before team_id was
+                # captured.  Force re-login rather than silently
+                # leaking cross-team.
+                log.info(
+                    "auth: pre-0.6.0 cookie for %s (no team_id); "
+                    "forcing re-login",
+                    github,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=(
+                        "session predates team isolation (v0.6.0); "
+                        "please /logout and sign in again."
+                    ),
+                )
+            log.debug(
+                "auth: %s via session cookie (team=%s admin=%s)",
+                github, team_id, admin,
+            )
+            return github, team_id, admin
         # Pre-0.1.12 cookies stored the plaintext bearer. Accept once.
         if cookie_value.startswith("vzr_"):
-            github = lookup(cookie_value)
-            if github:
-                admin = is_admin_token(cookie_value)
-                log.info("auth: %s via legacy bearer-in-cookie", github)
-                return github, admin
+            resolved = lookup_full(cookie_value)
+            if resolved:
+                github, team_id, admin = resolved
+                if not team_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=(
+                            "legacy bearer-in-cookie has no team_id; "
+                            "ask operator to re-issue your token."
+                        ),
+                    )
+                log.info(
+                    "auth: %s via legacy bearer-in-cookie (team=%s)",
+                    github, team_id,
+                )
+                return github, team_id, admin
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -357,11 +496,11 @@ def require_admin(
     admin-tier token. The admin flag is captured at session-creation time
     for cookie-based auth (see ``web_sessions.open_session``).
 
-    Currently gates /admin/enroll. Legacy tokens (no ``is_admin`` field)
-    are rejected — operators must re-issue with ``--admin`` to keep
-    enrollment access.
+    Currently gates /admin/enroll and /admin/teams.  Legacy tokens (no
+    ``is_admin`` field) are rejected — operators must re-issue with
+    ``--admin`` to keep enrollment access.
     """
-    github, admin = _resolve_auth(authorization, vezir_session)
+    github, _team, admin = _resolve_auth(authorization, vezir_session)
     if admin:
         return github
 

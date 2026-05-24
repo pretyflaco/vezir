@@ -93,11 +93,11 @@ def test_api_sessions_hides_other_users_personal(client_factory):
     bob_tok = auth.issue("bob")
 
     # alice uploads a personal session
-    queue.enqueue("01PERSONAL", "alice", personal=True)
-    # alice uploads a team session
-    queue.enqueue("01TEAM", "alice", personal=False)
-    # bob uploads a team session
-    queue.enqueue("01BOB", "bob", personal=False)
+    queue.enqueue("01PERSONAL", "alice", personal=True, team_id="blink")
+    # bob's non-personal (visible to alice and bob)
+    queue.enqueue("01TEAM", "alice", personal=False, team_id="blink")
+    # bob's session, non-personal
+    queue.enqueue("01BOB", "bob", personal=False, team_id="blink")
 
     # alice sees all three (her personal + both team)
     resp = client.get("/api/sessions", headers=_bearer(alice_tok))
@@ -120,7 +120,7 @@ def test_share_makes_personal_visible(client_factory):
     alice_tok = auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True)
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
 
     # bob can't see it
     resp = client.get("/api/sessions", headers=_bearer(bob_tok))
@@ -149,7 +149,7 @@ def test_share_only_by_uploader(client_factory):
     alice_tok = auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True)
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
 
     # bob can't share alice's personal session
     resp = client.post("/api/sessions/01PRIV/share", headers=_bearer(bob_tok))
@@ -161,7 +161,7 @@ def test_share_idempotent_on_already_shared(client_factory):
     client = client_factory()
     tok = auth.issue("alice")
 
-    queue.enqueue("01PUB", "alice", personal=False)
+    queue.enqueue("01PUB", "alice", personal=False, team_id="blink")
 
     resp = client.post("/api/sessions/01PUB/share", headers=_bearer(tok))
     assert resp.status_code == 200
@@ -184,11 +184,12 @@ def test_api_team_returns_handles(client_factory, tmp_data):
     import json
     from vezir.server import auth
     client = client_factory()
-    tok = auth.issue("alice")
+    tok = auth.issue("alice")  # default team_id='blink' via conftest shim
 
-    # Write a team.json
-    team_path = tmp_data / "team.json"
-    team_path.write_text(json.dumps([
+    # v0.6.0: write roster to the per-team path the new code reads from.
+    roster_path = tmp_data / "teams" / "blink" / "roster.json"
+    roster_path.parent.mkdir(parents=True, exist_ok=True)
+    roster_path.write_text(json.dumps([
         {"github": "kasita", "name": "Kasita"},
         {"github": "pretyflaco"},
     ]))

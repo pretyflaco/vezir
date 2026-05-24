@@ -51,13 +51,34 @@ def _decorate(row: dict) -> dict:
     return row
 
 
+def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
+    """Raise 404 if ``row`` belongs to a team the viewer isn't in.
+
+    v0.6.0: every session-detail / session-fetch endpoint must call
+    this with the caller's team_id (from the auth dependency).  Cross-
+    team requests are returned as 404 (not 403) to avoid leaking the
+    existence of a session that belongs to another team.
+    """
+    if row.get("team_id") != viewer_team_id:
+        raise HTTPException(404, "session not found")
+
+
 @router.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, github: str = Depends(auth.require_bearer_or_cookie)):
-    rows = [_decorate(r) for r in queue.list_recent(limit=50)]
+def dashboard(
+    request: Request,
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
+):
+    github, team_id, _admin = auth_triple
+    rows = [
+        _decorate(r)
+        for r in queue.list_recent(
+            limit=50, viewer_github=github, viewer_team_id=team_id,
+        )
+    ]
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"request": request, "rows": rows, "me": github},
+        {"request": request, "rows": rows, "me": github, "team_id": team_id},
     )
 
 
@@ -65,32 +86,43 @@ def dashboard(request: Request, github: str = Depends(auth.require_bearer_or_coo
 def session_detail(
     request: Request,
     session_id: str,
-    github: str = Depends(auth.require_bearer_or_cookie),
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
 ):
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     return templates.TemplateResponse(
         request,
         "session.html",
-        {"request": request, "row": _decorate(row), "me": github},
+        {"request": request, "row": _decorate(row), "me": github,
+         "team_id": team_id},
     )
 
 
 @router.get("/api/sessions", dependencies=[Depends(ratelimit.limit_api)])
 def api_sessions(
     limit: int = 50,
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     """Return recent sessions visible to the authenticated user.
 
-    Visibility rule: all non-personal sessions PLUS the user's own
-    personal sessions. Other users' personal sessions are hidden.
+    v0.6.0 visibility rule:
+      * Team scope: only sessions in the caller's team.
+      * Personal: all non-personal sessions in that team PLUS the
+        caller's own personal sessions in that team.
+      * Sessions in OTHER teams are entirely invisible.
     """
+    github, team_id, _admin = auth_triple
     return {
         "sessions": [
             _decorate(r)
-            for r in queue.list_recent(limit=limit, viewer_github=github)
+            for r in queue.list_recent(
+                limit=limit,
+                viewer_github=github,
+                viewer_team_id=team_id,
+            )
         ],
     }
 
@@ -101,11 +133,13 @@ def api_sessions(
 )
 def api_session(
     session_id: str,
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
+    _github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     return _decorate(row)
 
 
@@ -113,8 +147,15 @@ def api_session(
 def artifact(
     session_id: str,
     name: str,
-    github: str = Depends(auth.require_bearer_or_cookie),
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
 ):
+    _github, team_id, _admin = auth_triple
+    # Cross-team artifact downloads must be impossible, so check the
+    # job row's team BEFORE touching the filesystem.
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     sdir = config.sessions_dir() / session_id
     if not sdir.exists():
         raise HTTPException(404, "session not found")
@@ -131,7 +172,7 @@ def artifact(
 def sync_now(
     session_id: str,
     request: Request,
-    github: str = Depends(auth.require_bearer_or_cookie),
+    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
 ):
     """Retroactively sync a previously local-only session to git.
 
@@ -151,9 +192,11 @@ def sync_now(
     session that already synced is allowed (force-push semantics inherited
     from `millet sync --force`).
     """
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     if row["status"] not in ("done", "syncing"):
         raise HTTPException(
             409,
@@ -191,8 +234,9 @@ def sync_now(
 def retry_summary(
     session_id: str,
     body: _RetrySummaryBody | None = None,
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
+    github, team_id, _admin = auth_triple
     """Retry summary generation for a session whose summary previously failed.
 
     The session must be in ``done`` status with a non-empty ``summary_error``
@@ -207,6 +251,7 @@ def retry_summary(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     if row["status"] != "done":
         raise HTTPException(
             409,
@@ -249,7 +294,7 @@ def retry_summary(
 )
 def share_with_team(
     session_id: str,
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     """Un-personal a session so it becomes visible to the whole team.
 
@@ -257,10 +302,17 @@ def share_with_team(
     Sets ``personal=0``; does NOT automatically enable sync — the user
     can then click "Sync now" separately if they also want the artifacts
     pushed to git.
+
+    v0.6.0: the team semantic of "share" is unchanged — sessions remain
+    in their own team after sharing; "share" only flips the in-team
+    personal flag.  Cross-team sharing is intentionally not supported
+    (decision recorded in vezir_plan.md v0.6.0 design).
     """
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
     if row.get("github") != github:
         raise HTTPException(
             403,
@@ -284,8 +336,9 @@ def share_with_team(
 def mint_exchange_code(
     request: Request,
     next: str | None = None,
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
+    github, _team, _admin = auth_triple  # team carried by bearer itself
     """Mint a one-time, 60-second exchange code for browser hand-off.
 
     The client calls this when it needs a login URL (e.g. to print a

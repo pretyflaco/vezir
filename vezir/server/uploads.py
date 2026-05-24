@@ -103,8 +103,12 @@ async def upload(
     sync: str | None = Form(default=None),
     personal: str | None = Form(default=None),
     audio_bytes: int | None = Form(default=None),
-    github: str = Depends(auth.require_bearer),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
+    # v0.6.0: team_id is derived server-side from the bearer token;
+    # clients never supply it.  This is the cornerstone of the team-
+    # isolation invariant — see vezir_plan.md v0.6.0 design notes.
+    github, team_id, _admin = auth_triple
     auto_label_enabled = _parse_bool_form(auto_label, default=True)
     sync_enabled = _parse_bool_form(sync, default=True)
     is_personal = _parse_bool_form(personal, default=False)
@@ -158,15 +162,16 @@ async def upload(
         raise
 
     log.info(
-        "upload accepted: session=%s github=%s bytes=%d ext=%s title=%r "
-        "summary_preset=%r auto_label=%s sync=%s personal=%s",
-        session_id, github, bytes_written, ext, title, summary_preset,
-        auto_label_enabled, sync_enabled, is_personal,
+        "upload accepted: session=%s github=%s team=%s bytes=%d ext=%s "
+        "title=%r summary_preset=%r auto_label=%s sync=%s personal=%s",
+        session_id, github, team_id, bytes_written, ext, title,
+        summary_preset, auto_label_enabled, sync_enabled, is_personal,
     )
 
     queue.enqueue(
         session_id,
         github=github,
+        team_id=team_id,
         title=title,
         summary_preset=summary_preset,
         auto_label_enabled=auto_label_enabled,

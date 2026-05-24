@@ -1,11 +1,17 @@
-"""SQLite-backed job queue.
+"""SQLite-backed job queue + team registry.
 
 Single-writer, single-worker model. Serialized job execution per the MVP
-plan. The queue stores one row per uploaded session.
+plan.
 
-Schema:
+Tables
+------
+
+``jobs``: one row per uploaded session.
     id                   ULID, primary key, also the session id
     github               GitHub handle of the scribe who uploaded
+    team_id              Slug of the team this session belongs to.  Added
+                         in v0.6.0.  All visibility filtering is anchored
+                         here.  See :func:`list_recent`.
     title                Optional meeting title
     summary_preset       Optional preset id (high-quality | confidential | alternative)
     auto_label_enabled   0/1.  When 0, worker skips `millet label --auto` and
@@ -35,6 +41,17 @@ Schema:
                          done.  The user can retry via "Sync now".
     artifacts            JSON-encoded dict of artifact paths (relative to session
                          dir): txt, srt, json, summary, pdf
+
+``teams``: one row per team.  Added in v0.6.0.
+    id                   Slug, primary key.  3-32 chars, [a-z0-9-], immutable.
+    name                 Human display name.
+    sync_remote          Git URL for this team's sync target.  Reserved schema
+                         slot in v0.6.0; per-team sync wiring lands in v0.6.1
+                         (worker still uses global VEZIR_SYNC* env vars until
+                         then).
+    sync_meeting_type    Meeting-type prefix used by ``millet sync --meeting-type``.
+                         Defaults to 'sandbox' to match pre-0.6.0 behavior.
+    created_at           ISO timestamp.
 """
 from __future__ import annotations
 
@@ -69,6 +86,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS teams (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    sync_remote         TEXT,
+    sync_meeting_type   TEXT NOT NULL DEFAULT 'sandbox',
+    created_at          TEXT NOT NULL
+);
 """
 
 
@@ -101,6 +126,14 @@ def _conn() -> Iterator[sqlite3.Connection]:
             # Idempotent column-add migrations for existing DBs predating
             # each column.  Each is wrapped in its own try because the
             # second add must still run if the first is a duplicate.
+            #
+            # NOTE on team_id: the column is added with a placeholder
+            # default '' so the ALTER succeeds against any existing row
+            # set.  The 0.6.0 data migration (server.migrations) then
+            # backfills real team_id values immediately after schema
+            # bring-up.  Code that queries jobs without filtering by
+            # team_id (e.g. the worker's claim_next loop) is unaffected;
+            # only visibility-relevant call sites check team_id.
             for ddl in (
                 "ALTER TABLE jobs ADD COLUMN summary_preset TEXT",
                 "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
@@ -108,12 +141,18 @@ def _conn() -> Iterator[sqlite3.Connection]:
                 "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
                 "ALTER TABLE jobs ADD COLUMN sync_error TEXT",
+                "ALTER TABLE jobs ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
             ):
                 try:
                     conn.execute(ddl)
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_team ON jobs(team_id)")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
             yield conn
             conn.commit()
         finally:
@@ -124,6 +163,8 @@ def enqueue(
     job_id: str,
     github: str,
     title: str | None = None,
+    *,
+    team_id: str,
     summary_preset: str | None = None,
     auto_label_enabled: bool = True,
     sync_enabled: bool = True,
@@ -137,16 +178,23 @@ def enqueue(
 
     ``personal=True`` forces ``sync_enabled=False`` server-side: personal
     recordings should not be pushed to the shared git repo.
+
+    ``team_id`` was added in v0.6.0 and is required.  It MUST be derived
+    server-side from the uploader's bearer token (see
+    ``auth._resolve_auth``); clients never supply it directly.
     """
+    if not team_id:
+        raise ValueError("enqueue requires team_id (added in v0.6.0)")
     if personal:
         sync_enabled = False
     with _conn() as c:
         c.execute(
-            "INSERT INTO jobs (id, github, title, summary_preset, "
-            "auto_label_enabled, sync_enabled, personal, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            "INSERT INTO jobs (id, github, team_id, title, summary_preset, "
+            "auto_label_enabled, sync_enabled, personal, status, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
             (
-                job_id, github, title, summary_preset,
+                job_id, github, team_id, title, summary_preset,
                 1 if auto_label_enabled else 0,
                 1 if sync_enabled else 0,
                 1 if personal else 0,
@@ -250,33 +298,183 @@ def list_recent(
     limit: int = 50,
     github: str | None = None,
     viewer_github: str | None = None,
+    viewer_team_id: str | None = None,
+    team_id: str | None = None,
 ) -> list[dict]:
     """Return recent jobs, filtered for visibility.
 
-    ``viewer_github``: when set, applies the personal-visibility rule:
-    return all non-personal sessions PLUS personal sessions owned by
-    ``viewer_github``. This is the filter used by ``/api/sessions``.
+    Team scoping (v0.6.0+): the visibility filter ALWAYS requires a team
+    discriminator when called from a request-handling context.  Cross-team
+    leakage is the central security property of multi-team support, so
+    every caller must supply one of:
 
-    ``github``: when set (without ``viewer_github``), returns only
-    sessions uploaded by that handle (admin / per-user view). This is
-    the legacy filter used by ``vezir status``.
+    * ``viewer_team_id`` — return jobs from this team only, AND apply the
+      personal-visibility rule (non-personal OR own-personal).  This is
+      the filter used by ``/api/sessions``.  When set, ``viewer_github``
+      is required too (so the personal-visibility OR-clause has a handle
+      to match).
+    * ``team_id`` — return all jobs in this team regardless of personal
+      flag.  Used by admin-only views and the background worker (e.g.
+      ``claim_next`` doesn't go through this function but is independently
+      team-blind because the worker processes ALL queued jobs).
+
+    Back-compat shims:
+
+    * ``viewer_github`` (without ``viewer_team_id``): rejected with
+      ``ValueError`` in v0.6.0+.  Older calls must add ``viewer_team_id``.
+    * ``github`` (without team scoping): rejected with ``ValueError`` in
+      v0.6.0+ to prevent accidental cross-team listings.  Admin callers
+      that genuinely want a global view across teams can pass
+      ``team_id=None, github=None, _allow_all=True`` (not yet plumbed —
+      the only current global caller is the worker, which uses
+      ``claim_next``, not ``list_recent``).
     """
+    # Tight v0.6.0 contract: a caller must say which team they want to
+    # see.  Catching ambiguous calls early prevents silent cross-team
+    # leakage from a refactor that forgets to pass team_id.
+    if viewer_github and not viewer_team_id:
+        raise ValueError(
+            "list_recent(viewer_github=...) now also requires "
+            "viewer_team_id (v0.6.0+ team isolation)"
+        )
+    if github and not (team_id or viewer_team_id):
+        raise ValueError(
+            "list_recent(github=...) now also requires team_id "
+            "or viewer_team_id (v0.6.0+ team isolation)"
+        )
+
     with _conn() as c:
-        if viewer_github:
+        if viewer_team_id and viewer_github:
             rows = c.execute(
-                "SELECT * FROM jobs WHERE personal = 0 OR github = ? "
+                "SELECT * FROM jobs "
+                "WHERE team_id = ? AND (personal = 0 OR github = ?) "
                 "ORDER BY created_at DESC LIMIT ?",
-                (viewer_github, limit),
+                (viewer_team_id, viewer_github, limit),
             ).fetchall()
-        elif github:
+        elif team_id and github:
             rows = c.execute(
-                "SELECT * FROM jobs WHERE github = ? "
+                "SELECT * FROM jobs WHERE team_id = ? AND github = ? "
                 "ORDER BY created_at DESC LIMIT ?",
-                (github, limit),
+                (team_id, github, limit),
+            ).fetchall()
+        elif team_id:
+            rows = c.execute(
+                "SELECT * FROM jobs WHERE team_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (team_id, limit),
             ).fetchall()
         else:
+            # No team scope at all — only reachable from internal callers
+            # (tests, admin tools) that explicitly want a global view.
             rows = c.execute(
                 "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ── teams CRUD ───────────────────────────────────────────────────────────────
+
+
+_TEAM_ID_RE = None  # lazy-compiled in validate_team_id
+
+
+def validate_team_id(team_id: str) -> None:
+    """Raise ``ValueError`` if ``team_id`` doesn't match the slug shape.
+
+    Constraints (per the v0.6.0 design): 3-32 chars, lowercase
+    alphanumeric and hyphen, must start with a letter.
+    """
+    global _TEAM_ID_RE
+    if _TEAM_ID_RE is None:
+        import re as _re
+        _TEAM_ID_RE = _re.compile(r"^[a-z][a-z0-9-]{2,31}$")
+    if not isinstance(team_id, str) or not _TEAM_ID_RE.match(team_id):
+        raise ValueError(
+            f"invalid team_id {team_id!r}: must be 3-32 chars, lowercase "
+            "alphanumeric + hyphen, starting with a letter"
+        )
+
+
+def create_team(
+    team_id: str,
+    name: str,
+    sync_remote: str | None = None,
+    sync_meeting_type: str = "sandbox",
+) -> None:
+    """Insert a new team row.  Idempotent: raises if the slug exists."""
+    validate_team_id(team_id)
+    with _conn() as c:
+        existing = c.execute(
+            "SELECT id FROM teams WHERE id = ?", (team_id,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f"team {team_id!r} already exists")
+        c.execute(
+            "INSERT INTO teams (id, name, sync_remote, sync_meeting_type, "
+            "created_at) VALUES (?, ?, ?, ?, ?)",
+            (team_id, name, sync_remote, sync_meeting_type, _now()),
+        )
+
+
+def get_team(team_id: str) -> dict | None:
+    """Return the team row as a dict, or None if missing."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM teams WHERE id = ?", (team_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_teams() -> list[dict]:
+    """Return all teams ordered by id."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM teams ORDER BY id ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_team_sync(
+    team_id: str,
+    sync_remote: str | None = ...,
+    sync_meeting_type: str | None = ...,
+) -> None:
+    """Update sync_remote and/or sync_meeting_type for an existing team.
+
+    Sentinel default ``...`` distinguishes "don't touch" from explicit
+    ``None`` (which clears sync_remote).
+    """
+    validate_team_id(team_id)
+    with _conn() as c:
+        sets: list[str] = []
+        params: list = []
+        if sync_remote is not ...:
+            sets.append("sync_remote = ?")
+            params.append(sync_remote)
+        if sync_meeting_type is not ...:
+            if not sync_meeting_type:
+                raise ValueError("sync_meeting_type must be non-empty")
+            sets.append("sync_meeting_type = ?")
+            params.append(sync_meeting_type)
+        if not sets:
+            return  # nothing to update
+        params.append(team_id)
+        c.execute(
+            f"UPDATE teams SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+
+
+def set_job_team(job_id: str, team_id: str) -> None:
+    """Reassign a job to a different team.
+
+    v0.6.0 uses this only in the migration step; user-facing
+    ``vezir session move`` ships in v0.6.1.
+    """
+    validate_team_id(team_id)
+    with _conn() as c:
+        c.execute(
+            "UPDATE jobs SET team_id = ?, updated_at = ? WHERE id = ?",
+            (team_id, _now(), job_id),
+        )

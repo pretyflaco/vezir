@@ -39,7 +39,7 @@ def _bearer(token: str) -> dict:
 def _seed_session(tmp_data, session_id: str, status: str = "needs_labeling"):
     """Create a minimal session row in the queue for testing."""
     from vezir.server import queue
-    queue.enqueue(session_id, "alice", "test meeting")
+    queue.enqueue(session_id, "alice", "test meeting", team_id="blink")
     queue.update_status(session_id, status)
 
 
