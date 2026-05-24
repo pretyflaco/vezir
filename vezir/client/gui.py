@@ -17,7 +17,7 @@ A small always-on-top window that wraps `vezir scribe`'s flow:
   └─────────────────────────────────┘
 
 The GUI does not perform transcription itself — it shells out to
-`meet record` (via meetscribe-record) for capture, then uploads to
+`millet record` (via millet-record) for capture, then uploads to
 the configured vezir server, then polls /api/sessions/<id> for status.
 
 Configuration:
@@ -137,7 +137,7 @@ def _fmt_size(nbytes: int) -> str:
 
 
 def _meet_bin() -> str:
-    """Locate the `meet` binary (provided by meetscribe-record)."""
+    """Locate the `meet` binary (provided by millet-record)."""
     explicit = os.environ.get("VEZIR_MEET_BIN")
     if explicit:
         return explicit
@@ -145,18 +145,18 @@ def _meet_bin() -> str:
     found = shutil.which("meet")
     if not found:
         raise RuntimeError(
-            "`meet` binary not found in PATH. Install meetscribe-record "
-            "(pip install meetscribe-record)."
+            "`meet` binary not found in PATH. Install millet-record "
+            "(pip install millet-record)."
         )
     return found
 
 
 def _default_output_dir() -> Path:
-    return Path(os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "meet-recordings")))
+    return Path(os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "millet-recordings")))
 
 
 def _check_meet_prerequisites(meet_bin: str) -> list[str]:
-    """Run ``meet check`` and return any issues as a list of strings.
+    """Run ``millet check`` and return any issues as a list of strings.
 
     On macOS this triggers the TCC permission dialog on first use.
     Returns an empty list when all prerequisites pass.
@@ -493,7 +493,7 @@ class ScribeWindow:
         )
 
     def _stop_recording(self):
-        """Send Ctrl+C to meet record; spawn upload thread once it exits."""
+        """Send Ctrl+C to millet record; spawn upload thread once it exits."""
         if not self._proc:
             return
         self._set_status("draining")

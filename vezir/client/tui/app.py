@@ -14,7 +14,7 @@ Architecture:
 * Transient screens (DetailScreen, ArtifactScreen, LabelScreen,
   HelpScreen) are pushed on top of MainScreen and pop themselves via
   ``escape`` -- standard Textual screen stack semantics.
-* Heavyweight imports (meetscribe-record, textual widgets that pull
+* Heavyweight imports (millet-record, textual widgets that pull
   rich extras) are lazy inside the screen modules so a `vezir tui`
   startup on a box with the bare-minimum install still gives a
   legible error message before falling over.

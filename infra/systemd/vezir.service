@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Vezir is installed via `pip install --user -e .` against /usr/bin/python3
-# (deps already present from meetscribe). Adjust ExecStart if you moved
+# (deps already present from millet). Adjust ExecStart if you moved
 # vezir into a venv.
 ExecStart=%h/.local/bin/vezir serve
 WorkingDirectory=%h/models/vezir

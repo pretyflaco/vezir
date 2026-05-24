@@ -2,13 +2,13 @@
 
 POST /upload
     multipart/form-data with:
-        audio: the .wav/.ogg file produced by `meet record` or `vezir upload`
+        audio: the .wav/.ogg file produced by `millet record` or `vezir upload`
         title: optional meeting title
 
     Returns: { "session_id": "<ulid>", "dashboard_url": "..." }
 
 The uploaded WAV is stored at sessions/<id>/<id>.wav (single-channel or
-dual-channel; meetscribe handles both). A new job is enqueued for the
+dual-channel; millet handles both). A new job is enqueued for the
 worker to process.
 """
 from __future__ import annotations

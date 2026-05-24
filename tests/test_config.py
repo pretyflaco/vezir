@@ -16,7 +16,7 @@ def test_meet_binary_prefers_active_python_scripts_dir(monkeypatch, tmp_path):
     meet.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     meet.chmod(0o755)
 
-    monkeypatch.delenv("VEZIR_MEET_BIN", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_BIN", raising=False)
     monkeypatch.setattr(config.sysconfig, "get_path", lambda name: str(scripts_dir) if name == "scripts" else None)
     monkeypatch.setattr(config.shutil, "which", lambda name: None)
 
@@ -24,7 +24,7 @@ def test_meet_binary_prefers_active_python_scripts_dir(monkeypatch, tmp_path):
 
 
 def test_meet_binary_falls_back_to_path(monkeypatch):
-    monkeypatch.delenv("VEZIR_MEET_BIN", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_BIN", raising=False)
     monkeypatch.setattr(config.sysconfig, "get_path", lambda name: None)
     monkeypatch.setattr(config.shutil, "which", lambda name: "/usr/local/bin/meet")
 
@@ -33,8 +33,8 @@ def test_meet_binary_falls_back_to_path(monkeypatch):
 
 def test_meet_device_defaults_to_cpu_on_macos(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
-    monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_COMPUTE_TYPE", raising=False)
     monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(config, "_mps_available", lambda: False)
@@ -45,8 +45,8 @@ def test_meet_device_defaults_to_cpu_on_macos(monkeypatch):
 
 def test_meet_device_defaults_to_mps_on_apple_silicon_when_supported(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
-    monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_COMPUTE_TYPE", raising=False)
     monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(config, "_mps_available", lambda: True)
@@ -61,10 +61,10 @@ def test_meet_device_defaults_to_mps_on_apple_silicon_when_supported(monkeypatch
     assert config.meet_compute_type() == "float32"
 
 
-def test_meet_device_avoids_mps_when_meetscribe_does_not_support_it(monkeypatch):
+def test_meet_device_avoids_mps_when_millet_does_not_support_it(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
-    monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_COMPUTE_TYPE", raising=False)
     monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(config, "_mps_available", lambda: True)
@@ -77,8 +77,8 @@ def test_meet_device_avoids_mps_when_meetscribe_does_not_support_it(monkeypatch)
 
 def test_meet_device_avoids_mps_when_ctranslate2_does_not_support_it(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
-    monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_COMPUTE_TYPE", raising=False)
     monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(config, "_mps_available", lambda: True)
@@ -90,9 +90,9 @@ def test_meet_device_avoids_mps_when_ctranslate2_does_not_support_it(monkeypatch
     assert config.meet_compute_type() == "int8"
 
 
-def test_meet_torch_device_defaults_to_none_without_meetscribe_option(monkeypatch):
+def test_meet_torch_device_defaults_to_none_without_millet_option(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_TORCH_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_TORCH_DEVICE", raising=False)
     monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
 
     assert config.meet_torch_device("cpu") is None
@@ -100,7 +100,7 @@ def test_meet_torch_device_defaults_to_none_without_meetscribe_option(monkeypatc
 
 def test_meet_torch_device_uses_mps_for_split_apple_silicon(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_TORCH_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_TORCH_DEVICE", raising=False)
     monkeypatch.setattr(config, "meet_supports_option", lambda option: option == "--torch-device")
     monkeypatch.setattr(config, "_cuda_available", lambda: False)
     monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
@@ -112,15 +112,15 @@ def test_meet_torch_device_uses_mps_for_split_apple_silicon(monkeypatch):
 
 def test_meet_torch_device_allows_env_override(monkeypatch):
     _clear_config_caches()
-    monkeypatch.setenv("VEZIR_MEET_TORCH_DEVICE", "cpu")
+    monkeypatch.setenv("VEZIR_MILLET_TORCH_DEVICE", "cpu")
     monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
 
     assert config.meet_torch_device("cuda") == "cpu"
 
 
-def test_meet_asr_backend_defaults_to_none_without_meetscribe_option(monkeypatch):
+def test_meet_asr_backend_defaults_to_none_without_millet_option(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_ASR_BACKEND", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_ASR_BACKEND", raising=False)
     monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
 
     assert config.meet_asr_backend() is None
@@ -128,7 +128,7 @@ def test_meet_asr_backend_defaults_to_none_without_meetscribe_option(monkeypatch
 
 def test_meet_asr_backend_uses_mlx_on_apple_silicon(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_ASR_BACKEND", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_ASR_BACKEND", raising=False)
     monkeypatch.setattr(config, "meet_supports_option", lambda option: option == "--asr-backend")
     monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
@@ -139,14 +139,14 @@ def test_meet_asr_backend_uses_mlx_on_apple_silicon(monkeypatch):
 
 def test_meet_asr_backend_allows_env_override(monkeypatch):
     _clear_config_caches()
-    monkeypatch.setenv("VEZIR_MEET_ASR_BACKEND", "whisperx")
+    monkeypatch.setenv("VEZIR_MILLET_ASR_BACKEND", "whisperx")
     monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
 
     assert config.meet_asr_backend() == "whisperx"
 
 
 def test_meet_mlx_model_reads_env_for_supported_mlx_backend(monkeypatch):
-    monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+    monkeypatch.setenv("VEZIR_MILLET_MLX_MODEL", "mlx-community/whisper-tiny")
     monkeypatch.setattr(
         config,
         "meet_supports_option",
@@ -157,7 +157,7 @@ def test_meet_mlx_model_reads_env_for_supported_mlx_backend(monkeypatch):
 
 
 def test_meet_mlx_model_requires_mlx_backend(monkeypatch):
-    monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+    monkeypatch.setenv("VEZIR_MILLET_MLX_MODEL", "mlx-community/whisper-tiny")
     monkeypatch.setattr(
         config,
         "meet_supports_option",
@@ -167,8 +167,8 @@ def test_meet_mlx_model_requires_mlx_backend(monkeypatch):
     assert config.meet_mlx_model("whisperx") is None
 
 
-def test_meet_mlx_model_requires_meetscribe_option(monkeypatch):
-    monkeypatch.setenv("VEZIR_MEET_MLX_MODEL", "mlx-community/whisper-tiny")
+def test_meet_mlx_model_requires_millet_option(monkeypatch):
+    monkeypatch.setenv("VEZIR_MILLET_MLX_MODEL", "mlx-community/whisper-tiny")
     monkeypatch.setattr(config, "meet_supports_option", lambda option: False)
 
     assert config.meet_mlx_model("mlx") is None
@@ -176,8 +176,8 @@ def test_meet_mlx_model_requires_meetscribe_option(monkeypatch):
 
 def test_meet_device_defaults_to_cuda_elsewhere(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
-    monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_COMPUTE_TYPE", raising=False)
     monkeypatch.setattr(config.platform, "system", lambda: "Linux")
     monkeypatch.setattr(config, "_cuda_available", lambda: True)
 
@@ -187,8 +187,8 @@ def test_meet_device_defaults_to_cuda_elsewhere(monkeypatch):
 
 def test_meet_device_defaults_to_cpu_on_linux_without_cuda(monkeypatch):
     _clear_config_caches()
-    monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
-    monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_DEVICE", raising=False)
+    monkeypatch.delenv("VEZIR_MILLET_COMPUTE_TYPE", raising=False)
     monkeypatch.setattr(config.platform, "system", lambda: "Linux")
     monkeypatch.setattr(config, "_cuda_available", lambda: False)
 
@@ -198,8 +198,8 @@ def test_meet_device_defaults_to_cpu_on_linux_without_cuda(monkeypatch):
 
 def test_meet_device_and_compute_type_allow_env_override(monkeypatch):
     _clear_config_caches()
-    monkeypatch.setenv("VEZIR_MEET_DEVICE", "cpu")
-    monkeypatch.setenv("VEZIR_MEET_COMPUTE_TYPE", "float32")
+    monkeypatch.setenv("VEZIR_MILLET_DEVICE", "cpu")
+    monkeypatch.setenv("VEZIR_MILLET_COMPUTE_TYPE", "float32")
 
     assert config.meet_device() == "cpu"
     assert config.meet_compute_type() == "float32"
@@ -255,21 +255,21 @@ def test_ctranslate2_supports_device(monkeypatch):
 
 
 def test_meet_device_warns_for_unknown_env_override(monkeypatch, caplog):
-    monkeypatch.setenv("VEZIR_MEET_DEVICE", "gup")
+    monkeypatch.setenv("VEZIR_MILLET_DEVICE", "gup")
 
     with caplog.at_level(logging.WARNING, logger="vezir.config"):
         assert config.meet_device() == "gup"
 
-    assert "VEZIR_MEET_DEVICE='gup' is not one of the known values" in caplog.text
+    assert "VEZIR_MILLET_DEVICE='gup' is not one of the known values" in caplog.text
 
 
 def test_meet_compute_type_warns_for_unknown_env_override(monkeypatch, caplog):
-    monkeypatch.setenv("VEZIR_MEET_COMPUTE_TYPE", "float9000")
+    monkeypatch.setenv("VEZIR_MILLET_COMPUTE_TYPE", "float9000")
 
     with caplog.at_level(logging.WARNING, logger="vezir.config"):
         assert config.meet_compute_type("cpu") == "float9000"
 
     assert (
-        "VEZIR_MEET_COMPUTE_TYPE='float9000' is not one of the known values"
+        "VEZIR_MILLET_COMPUTE_TYPE='float9000' is not one of the known values"
         in caplog.text
     )

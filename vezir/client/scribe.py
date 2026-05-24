@@ -1,9 +1,9 @@
 """`vezir scribe` — record a meeting locally, then upload to the service.
 
 Records via the ``meet_record.capture`` library directly (gets
-pause/resume for free since meetscribe-record 0.3.0), then uploads
+pause/resume for free since millet-record 0.3.0), then uploads
 to the configured vezir server.  Falls back to subprocess invocation
-of ``meet record`` when the library is not importable -- defensive
+of ``millet record`` when the library is not importable -- defensive
 behavior so older deployments keep working unchanged.
 
 Interactive keystrokes during recording:
@@ -45,13 +45,13 @@ def _meet_bin() -> str:
     found = shutil.which("meet")
     if not found:
         raise RuntimeError(
-            "meetscribe `meet` binary not found in PATH. Install meetscribe-offline."
+            "millet `meet` binary not found in PATH. Install millet-pipeline."
         )
     return found
 
 
 def _check_meet_prerequisites(meet_bin: str) -> None:
-    """Run ``meet check`` to verify recording prerequisites.
+    """Run ``millet check`` to verify recording prerequisites.
 
     On macOS this triggers the TCC permission dialog on first use so the
     user can grant mic + system-audio access interactively. If any
@@ -69,7 +69,7 @@ def _check_meet_prerequisites(meet_bin: str) -> None:
         return
     except subprocess.TimeoutExpired:
         print(
-            "vezir: WARNING: `meet check` timed out — a macOS permission"
+            "vezir: WARNING: `millet check` timed out — a macOS permission"
             " dialog may be waiting behind other windows",
             file=sys.stderr,
             flush=True,
@@ -84,13 +84,40 @@ def _check_meet_prerequisites(meet_bin: str) -> None:
 
 
 def _default_output_dir() -> Path:
-    return Path(os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "meet-recordings")))
+    """Return the default recordings directory (``~/millet-recordings/``).
+
+    PR (vezir 0.4.0 rename): default changed from ``~/meet-recordings`` to
+    ``~/millet-recordings``.  If the legacy directory exists but the new
+    one doesn't, emit a one-time stderr hint suggesting the user move it.
+    No auto-move — pure consent per the rename handoff rule.
+    """
+    explicit = os.environ.get("VEZIR_RECORD_DIR")
+    if explicit:
+        return Path(explicit)
+
+    new_dir = Path.home() / "millet-recordings"
+    legacy_dir = Path.home() / "meet-recordings"
+    if legacy_dir.exists() and not new_dir.exists():
+        global _migration_hint_shown
+        if not _migration_hint_shown:
+            _migration_hint_shown = True
+            print(
+                f"vezir: legacy recordings directory found at {legacy_dir}.\n"
+                f"  millet-record writes to {new_dir} by default.\n"
+                f"  To migrate: mv {legacy_dir} {new_dir}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return new_dir
+
+
+_migration_hint_shown = False
 
 
 def _find_latest_session(output_dir: Path, before: float) -> Path | None:
-    """Find the session directory created by `meet record` after `before`.
+    """Find the session directory created by `millet record` after `before`.
 
-    `meet record` writes to <output_dir>/meeting-<timestamp>/. We pick
+    `millet record` writes to <output_dir>/meeting-<timestamp>/. We pick
     the newest one whose mtime >= before.
     """
     if not output_dir.exists():
@@ -156,7 +183,7 @@ def _record_via_library(
     """Record using meet_record.capture directly.
 
     Gets pause/resume for free (the library exposes them since
-    meetscribe-record 0.3.0).  Interactive ``p`` keystroke toggles
+    millet-record 0.3.0).  Interactive ``p`` keystroke toggles
     pause; Ctrl+C stops and drains.
 
     Returns the path of the produced audio file, or None if the library
@@ -175,14 +202,14 @@ def _record_via_library(
         )
         return None
     try:
-        from meet_record.capture import create_session, check_prerequisites
+        from millet_record.capture import create_session, check_prerequisites
     except ImportError as exc:
         log.debug("meet_record not importable (%s); using subprocess", exc)
         return None
 
     issues = check_prerequisites()
     if issues:
-        # Surface to stderr just like the subprocess path's `meet check`.
+        # Surface to stderr just like the subprocess path's `millet check`.
         print("vezir: recording prerequisites not met:", file=sys.stderr, flush=True)
         for issue in issues:
             print(f"  {issue}", file=sys.stderr, flush=True)
@@ -240,7 +267,7 @@ def _pause_keystroke_loop(session, stop_event: "threading.Event") -> None:
     can still Ctrl+C to stop.
 
     Implementation note: uses ``termios`` + ``select`` for non-blocking
-    cbreak-mode reads.  POSIX only -- the meetscribe-record audio
+    cbreak-mode reads.  POSIX only -- the millet-record audio
     backends only support Linux + macOS anyway, so no Windows
     compatibility shim is needed.
     """
@@ -300,7 +327,7 @@ def _record_via_subprocess(
     output_dir: Path,
     extra_record_args: list[str] | None,
 ) -> Path | None:
-    """Fallback: spawn ``meet record`` as a subprocess.
+    """Fallback: spawn ``millet record`` as a subprocess.
 
     Used when:
       * meet_record library is not importable (older deployments)
@@ -333,7 +360,7 @@ def _record_via_subprocess(
 
     if proc.returncode not in (0, -signal.SIGINT):
         print(
-            f"vezir: WARNING: meet record exited with code {proc.returncode}",
+            f"vezir: WARNING: millet record exited with code {proc.returncode}",
             file=sys.stderr,
         )
 
@@ -489,7 +516,7 @@ def run_scribe(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Try the library-direct path first (gets pause/resume).  Falls
-    # back to subprocess invocation of `meet record` when:
+    # back to subprocess invocation of `millet record` when:
     #   * meet_record library isn't importable, or
     #   * caller passed extra_record_args we don't translate yet.
     audio = _record_via_library(output_dir, extra_record_args)

@@ -1,7 +1,7 @@
 """Central voiceprint DB management for vezir.
 
 Vezir owns its own profile DB at ~/vezir-data/speaker_profiles.json. The
-worker exposes this DB to unmodified meetscribe via the per-job HOME shim
+worker exposes this DB to unmodified millet via the per-job HOME shim
 (see meet_runner.build_home_shim). The schema matches what
 meet/voiceprint.py:88 (load_profiles) expects.
 
@@ -40,7 +40,7 @@ def list_known_names() -> list[str]:
 
 
 def seed_from(source: Path, *, merge: bool = False) -> dict:
-    """Copy or merge an existing meetscribe profiles file into vezir.
+    """Copy or merge an existing millet profiles file into vezir.
 
     Args:
         source: Path to the source profiles file.

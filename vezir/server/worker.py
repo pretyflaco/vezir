@@ -1,15 +1,15 @@
-"""Queue worker: drains the job queue, runs meetscribe pipeline.
+"""Queue worker: drains the job queue, runs millet pipeline.
 
 Single-worker, single-job-at-a-time. Runs in a background thread inside
 the FastAPI process. For larger deployments this would split into a
 separate process; for v0 we keep it simple.
 
 Pipeline per job:
-  1. transcribe (meet transcribe <session-dir>) — produces .txt/.srt/.json/.summary.md/.pdf
-  2. label --auto (meet label --auto --no-audio --no-summary <session-dir>)
+  1. transcribe (millet transcribe <session-dir>) — produces .txt/.srt/.json/.summary.md/.pdf
+  2. label --auto (millet label --auto --no-audio --no-summary <session-dir>)
         — applies confident voiceprint matches, leaves unknowns as REMOTE_N
   3. detect unknowns:
-        if all speakers identified → status=syncing → meet sync → status=done
+        if all speakers identified → status=syncing → millet sync → status=done
         else → status=needs_labeling → wait for human via web UI
   4. on completion (whether after auto or after human labeling), audio
      WAV is deleted to honor the storage policy.
@@ -32,7 +32,7 @@ POLL_INTERVAL_SEC = 2.0
 
 
 def _skip_sync() -> bool:
-    """If VEZIR_SKIP_SYNC is set to a truthy value, skip the meet sync step.
+    """If VEZIR_SKIP_SYNC is set to a truthy value, skip the millet sync step.
 
     Useful for early dogfood / pilot when no team-wide sync target has been
     decided yet. The artifacts remain in ~/vezir-data/sessions/<id>/.
@@ -49,7 +49,7 @@ def _delete_audio_enabled() -> bool:
     return os.environ.get("VEZIR_DELETE_AUDIO", "").lower() in ("1", "true", "yes")
 
 
-# `meet sync` exits 0 even on git clone/push failures (it catches the
+# `millet sync` exits 0 even on git clone/push failures (it catches the
 # RuntimeError and just prints a warning). Vezir scans the log tail for
 # these markers to detect silent failures.
 _SYNC_FAILURE_MARKERS = (
@@ -63,9 +63,9 @@ _SYNC_FAILURE_MARKERS = (
 
 
 def _sync_log_indicates_failure(log_path: Path) -> str | None:
-    """Scan the most recent `meet sync` block of the log for failure markers.
+    """Scan the most recent `millet sync` block of the log for failure markers.
 
-    Only inspects lines after the most recent '--- ... meet sync' marker,
+    Only inspects lines after the most recent '--- ... millet sync' marker,
     so prior stanzas (transcribe, label) don't bleed in.
 
     Returns the matched marker line if a failure was found, else None.
@@ -77,7 +77,7 @@ def _sync_log_indicates_failure(log_path: Path) -> str | None:
     except Exception:
         return None
     # Find last sync block
-    idx = text.rfind("meet sync ")
+    idx = text.rfind("millet sync ")
     tail = text[idx:] if idx >= 0 else text
     for line in tail.splitlines():
         for marker in _SYNC_FAILURE_MARKERS:
@@ -129,7 +129,7 @@ _SUMMARY_ERROR_RE = re.compile(
 def _extract_summary_error(log_path: Path) -> str | None:
     """Extract a human-readable summary error from the job log.
 
-    Scans the last ~2 KiB for meetscribe's preset-guard RuntimeError
+    Scans the last ~2 KiB for millet's preset-guard RuntimeError
     message (e.g. "summary failed for preset 'confidential': ...").
     Returns the full matched line, or None if not found.
     """
@@ -192,7 +192,7 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
     non-transcript suffixes, but ``.frontmatter.json`` (and any future
     sidecar) slipped through and was treated as the transcript.
     Now positively selects ``<session_dir.name>.json`` — the canonical
-    transcript filename that meetscribe produces.
+    transcript filename that millet produces.
     """
     import json as _json
 
@@ -245,9 +245,9 @@ def process_one(job: dict) -> None:
         rc = meet_runner.transcribe(sd, job_id, log_path, summary_preset=requested_preset)
 
         # Distinguish between transcription failures and summary-only
-        # failures.  When `meet transcribe` exits non-zero *and* a preset
+        # failures.  When `millet transcribe` exits non-zero *and* a preset
         # was requested, the failure may be summary-only (the preset guard
-        # in meetscribe raises RuntimeError after the transcript is already
+        # in millet raises RuntimeError after the transcript is already
         # on disk).  If we have transcript artifacts (.txt, .json), the
         # transcription itself succeeded and we should treat this as a
         # partial success: mark the job `done` with a `summary_error` so
@@ -272,7 +272,7 @@ def process_one(job: dict) -> None:
                 # Genuine transcription failure.
                 queue.update_status(
                     job_id, "error",
-                    error=_error_with_tail(f"meet transcribe exited {rc}", log_path),
+                    error=_error_with_tail(f"millet transcribe exited {rc}", log_path),
                 )
                 return
 
@@ -316,7 +316,7 @@ def process_one(job: dict) -> None:
         #    - per-job sync_enabled flag (user-side opt-out at upload)
         sync_enabled = bool(job.get("sync_enabled", 1))
         if _skip_sync():
-            log.info("job %s: VEZIR_SKIP_SYNC set, skipping meet sync", job_id)
+            log.info("job %s: VEZIR_SKIP_SYNC set, skipping millet sync", job_id)
         elif not sync_enabled:
             log.info(
                 "job %s: sync_enabled=0; keeping session local-only",
@@ -327,16 +327,16 @@ def process_one(job: dict) -> None:
             rc = meet_runner.sync(sd, job_id, log_path)
             if rc != 0:
                 sync_err_msg = _error_with_tail(
-                    f"meet sync exited {rc}", log_path,
+                    f"millet sync exited {rc}", log_path,
                 )
                 log.warning("job %s: sync failed: %s", job_id, sync_err_msg)
             else:
-                # `meet sync` may exit 0 even when git clone/push failed.
+                # `millet sync` may exit 0 even when git clone/push failed.
                 # Inspect the log for failure markers.
                 failure = _sync_log_indicates_failure(log_path)
                 if failure:
                     sync_err_msg = _error_with_tail(
-                        f"meet sync failed silently: {failure}", log_path,
+                        f"millet sync failed silently: {failure}", log_path,
                     )
                     log.warning(
                         "job %s: sync silent failure: %s", job_id, failure,
@@ -446,10 +446,10 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
     """Re-run summary generation for a completed session.
 
     Called when the user requests a summary retry (e.g. after a transient
-    Tinfoil/network failure).  Uses meetscribe's ``apply_labels()`` API
+    Tinfoil/network failure).  Uses millet's ``apply_labels()`` API
     directly (in-process, not via subprocess) with an empty label_map and
     ``regenerate_summary=True``.  This avoids the interactive-prompt bug
-    that made the previous subprocess approach (``meet label --auto``)
+    that made the previous subprocess approach (``millet label --auto``)
     abort on unrecognized speakers.
     """
     sd = _session_dir(session_id)
@@ -472,7 +472,7 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
             summary_error=None,  # clear previous summary error
         )
 
-        # Run apply_labels in-process with the HOME shim so meetscribe
+        # Run apply_labels in-process with the HOME shim so millet
         # picks up the correct voiceprint DB and config paths.
         summary_err: str | None = None
         home = meet_runner.build_home_shim(session_id)
@@ -483,7 +483,7 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
             def _progress(msg: str) -> None:
                 log.info("retry-summary %s: %s", session_id, msg)
 
-            from meet.label import apply_labels
+            from millet.label import apply_labels
             apply_labels(
                 sd,
                 label_map={},
@@ -530,7 +530,7 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
             src = meet_runner.sync(sd, session_id, log_path)
             if src != 0:
                 sync_err_msg = _error_with_tail(
-                    f"meet sync exited {src}", log_path,
+                    f"millet sync exited {src}", log_path,
                 )
                 log.warning(
                     "retry-summary %s: sync failed: %s",
@@ -540,7 +540,7 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
                 failure = _sync_log_indicates_failure(log_path)
                 if failure:
                     sync_err_msg = _error_with_tail(
-                        f"meet sync failed silently: {failure}", log_path,
+                        f"millet sync failed silently: {failure}", log_path,
                     )
                     log.warning(
                         "retry-summary %s: sync silent failure: %s",
@@ -564,16 +564,16 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
 def finalize_after_labeling(session_id: str) -> None:
     """Called when the web UI saves human labels.
 
-    Re-runs `meet label` (with summary regeneration) via subprocess so the
+    Re-runs `millet label` (with summary regeneration) via subprocess so the
     artifacts reflect the new names, then syncs, deletes audio, marks done.
     """
     sd = _session_dir(session_id)
     log_path = _job_log_path(session_id)
 
     try:
-        # meet label without --auto and without --no-summary will regenerate
+        # millet label without --auto and without --no-summary will regenerate
         # everything based on already-applied labels in labels.json. But since
-        # vezir's web UI applies labels via meetscribe's apply_labels()
+        # vezir's web UI applies labels via millet's apply_labels()
         # directly (see labels.py), the artifacts are already regenerated.
         # All that remains is sync (or not — both VEZIR_SKIP_SYNC and the
         # per-job sync_enabled flag can independently veto).
@@ -582,7 +582,7 @@ def finalize_after_labeling(session_id: str) -> None:
         sync_err_msg: str | None = None
         if _skip_sync():
             log.info(
-                "post-labeling: VEZIR_SKIP_SYNC set, skipping meet sync for %s",
+                "post-labeling: VEZIR_SKIP_SYNC set, skipping millet sync for %s",
                 session_id,
             )
         elif not sync_enabled:
@@ -595,7 +595,7 @@ def finalize_after_labeling(session_id: str) -> None:
             rc = meet_runner.sync(sd, session_id, log_path)
             if rc != 0:
                 sync_err_msg = _error_with_tail(
-                    f"meet sync exited {rc}", log_path,
+                    f"millet sync exited {rc}", log_path,
                 )
                 log.warning(
                     "post-labeling sync %s failed: %s",
@@ -605,7 +605,7 @@ def finalize_after_labeling(session_id: str) -> None:
                 failure = _sync_log_indicates_failure(log_path)
                 if failure:
                     sync_err_msg = _error_with_tail(
-                        f"meet sync failed silently: {failure}", log_path,
+                        f"millet sync failed silently: {failure}", log_path,
                     )
                     log.warning(
                         "post-labeling sync %s silent failure: %s",

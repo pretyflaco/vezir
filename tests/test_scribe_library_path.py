@@ -6,7 +6,7 @@ Confirms:
       * meet_record library not importable, OR
       * caller passed extra_record_args we don't translate yet.
   * ``_record_via_subprocess`` (the fallback path) honors
-    extra_record_args and calls the legacy ``meet record`` binary.
+    extra_record_args and calls the legacy ``millet record`` binary.
   * ``run_scribe`` automatically falls back to subprocess when the
     library path returns None.
 
@@ -31,7 +31,7 @@ def test_library_path_returns_none_when_extra_args_present(monkeypatch, tmp_path
 
 
 def test_library_path_returns_none_when_meet_record_missing(monkeypatch, tmp_path):
-    """Simulate a deployment where meetscribe-record is not installed."""
+    """Simulate a deployment where millet-record is not installed."""
     from vezir.client import scribe
     import builtins
     real_import = builtins.__import__
@@ -47,7 +47,7 @@ def test_library_path_returns_none_when_meet_record_missing(monkeypatch, tmp_pat
 
 
 def test_subprocess_fallback_invokes_meet_record(monkeypatch, tmp_path):
-    """The subprocess fallback should spawn `meet record -o <dir>` and
+    """The subprocess fallback should spawn `millet record -o <dir>` and
     return the produced audio path on success."""
     from vezir.client import scribe
 
@@ -71,7 +71,7 @@ def test_subprocess_fallback_invokes_meet_record(monkeypatch, tmp_path):
 
     monkeypatch.setattr(scribe.subprocess, "Popen", fake_popen)
 
-    # Simulate the session dir + audio file that meet record would
+    # Simulate the session dir + audio file that millet record would
     # have produced.
     sdir = tmp_path / "meeting-fake"
     sdir.mkdir()

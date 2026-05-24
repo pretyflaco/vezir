@@ -33,13 +33,14 @@ classifiers = [
     "Topic :: Office/Business",
 ]
 dependencies = [
-    # Client-side base. Includes meetscribe-record for `vezir scribe`'s
-    # capture wrapper. Does NOT pull in transcription / diarization /
-    # summarization deps; those land via `pip install vezir[server]`.
+    # Client-side base.  Includes millet-record (formerly
+    # meetscribe-record) for `vezir scribe`'s capture wrapper.  Does
+    # NOT pull in transcription / diarization / summarization deps;
+    # those land via `pip install vezir[server]`.
     "click>=8.0",
     "httpx>=0.27",
     "ulid-py>=1.1",
-    "meetscribe-record>=0.3.0",
+    "millet-record>=0.4.0",
 ]
 
 [project.scripts]
@@ -66,24 +67,24 @@ vezir = [
 
 [tool.setuptools.dynamic]
 # Single source of truth lives at vezir/__init__.py:__version__.
-# Mirrors the pattern used in meetscribe-record since M6c.i.
+# Mirrors the pattern used in millet-record (formerly meetscribe-record)
+# since M6c.i.
 version = {attr = "vezir.__version__"}
 
 [project.optional-dependencies]
-# Server side: full FastAPI app + worker that shells out to meetscribe-offline
-# (transcribe, label, sync). Install on the GPU box that runs `vezir serve`.
+# Server side: full FastAPI app + worker that shells out to millet
+# (transcribe, label, sync).  Install on the GPU box that runs `vezir serve`.
 server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
     "jinja2>=3.1",
-    # vezir 0.1.11's worker shells out to `meet transcribe --summary-preset
-    # <id>` (introduced in meetscribe-offline 0.8.0) and relies on
-    # apply_labels() accepting the summary_preset kwarg (fixed in 0.8.1).
-    # Pin to >= 0.8.1 so a fresh `pip install vezir[server]` gets the
-    # preset-aware meetscribe rather than a pre-0.8 version that would
-    # crash when the worker spawns meet with --summary-preset.
-    "meetscribe-offline>=0.8.3",
+    # vezir 0.4.0's worker shells out to `millet transcribe --summary-preset
+    # <id>` and relies on apply_labels() accepting the summary_preset kwarg.
+    # Pin to >= 0.9.0 (the rename release of meetscribe-offline) so a
+    # fresh `pip install vezir[server]` gets the renamed pipeline that
+    # matches the rest of the vezir 0.4.0 stack.
+    "millet-pipeline>=0.9.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

@@ -6,7 +6,7 @@
 </p>
 
 Self-hosted scribe service for team-scale meeting capture. Vezir wraps
-[meetscribe](https://github.com/pretyflaco/meetscribe) and turns it into a
+[millet](https://github.com/pretyflaco/millet) and turns it into a
 multi-user, VPN-hosted service: a designated scribe records a meeting
 on their laptop, the audio uploads to a central GPU-equipped box, and the
 team gets back a diarized transcript, AI summary, and PDF — with speaker
@@ -14,10 +14,19 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.3.1). Designed for small teams that want to keep meeting audio
+Alpha (0.4.0). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one private mesh VPN + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
 Full release history in [`CHANGELOG.md`](CHANGELOG.md).
+
+> **What's new in 0.4.0**: the underlying meeting-transcription package
+> has been renamed `meetscribe` → `millet` (named after the Ottoman
+> *millet system*).  Distribution names on PyPI are
+> [`millet-pipeline`](https://pypi.org/project/millet-pipeline/) and
+> [`millet-record`](https://pypi.org/project/millet-record/).  The
+> `meet` CLI continues to work as a deprecation alias of the new
+> `millet` CLI for two minor versions.  Vezir 0.4.0 pins these
+> renamed packages; the wire format is unchanged.
 
 **Highlights of the 0.3.x line (current):**
 
@@ -88,7 +97,7 @@ ships the same three opt-outs + preset selector + the `--personal`
 flag).  On Apple Silicon the server auto-selects MLX Whisper ASR +
 PyTorch MPS when available, falling back to CPU/MPS-split mode otherwise.
 
-Requires **`meetscribe-offline >= 0.8.3`** (pinned via the `[server]`
+Requires **`millet-pipeline >= 0.8.3`** (pinned via the `[server]`
 extra).  0.8.x adds the preset system, the Tinfoil TEE backend, the
 CONFIDENTIAL PDF watermark, and several voiceprint / relabel
 correctness fixes that vezir's worker depends on.  0.8.3 specifically
@@ -116,9 +125,9 @@ silent retry-summary "success" without an actual summary.
   vezir gui            ──▶            worker
    (Tk full UI; recorder                 │ shells out via HOME-shim
     + sessions list)                     ▼
-                                       meet transcribe --summary-preset <id>
-  vezir upload <file>  ──▶             meet label --auto  (if auto_label_enabled)
-   (resume any WAV/OGG)                meet sync          (if sync_enabled
+                                       millet transcribe --summary-preset <id>
+  vezir upload <file>  ──▶             millet label --auto  (if auto_label_enabled)
+   (resume any WAV/OGG)                millet sync          (if sync_enabled
                                                            and not personal
   vezir-android (Kotlin) ──▶                               and VEZIR_SKIP_SYNC unset)
                                                   ──▶ private git repo
@@ -167,7 +176,7 @@ internal CAs.)
 A preset picks the backend + model the server will use for the AI
 summary.  The client sends the preset id as the multipart form field
 `summary_preset`; the worker passes it to
-`meet transcribe --summary-preset <id>` which meetscribe resolves to
+`millet transcribe --summary-preset <id>` which millet resolves to
 a `(backend, model)` pair.
 
 | Preset | Backend | Model | Use case |
@@ -190,8 +199,8 @@ Set the preset via:
   EncryptedSharedPreferences; default `confidential` on Android)
 
 The server needs the matching backend credentials/SDK installed.  On
-muscle, the Tinfoil SDK is pulled by the `[tee]` extra of meetscribe-
-offline (`pip install 'meetscribe-offline[tee]'`) and the API key
+muscle, the Tinfoil SDK is pulled by the `[tee]` extra of millet-
+offline (`pip install 'millet-pipeline[tee]'`) and the API key
 lives in `TINFOIL_API_KEY` or at `~/models/tinfoil/tinfoil.txt`.
 
 ## Privacy toggles
@@ -203,7 +212,7 @@ OFF and is **per-recording only — never persisted** (treating the
 
 | Toggle | Default | When set | Persisted? |
 |---|---|---|---|
-| `auto_label` | ON | OFF skips `meet label --auto`; session always routes to manual labeling.  Useful when you don't want the server attempting to identify speakers from previously enrolled voiceprints. | Yes (`~/.config/vezir/client.json`) |
+| `auto_label` | ON | OFF skips `millet label --auto`; session always routes to manual labeling.  Useful when you don't want the server attempting to identify speakers from previously enrolled voiceprints. | Yes (`~/.config/vezir/client.json`) |
 | `sync` | ON | OFF keeps the session local-only (status `done (local-only)` on the dashboard).  Artifacts stay on the vezir server but aren't pushed to the configured destination repo. | Yes (`~/.config/vezir/client.json`) |
 | `personal` | OFF | ON marks the session "Personal" in the UI, forces `sync` off for this recording regardless of session default, and keeps the session private to the uploader.  Useful for 1:1s, draft notes, anything you might not want to publish even if you forget to flip the sync toggle. | **No** — per-recording only |
 
@@ -312,15 +321,15 @@ or `~/.config/vezir/` (client preferences).
 | **Scribe client (CLI only)** | `pip install --user vezir` | ~30 MB |
 | **Scribe client + Textual TUI** *(recommended for desktop)* | `pip install --user 'vezir[tui]'` | ~35 MB |
 | **Scribe client + Tkinter GUI / scribe-widget** | `pip install --user 'vezir[gui]'` plus `apt install python3-tk` (Debian/Ubuntu) | ~30 MB |
-| **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB on Linux/CUDA (meetscribe-offline = whisperx + torch + pyannote); on Apple Silicon also pulls `mlx-whisper` for the MLX ASR backend (~few hundred MB extra) |
+| **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB on Linux/CUDA (millet-pipeline = whisperx + torch + pyannote); on Apple Silicon also pulls `mlx-whisper` for the MLX ASR backend (~few hundred MB extra) |
 
 You can combine extras: `pip install --user 'vezir[tui,gui]'` gets you
 both the TUI and the Tkinter widgets on the same box.
 
 The split is enforced by `pyproject.toml`'s `[project.optional-dependencies]`:
-the base install uses [meetscribe-record](https://github.com/pretyflaco/meetscribe-record)
+the base install uses [millet-record](https://github.com/pretyflaco/millet-record)
 (capture only). The `[tui]` extra adds [Textual](https://textual.textualize.io/);
-the `[server]` extra adds [meetscribe-offline](https://github.com/pretyflaco/meetscribe)
+the `[server]` extra adds [millet-pipeline](https://github.com/pretyflaco/millet)
 for the heavy transcription/diarization/summarization pipeline.
 
 On Apple Silicon, the same `[server]` extra additionally installs
@@ -336,13 +345,13 @@ git clone https://github.com/pretyflaco/vezir.git
 cd vezir
 pip install --user -e '.[server]'
 
-# Seed voiceprints from existing meetscribe profile DB
+# Seed voiceprints from existing millet profile DB
 mkdir -p ~/vezir-data
 vezir voiceprints seed --from ~/.config/meet/speaker_profiles.json
 
 # Sync target — sandbox repo for development.
-# vezir's worker invokes `meet sync --force --meeting-type sandbox-<HHMMSSZ>-<rand>`
-# which bypasses meetscribe's schedule and team-presence gates and
+# vezir's worker invokes `millet sync --force --meeting-type sandbox-<HHMMSSZ>-<rand>`
+# which bypasses millet's schedule and team-presence gates and
 # guarantees a unique per-session folder. Every successful job lands in
 # meetings/<date>_sandbox-<HHMMSSZ>-<rand>/ on the configured repo
 # (e.g. meetings/2026-04-25_sandbox-194051Z-VZJJ3P/).
@@ -403,7 +412,7 @@ This is intentionally pointed at a private **dev sandbox** repo
 (`pretyflaco/vezir-meetings`) during the pilot. Two reasons:
 
 - production meeting-archive repos (e.g. `blinkbitcoin/blink-wip`) get
-  schedule + team-presence gating from meetscribe; vezir uses `--force`
+  schedule + team-presence gating from millet; vezir uses `--force`
   to override that, which is appropriate for a dev sandbox but not for
   production
 - vezir may rewrite history or recreate the repo while the pipeline is
@@ -411,13 +420,13 @@ This is intentionally pointed at a private **dev sandbox** repo
 
 To graduate to production: change `repo_url` in
 `~/vezir-data/sync_config.json`, drop `--force` (planned: env var
-`VEZIR_SYNC_FORCE=0`), and let meetscribe's existing schedule/team-gate
+`VEZIR_SYNC_FORCE=0`), and let millet's existing schedule/team-gate
 decide what to push.
 
 ## Quick start (scribe client)
 
 ```bash
-# Install vezir + meetscribe-record (lightweight; ~30 MB base).
+# Install vezir + millet-record (lightweight; ~30 MB base).
 pip install --user vezir
 
 # Add the Textual TUI (recommended for daily desktop use; ~5 MB extra).
@@ -485,12 +494,12 @@ HttpOnly cookie before it lands on the session page; subsequent access
 from the same browser does not require re-passing the token.
 
 Live client recordings remain on the scribe machine under
-`~/meet-recordings/` by default. `vezir status` is a server-side/local
+`~/millet-recordings/` by default. `vezir status` is a server-side/local
 diagnostic command; on a thin client it inspects that machine's local
 `~/vezir-data` and does not query the remote server.
 
 Standalone uploads currently accept `.wav` and `.ogg`, matching what the
-server-side meetscribe pipeline consumes from session folders. Use
+server-side millet pipeline consumes from session folders. Use
 `vezir upload --compress file.wav` to compress a WAV to OGG/Opus before
 uploading. Other formats such as `.mp3`, `.m4a`, and `.webm` should be
 transcoded to WAV/OGG first until server-side transcoding is added.
@@ -502,7 +511,7 @@ reject incomplete uploads instead of processing partial meetings.
 ### macOS thin client (Apple Silicon)
 
 The same `pip install vezir` command works on macOS Apple Silicon. The base
-install pulls `meetscribe-record`, which ships a Swift sidecar binary
+install pulls `millet-record`, which ships a Swift sidecar binary
 (`meet-record-mac`) inside the macOS arm64 wheel. This binary captures mic +
 system audio via Apple's native APIs (AVAudioEngine + Core Audio Process Tap)
 — no virtual audio drivers, no reboot, no Audio MIDI Setup configuration.
@@ -518,10 +527,10 @@ vezir scribe --title "team sync"
 
 The server handles transcription, diarization, labeling, and sync. The Mac
 only needs to record and upload — total install footprint is ~31 MB vs ~5 GB
-for the full end-to-end (`meetscribe-offline[mlx]`) pipeline.
+for the full end-to-end (`millet-pipeline[mlx]`) pipeline.
 
 For end-to-end local transcription on Apple Silicon (no server needed), see
-[meetscribe](https://github.com/pretyflaco/meetscribe) directly.
+[millet](https://github.com/pretyflaco/millet) directly.
 
 ## Environment variables
 
@@ -538,20 +547,20 @@ For end-to-end local transcription on Apple Silicon (no server needed), see
 | `VEZIR_SUMMARY_PRESET` | unset | Default summarization preset (`high-quality` \| `confidential` \| `alternative`).  Read by CLI / TUI / GUI as the initial value when `~/.config/vezir/client.json` has no `summary_preset` key.  CLI `--preset` flag takes precedence. |
 | `VEZIR_TUI_DISABLE_NOTIFY_POLL` | unset | Set to `1` to disable the TUI's background "needs labeling" poll (runs every 60s by default).  Mostly useful in tests; also handy if you find the notifications noisy. |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
-| `VEZIR_MEET_BIN` | `$(which meet)` | Path to meetscribe `meet` binary |
-| `VEZIR_MEET_DEVICE` | `mps` on Apple Silicon when supported by the installed meetscribe stack, `cuda` when CUDA is available elsewhere, otherwise `cpu` | Device passed to `meet transcribe` |
-| `VEZIR_MEET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA, `float32` on MPS | Compute type passed to `meet transcribe` |
-| `VEZIR_MEET_TORCH_DEVICE` | auto | PyTorch device passed to `meet transcribe --torch-device` when the installed meetscribe supports split ASR/PyTorch devices |
-| `VEZIR_MEET_ASR_BACKEND` | `mlx` on Apple Silicon when available | ASR backend passed to `meet transcribe --asr-backend` when supported |
-| `VEZIR_MEET_MLX_MODEL` | meetscribe default | MLX Whisper model path/repo passed to `meet transcribe --mlx-model` |
-| `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely (server-side kill switch; wins over per-job `sync_enabled=1`). |
+| `VEZIR_MEET_BIN` | `$(which meet)` | Path to millet `meet` binary |
+| `VEZIR_MEET_DEVICE` | `mps` on Apple Silicon when supported by the installed millet stack, `cuda` when CUDA is available elsewhere, otherwise `cpu` | Device passed to `millet transcribe` |
+| `VEZIR_MEET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA, `float32` on MPS | Compute type passed to `millet transcribe` |
+| `VEZIR_MEET_TORCH_DEVICE` | auto | PyTorch device passed to `millet transcribe --torch-device` when the installed millet supports split ASR/PyTorch devices |
+| `VEZIR_MEET_ASR_BACKEND` | `mlx` on Apple Silicon when available | ASR backend passed to `millet transcribe --asr-backend` when supported |
+| `VEZIR_MEET_MLX_MODEL` | millet default | MLX Whisper model path/repo passed to `millet transcribe --mlx-model` |
+| `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `millet sync` step entirely (server-side kill switch; wins over per-job `sync_enabled=1`). |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
-| `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |
+| `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `millet sync --force`. Will be removed once vezir respects schedules. |
 | `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
 | `VEZIR_DISABLE_RATELIMIT` | unset | Set to `1` to disable the in-process rate limiter. Test/CI only. |
 
-On Apple Silicon, vezir prefers meetscribe's MLX Whisper ASR backend when
-`mlx-whisper` is installed and the installed `meet transcribe` supports
+On Apple Silicon, vezir prefers millet's MLX Whisper ASR backend when
+`mlx-whisper` is installed and the installed `millet transcribe` supports
 `--asr-backend`. Alignment and diarization still use PyTorch, so vezir also
 passes `--torch-device mps` when that option is available. If MLX ASR is not
 available, the fallback Apple Silicon route is CPU ASR via CTranslate2 plus

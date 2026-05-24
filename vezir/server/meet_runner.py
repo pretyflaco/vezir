@@ -1,6 +1,6 @@
-"""Subprocess wrapper around unmodified meetscribe.
+"""Subprocess wrapper around unmodified millet.
 
-Vezir does not patch meetscribe. To redirect meetscribe's hardcoded
+Vezir does not patch millet. To redirect millet's hardcoded
 voiceprint path (~/.config/meet/speaker_profiles.json), each job runs
 `meet` with HOME pointed at a per-job shim directory whose
 .config/meet/speaker_profiles.json is a symlink to the central vezir
@@ -28,10 +28,10 @@ def _real_home() -> Path:
 
 
 def build_home_shim(job_id: str) -> Path:
-    """Create a per-job HOME shim used as $HOME when invoking meetscribe.
+    """Create a per-job HOME shim used as $HOME when invoking millet.
 
     The shim is a directory whose top-level entries are symlinks back to
-    the real user's home. Only meetscribe's voiceprint database is
+    the real user's home. Only millet's voiceprint database is
     redirected to vezir's central DB. Everything else (.local site
     packages, .cache model downloads, .bashrc, etc.) is transparently
     available to the subprocess, so `meet` and its transitive deps work
@@ -129,9 +129,9 @@ def _env_for_meet(home: Path) -> dict:
     env["HOME"] = str(home)
     # Make sure XDG_CONFIG_HOME doesn't override our shim.
     env.pop("XDG_CONFIG_HOME", None)
-    # Belt-and-suspenders: explicitly tell meetscribe where the profile DB
+    # Belt-and-suspenders: explicitly tell millet where the profile DB
     # lives, in addition to the symlink in the HOME shim.  The env var is
-    # respected by meetscribe >=0.8.2's _default_profiles_path().
+    # respected by millet >=0.8.2's _default_profiles_path().
     env["MEET_PROFILES_PATH"] = str(config.speaker_profiles_path())
     return env
 
@@ -161,7 +161,7 @@ def run_meet(args: list[str], job_id: str, log_path: Path | None = None) -> int:
 
 
 def build_transcribe_args(session_dir: Path, *, summary_preset: str | None = None) -> list[str]:
-    """Build the `meet transcribe` argument list for a session directory."""
+    """Build the `millet transcribe` argument list for a session directory."""
     device = config.meet_device()
     compute_type = config.meet_compute_type(device)
     torch_device = config.meet_torch_device(device)
@@ -188,13 +188,13 @@ def build_transcribe_args(session_dir: Path, *, summary_preset: str | None = Non
 
 def transcribe(session_dir: Path, job_id: str, log_path: Path,
                *, summary_preset: str | None = None) -> int:
-    """Run `meet transcribe` on a session directory with --auto labeling.
+    """Run `millet transcribe` on a session directory with --auto labeling.
 
-    The session_dir must contain the .wav file produced by `meet record`
+    The session_dir must contain the .wav file produced by `millet record`
     (or by vezir's upload handler unpacking the upload).
     """
-    # `meet transcribe` accepts either a .wav path or a session dir. We
-    # pass the dir to keep the layout compatible with `meet sync` later.
+    # `millet transcribe` accepts either a .wav path or a session dir. We
+    # pass the dir to keep the layout compatible with `millet sync` later.
     return run_meet(
         build_transcribe_args(session_dir, summary_preset=summary_preset),
         job_id=job_id,
@@ -203,7 +203,7 @@ def transcribe(session_dir: Path, job_id: str, log_path: Path,
 
 
 def label_auto(session_dir: Path, job_id: str, log_path: Path) -> int:
-    """Run `meet label --auto` against the central voiceprint DB.
+    """Run `millet label --auto` against the central voiceprint DB.
 
     Confident matches are applied; unknowns remain as REMOTE_N.
     `--no-audio` keeps it non-interactive (no ffplay).
@@ -233,7 +233,7 @@ def ensure_session_json(session_dir: Path, session_id: str) -> Path:
     Meetscribe's `_date_from_session` (meet/sync.py:321) checks first the
     directory name (which for vezir is a bare ULID, no date prefix) and
     falls back to reading `*.session.json` for `started_at`. Without an
-    injected session.json, meetscribe falls all the way through to
+    injected session.json, millet falls all the way through to
     datetime.now() at sync time, which is wrong (it's the worker's clock,
     not the meeting's start). For a vezir-uploaded session, the closest
     proxy for "meeting started" is the ULID's embedded timestamp.
@@ -283,12 +283,12 @@ def _meeting_type_for(session_id: str, base: str = "sandbox") -> str:
 
 
 def sync(session_dir: Path, job_id: str, log_path: Path) -> int:
-    """Push session to vezir's configured meetscribe sync target.
+    """Push session to vezir's configured millet sync target.
 
     During the sandbox phase, vezir uses --force with a per-session
     meeting type derived from the session ULID, so each session gets a
     unique folder under `meetings/` regardless of when it was recorded.
-    This bypasses the schedule + team-presence gating that the meetscribe
+    This bypasses the schedule + team-presence gating that the millet
     CLI applies for the personal flow.
 
     Resulting layout in the sync repo:
@@ -299,7 +299,7 @@ def sync(session_dir: Path, job_id: str, log_path: Path) -> int:
     The base is configurable via VEZIR_SYNC_MEETING_TYPE (default 'sandbox').
     """
     base = os.environ.get("VEZIR_SYNC_MEETING_TYPE", "sandbox")
-    # Ensure meetscribe can extract the meeting date from the session.
+    # Ensure millet can extract the meeting date from the session.
     ensure_session_json(session_dir, job_id)
     meeting_type = _meeting_type_for(job_id, base=base)
     return run_meet(

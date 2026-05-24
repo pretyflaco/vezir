@@ -2,14 +2,14 @@
 
 Mirrors vezir-android's ``net/AudioClipPlayer.kt`` (MediaPlayer over
 HTTPS-cached WAVs) with the desktop equivalent: shell out to ffplay
-(bundled with ffmpeg, already a meetscribe-record dep) to play a
+(bundled with ffmpeg, already a millet-record dep) to play a
 locally-cached WAV.  The TUI's label screen passes one of these
 players around so play/stop interactions stay snappy without blocking
 the event loop on subprocess startup.
 
 Why ffplay and not e.g. simpleaudio / pyaudio:
 
-* Already on every machine that runs meetscribe-record (ffmpeg is a
+* Already on every machine that runs millet-record (ffmpeg is a
   required dep on Linux + macOS).  Zero new pip deps.
 * Decodes everything ffmpeg can decode -- no need to worry about WAV
   vs OGG vs MP3 vs whatever the server hands us next.

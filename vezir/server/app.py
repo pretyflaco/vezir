@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="vezir",
-        description="Internal scribe service wrapping meetscribe.",
+        description="Internal scribe service wrapping millet.",
         version=__version__,
     )
 

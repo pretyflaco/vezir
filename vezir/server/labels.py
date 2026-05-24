@@ -10,7 +10,7 @@ JSON API routes (Android / programmatic clients):
   POST /api/label/<session-id>                  → apply labels from JSON body
 
 The labeling page is shown when a session's status is `needs_labeling`.
-On submit, vezir invokes meetscribe's apply_labels() directly to relabel
+On submit, vezir invokes millet's apply_labels() directly to relabel
 the transcript and regenerate artifacts (txt, srt, json, summary, pdf),
 then transitions the job to `syncing` → `done`.
 """
@@ -64,7 +64,7 @@ def _ensure_clips_dir(session_id: str) -> Path:
 def _find_wav(session_dir: Path) -> Path | None:
     """Locate session audio. Prefers WAV, falls back to OGG.
 
-    Key name is `wav` for back-compat with meetscribe's _find_session_files
+    Key name is `wav` for back-compat with millet's _find_session_files
     (which uses the same convention). Meetscribe's extract_speaker_clip
     handles both formats via its ffmpeg fallback.
     """
@@ -78,8 +78,8 @@ def _find_wav(session_dir: Path) -> Path | None:
 
 
 def _get_speakers(session_id: str):
-    """Fetch SpeakerInfo list from meetscribe for the given session."""
-    from meet.label import get_speakers as meet_get_speakers
+    """Fetch SpeakerInfo list from millet for the given session."""
+    from millet.label import get_speakers as meet_get_speakers
     return meet_get_speakers(_session_dir(session_id))
 
 
@@ -144,7 +144,7 @@ def label_clip(
     if sp is None:
         raise HTTPException(404, f"speaker {speaker_id} not found in transcript")
 
-    from meet.label import extract_speaker_clip
+    from millet.label import extract_speaker_clip
     tmp = extract_speaker_clip(wav, sp)
     shutil.move(str(tmp), str(cached))
     config.secure_chmod_file(cached)
@@ -154,7 +154,7 @@ def label_clip(
 def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str) -> None:
     """Shared logic for both the HTML form POST and the JSON API POST.
 
-    Applies labels via meetscribe, updates the voiceprint DB, and spawns
+    Applies labels via millet, updates the voiceprint DB, and spawns
     a background thread for sync + cleanup.
     """
     log.info("session=%s labels=%s by=%s", session_id, label_map, github)
@@ -169,7 +169,7 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
         def _progress(msg: str) -> None:
             log.info("session=%s apply_labels: %s", session_id, msg)
 
-        from meet.label import apply_labels
+        from millet.label import apply_labels
         apply_labels(
             _session_dir(session_id),
             label_map=label_map,
@@ -178,8 +178,8 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
         )
 
         try:
-            from meet.voiceprint import update_profiles_from_confirmed_labels
-            from meet.label import _load_transcript, _detect_speaker_channels
+            from millet.voiceprint import update_profiles_from_confirmed_labels
+            from millet.label import _load_transcript, _detect_speaker_channels
 
             sdir = _session_dir(session_id)
             wav_path = _find_wav(sdir)
@@ -288,7 +288,7 @@ def api_label_get(
           "audio_available": true
         }
 
-    Note: ``channel`` is a string from meetscribe (e.g. "mic", "system"),
+    Note: ``channel`` is a string from millet (e.g. "mic", "system"),
     not an integer.
     """
     row = queue.get(session_id)

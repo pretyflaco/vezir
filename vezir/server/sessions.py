@@ -141,7 +141,7 @@ def sync_now(
     Clicking "Sync now" in the dashboard hits this endpoint, which:
 
       1. Sets the queue row's `sync_enabled = 1`
-      2. Runs `meet sync` via the existing worker.finalize_after_labeling
+      2. Runs `millet sync` via the existing worker.finalize_after_labeling
          flow (in a background thread, like the labeling submit handler)
       3. Redirects the browser back to /s/<id> where the page polls
          the status until it transitions through `syncing` -> `done`
@@ -149,7 +149,7 @@ def sync_now(
     Refuses if the session is in a status that doesn't admit retroactive
     sync (e.g. `error`, `transcribing`, `needs_labeling`).  Re-syncing a
     session that already synced is allowed (force-push semantics inherited
-    from `meet sync --force`).
+    from `millet sync --force`).
     """
     row = queue.get(session_id)
     if not row:

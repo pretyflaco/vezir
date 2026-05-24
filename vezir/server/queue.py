@@ -8,10 +8,10 @@ Schema:
     github               GitHub handle of the scribe who uploaded
     title                Optional meeting title
     summary_preset       Optional preset id (high-quality | confidential | alternative)
-    auto_label_enabled   0/1.  When 0, worker skips `meet label --auto` and
+    auto_label_enabled   0/1.  When 0, worker skips `millet label --auto` and
                          routes the session straight to needs_labeling for
                          human-only labeling.  Default 1.
-    sync_enabled         0/1.  When 0, worker skips `meet sync` after the
+    sync_enabled         0/1.  When 0, worker skips `millet sync` after the
                          pipeline completes; session goes to `done` with
                          no git push.  Default 1.  Operator-side env var
                          VEZIR_SKIP_SYNC overrides to 0 globally.
@@ -30,7 +30,7 @@ Schema:
                          done (transcript artifacts are still usable). The
                          user can retry summary generation later.
     sync_error           Sync-specific failure message. When the pipeline
-                         completes but `meet sync` fails (e.g. DNS, git auth),
+                         completes but `millet sync` fails (e.g. DNS, git auth),
                          this field stores the failure and the job proceeds to
                          done.  The user can retry via "Sync now".
     artifacts            JSON-encoded dict of artifact paths (relative to session
