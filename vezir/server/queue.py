@@ -466,15 +466,156 @@ def update_team_sync(
         )
 
 
-def set_job_team(job_id: str, team_id: str) -> None:
+def set_job_team(
+    job_id: str,
+    team_id: str,
+    *,
+    require_team_exists: bool = True,
+) -> None:
     """Reassign a job to a different team.
 
-    v0.6.0 uses this only in the migration step; user-facing
-    ``vezir session move`` ships in v0.6.1.
+    v0.6.0 used this only for the migration backfill (with
+    ``require_team_exists=False`` so the seed teams could be inserted
+    in the same transaction).  v0.6.2's ``vezir session move`` CLI
+    relies on the default (existence-check ON) to fail loudly when
+    the destination team doesn't exist, instead of silently leaving
+    an orphaned job that's invisible to every token.
+
+    Raises ``ValueError`` if the slug shape is invalid, or (when
+    ``require_team_exists=True``) if no team with that slug exists.
     """
     validate_team_id(team_id)
+    if require_team_exists:
+        if get_team(team_id) is None:
+            raise ValueError(f"team {team_id!r} does not exist")
     with _conn() as c:
         c.execute(
             "UPDATE jobs SET team_id = ?, updated_at = ? WHERE id = ?",
             (team_id, _now(), job_id),
         )
+
+
+# ── v0.6.2: team rename (display name only) + team delete ────────────────────
+
+
+def update_team_name(team_id: str, name: str) -> None:
+    """Update the human display name of an existing team.
+
+    Slug (``id``) renames are deferred to v0.7.0 — they require cascading
+    updates across ``jobs.team_id``, the ``tokens.json`` token rows, and
+    the on-disk ``teams/<id>/`` directory, plus invalidate every
+    in-memory web-session that was minted against the old slug.  The
+    immutable-slug contract is part of v0.6.0's design.
+
+    Display-name updates are pure-DB and trivially safe.
+    """
+    validate_team_id(team_id)
+    if not name or not name.strip():
+        raise ValueError("name must be non-empty")
+    if get_team(team_id) is None:
+        raise ValueError(f"team {team_id!r} does not exist")
+    with _conn() as c:
+        c.execute(
+            "UPDATE teams SET name = ? WHERE id = ?",
+            (name.strip(), team_id),
+        )
+
+
+def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
+    """Delete a team, optionally cascading its jobs + tokens to another team.
+
+    Policy (v0.6.2):
+
+    * ``reassign_to=None`` (default): refuse-if-not-empty.  Raises
+      ``ValueError`` if any jobs reference the team OR any tokens are
+      scoped to it.  Forces the operator to do the cleanup explicitly
+      (``vezir session move`` per session, ``vezir token revoke`` per
+      token).  Safest default; zero data loss possible.
+    * ``reassign_to=<other_slug>``: cascade.  All jobs are moved to
+      the destination team, all tokens are revoked (token rotation is
+      a security-sensitive operation and the destination team's
+      members are probably different people; we don't carry tokens
+      across teams).  The on-disk ``teams/<id>/`` directory (roster,
+      voiceprints, sync_config) is removed last.
+
+    There is intentionally NO ``--force-purge`` that deletes the jobs
+    themselves; operator can ``vezir session move`` first or write SQL.
+
+    Returns a stats dict: ``{jobs_reassigned, tokens_revoked,
+    on_disk_removed}``.
+    """
+    validate_team_id(team_id)
+    if get_team(team_id) is None:
+        raise ValueError(f"team {team_id!r} does not exist")
+
+    if reassign_to is not None:
+        validate_team_id(reassign_to)
+        if reassign_to == team_id:
+            raise ValueError(
+                "reassign_to must be a different team than the one being deleted"
+            )
+        if get_team(reassign_to) is None:
+            raise ValueError(
+                f"reassign-to team {reassign_to!r} does not exist"
+            )
+
+    # 1. Count and (optionally) reassign jobs.
+    with _conn() as c:
+        n_jobs = c.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()["n"]
+
+        if n_jobs and reassign_to is None:
+            raise ValueError(
+                f"team {team_id!r} has {n_jobs} job(s) assigned; "
+                f"pass reassign_to=<slug> to cascade, or move them "
+                f"first via `vezir session move`"
+            )
+
+        if n_jobs:
+            c.execute(
+                "UPDATE jobs SET team_id = ?, updated_at = ? "
+                "WHERE team_id = ?",
+                (reassign_to, _now(), team_id),
+            )
+
+    # 2. Count and (optionally) revoke tokens.
+    #    Local import to keep queue.py independent of auth (auth depends
+    #    on tokens.json, not on queue).
+    from . import auth as _auth
+    n_tokens = _auth.count_tokens_for_team(team_id)
+
+    if n_tokens and reassign_to is None:
+        # Should be unreachable because we already raised on jobs;
+        # but a team with zero jobs and N tokens still needs the same
+        # refusal.
+        raise ValueError(
+            f"team {team_id!r} has {n_tokens} token(s) scoped to it; "
+            f"pass reassign_to=<slug> to cascade-revoke, or revoke them "
+            f"first via `vezir token revoke`"
+        )
+
+    tokens_revoked = 0
+    if n_tokens:
+        tokens_revoked = _auth.revoke_all_for_team(team_id)
+
+    # 3. Delete the team row itself.
+    with _conn() as c:
+        c.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+
+    # 4. Remove the on-disk per-team dir (roster, voiceprints, sync_config).
+    on_disk_removed = False
+    import shutil as _shutil
+    from .. import config as _config
+    team_dir = _config.teams_dir() / team_id
+    if team_dir.exists():
+        _shutil.rmtree(team_dir, ignore_errors=True)
+        on_disk_removed = not team_dir.exists()
+
+    return {
+        "jobs_reassigned": n_jobs if reassign_to else 0,
+        "tokens_revoked": tokens_revoked,
+        "on_disk_removed": on_disk_removed,
+        "reassigned_to": reassign_to,
+    }

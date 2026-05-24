@@ -163,6 +163,40 @@ def revoke(github: str) -> int:
     return before - len(data["tokens"])
 
 
+def count_tokens_for_team(team_id: str) -> int:
+    """Return the number of (non-expired) tokens scoped to ``team_id``.
+
+    Added in v0.6.2 to support ``vezir team delete``'s cascade policy
+    (refuse-if-not-empty unless ``--reassign-to`` is given).
+    """
+    if not team_id:
+        return 0
+    data = _load_tokens()
+    return sum(
+        1 for t in data.get("tokens", [])
+        if t.get("team_id") == team_id and not _is_expired(t)
+    )
+
+
+def revoke_all_for_team(team_id: str) -> int:
+    """Remove every token scoped to ``team_id``.  Returns count removed.
+
+    Added in v0.6.2 for ``vezir team delete --reassign-to <other>``.
+    Tokens are NOT migrated to the destination team — the destination's
+    members are probably different humans, and token rotation on team
+    deletion is the security-conscious default.
+    """
+    if not team_id:
+        return 0
+    data = _load_tokens()
+    before = len(data["tokens"])
+    data["tokens"] = [
+        t for t in data["tokens"] if t.get("team_id") != team_id
+    ]
+    _save_tokens(data)
+    return before - len(data["tokens"])
+
+
 def _maybe_touch_last_used(entry_hash: str) -> None:
     """Update ``last_used_at`` for the matching token row, debounced.
 

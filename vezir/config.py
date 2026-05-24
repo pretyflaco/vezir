@@ -139,7 +139,13 @@ def logs_dir() -> Path:
 
 
 def speaker_profiles_path() -> Path:
-    """Central voiceprint DB, seeded from ~/.config/meet/speaker_profiles.json."""
+    """Legacy central voiceprint DB path (pre-v0.6.2).
+
+    Kept for the v0.6.2 migration step (which moves this file under
+    ``teams/blink/speaker_profiles.json``) and for back-compat with
+    callers that haven't yet been team-scoped.  Application code should
+    use :func:`team_speaker_profiles_path` instead.
+    """
     return data_dir() / "speaker_profiles.json"
 
 
@@ -158,7 +164,8 @@ def teams_dir() -> Path:
 
     Layout:
         ~/vezir-data/teams/<team_id>/roster.json
-        ~/vezir-data/teams/<team_id>/speaker_profiles.json  # v0.6.1+
+        ~/vezir-data/teams/<team_id>/speaker_profiles.json  # v0.6.2+
+        ~/vezir-data/teams/<team_id>/sync_config.json       # v0.6.2+ (optional)
     """
     return data_dir() / "teams"
 
@@ -171,6 +178,50 @@ def team_roster_path(team_id: str) -> Path:
     added in 0.6.1).
     """
     return teams_dir() / team_id / "roster.json"
+
+
+def team_speaker_profiles_path(team_id: str) -> Path:
+    """Per-team voiceprint DB (v0.6.2+).
+
+    Each team holds its own ``speaker_profiles.json`` so that voiceprint
+    training stays isolated per team.  The v0.6.2 migration moves the
+    legacy central DB under ``teams/blink/`` and seeds an empty DB at
+    ``teams/twentyone/``.
+
+    The worker exposes this DB to unmodified millet via the per-job
+    HOME shim (see :func:`vezir.server.meet_runner.build_home_shim`).
+    """
+    return teams_dir() / team_id / "speaker_profiles.json"
+
+
+def team_sync_config_path(team_id: str) -> Path:
+    """Per-team millet sync_config.json — operator-provided override (v0.6.2+).
+
+    Optional escape hatch (the "B2" path from the v0.6.2 design): if
+    this file exists, the worker symlinks it into the per-job HOME
+    shim as ``~/.config/meet/sync_config.json`` instead of
+    materializing one from the team row's ``sync_remote`` column.
+    This lets ops hand-tune millet's full sync config per team (branch,
+    ssh key, etc.) when ``sync_remote`` alone isn't enough.
+
+    The vezir-managed alternative — auto-materialized from
+    ``team.sync_remote`` — lives at
+    :func:`team_materialized_sync_config_path` so it can be regenerated
+    on remote-URL changes without trampling an operator's hand-tuned
+    override.
+    """
+    return teams_dir() / team_id / "sync_config.json"
+
+
+def team_materialized_sync_config_path(team_id: str) -> Path:
+    """Vezir-managed per-team sync_config.json materialized from team.sync_remote.
+
+    This file is owned by vezir and regenerated whenever
+    ``team.sync_remote`` changes.  Operators should NOT edit it by
+    hand — to customize, drop a full sync_config.json at the path
+    returned by :func:`team_sync_config_path` instead (it wins).
+    """
+    return teams_dir() / team_id / "sync_config.materialized.json"
 
 
 def tokens_json_path() -> Path:

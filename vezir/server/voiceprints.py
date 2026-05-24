@@ -1,12 +1,20 @@
-"""Central voiceprint DB management for vezir.
+"""Per-team voiceprint DB management for vezir.
 
-Vezir owns its own profile DB at ~/vezir-data/speaker_profiles.json. The
-worker exposes this DB to unmodified millet via the per-job HOME shim
-(see meet_runner.build_home_shim). The schema matches what
-meet/voiceprint.py:88 (load_profiles) expects.
+v0.6.2+: each team holds its own voiceprint DB at
+``~/vezir-data/teams/<team_id>/speaker_profiles.json``.  The worker
+exposes the caller's per-team DB to unmodified millet via the per-job
+HOME shim (see meet_runner.build_home_shim).  The schema matches what
+``meet/voiceprint.py`` (load_profiles) expects: a plain JSON dict
+keyed by speaker name.
 
-Helper functions here are used to seed the DB and to inspect it from the
-web UI.
+Pre-v0.6.2 vezir kept a single central DB at
+``~/vezir-data/speaker_profiles.json``.  The v0.6.2 migration moves
+that file under ``teams/blink/`` and seeds ``teams/twentyone/`` empty.
+
+Helper functions here are used to seed each team's DB and to inspect
+it from the web UI / CLI / labeling pipeline.  All accept ``team_id``
+explicitly; there is no longer a single global default — callers must
+pass the team they want to operate on.
 """
 from __future__ import annotations
 
@@ -16,9 +24,11 @@ from pathlib import Path
 from .. import config
 
 
-def ensure_db_exists() -> Path:
-    """Create an empty profile DB file if not present. Returns its path."""
-    p = config.speaker_profiles_path()
+def ensure_db_exists(team_id: str) -> Path:
+    """Create an empty per-team profile DB file if not present. Returns its path."""
+    if not team_id:
+        raise ValueError("ensure_db_exists requires team_id (added in v0.6.2)")
+    p = config.team_speaker_profiles_path(team_id)
     config.secure_mkdir(p.parent)
     if not p.exists():
         config.secure_write_text(p, "{}")
@@ -27,9 +37,11 @@ def ensure_db_exists() -> Path:
     return p
 
 
-def list_known_names() -> list[str]:
-    """Return sorted list of names enrolled in the central profile DB."""
-    p = config.speaker_profiles_path()
+def list_known_names(team_id: str) -> list[str]:
+    """Return sorted list of names enrolled in the team's profile DB."""
+    if not team_id:
+        raise ValueError("list_known_names requires team_id (added in v0.6.2)")
+    p = config.team_speaker_profiles_path(team_id)
     if not p.exists():
         return []
     try:
@@ -39,26 +51,29 @@ def list_known_names() -> list[str]:
     return sorted(data.keys())
 
 
-def seed_from(source: Path, *, merge: bool = False) -> dict:
-    """Copy or merge an existing millet profiles file into vezir.
+def seed_from(source: Path, team_id: str, *, merge: bool = False) -> dict:
+    """Copy or merge an existing millet profiles file into a team's DB.
 
     Args:
         source: Path to the source profiles file.
-        merge: When True, merge into the existing central DB.  Per-name
+        team_id: Slug of the team whose DB to seed (required v0.6.2+).
+        merge: When True, merge into the existing team DB.  Per-name
             policy: the profile with the higher ``n_sessions`` wins (it
             has more training data).  When False (default), refuses if
-            the central DB is already populated.
+            the team's DB is already populated.
 
     Returns:
         Dict with keys ``added``, ``updated``, ``kept``, ``total``.
     """
-    target = config.speaker_profiles_path()
+    if not team_id:
+        raise ValueError("seed_from requires team_id (added in v0.6.2)")
+    target = config.team_speaker_profiles_path(team_id)
     existing: dict = {}
     if target.exists():
         existing = json.loads(target.read_text(encoding="utf-8") or "{}")
         if existing and not merge:
             raise FileExistsError(
-                f"central profile DB already populated at {target}"
+                f"team {team_id!r} profile DB already populated at {target}"
             )
 
     source_data = json.loads(source.read_text(encoding="utf-8"))

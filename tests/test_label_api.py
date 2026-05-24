@@ -177,6 +177,7 @@ def test_api_label_post_success(mock_apply, client_and_token, tmp_data):
         "01TEST",
         {"REMOTE_0": "kasita", "REMOTE_1": "alice"},
         "alice",  # github handle of the authenticated user
+        "blink",  # team_id (v0.6.2+): the auth-resolved team scope
     )
 
 
@@ -192,7 +193,9 @@ def test_api_label_post_strips_empty_labels(mock_apply, client_and_token, tmp_da
         json={"labels": {"REMOTE_0": "kasita", "REMOTE_1": "  ", "YOU": ""}},
     )
     assert resp.status_code == 200
-    mock_apply.assert_called_once_with("01TEST", {"REMOTE_0": "kasita"}, "alice")
+    mock_apply.assert_called_once_with(
+        "01TEST", {"REMOTE_0": "kasita"}, "alice", "blink",
+    )
 
 
 @patch("vezir.server.labels._get_speakers")

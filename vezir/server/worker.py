@@ -238,11 +238,30 @@ def process_one(job: dict) -> None:
     job_id = job["id"]
     sd = _session_dir(job_id)
     log_path = _job_log_path(job_id)
+    # v0.6.2+: every job row carries team_id (enforced at enqueue +
+    # backfilled by the v0.6.0 migration).  The meet_runner needs it
+    # for the per-team HOME-shim wiring.
+    team_id = job.get("team_id") or ""
+    if not team_id:
+        # Defensive: a job row with empty team_id is a migration bug.
+        # Fail the job rather than silently letting it pick up the
+        # wrong team's voiceprint DB.
+        queue.update_status(
+            job_id, "error",
+            error=(
+                f"job {job_id} has empty team_id; refusing to run "
+                f"(v0.6.0 migration may have been skipped)"
+            ),
+        )
+        return
 
     try:
         # 1. transcribe
         requested_preset = job.get("summary_preset")
-        rc = meet_runner.transcribe(sd, job_id, log_path, summary_preset=requested_preset)
+        rc = meet_runner.transcribe(
+            sd, job_id, team_id, log_path,
+            summary_preset=requested_preset,
+        )
 
         # Distinguish between transcription failures and summary-only
         # failures.  When `millet transcribe` exits non-zero *and* a preset
@@ -291,7 +310,7 @@ def process_one(job: dict) -> None:
         # review.  This is a privacy / control choice some users prefer.
         auto_label_enabled = bool(job.get("auto_label_enabled", 1))
         if auto_label_enabled:
-            rc = meet_runner.label_auto(sd, job_id, log_path)
+            rc = meet_runner.label_auto(sd, job_id, team_id, log_path)
             if rc != 0:
                 log.warning("label --auto returned %s; continuing", rc)
         else:
@@ -324,7 +343,7 @@ def process_one(job: dict) -> None:
             )
         else:
             queue.update_status(job_id, "syncing", artifacts=artifacts)
-            rc = meet_runner.sync(sd, job_id, log_path)
+            rc = meet_runner.sync(sd, job_id, team_id, log_path)
             if rc != 0:
                 sync_err_msg = _error_with_tail(
                     f"millet sync exited {rc}", log_path,
@@ -461,6 +480,18 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
             log.error("retry-summary: session %s not found", session_id)
             return
 
+        team_id = job.get("team_id") or ""
+        if not team_id:
+            log.error(
+                "retry-summary: session %s has empty team_id; aborting",
+                session_id,
+            )
+            queue.update_status(
+                session_id, "error",
+                error=f"session {session_id} has empty team_id",
+            )
+            return
+
         requested_preset = preset_override or job.get("summary_preset")
         if preset_override:
             log.info(
@@ -473,9 +504,9 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
         )
 
         # Run apply_labels in-process with the HOME shim so millet
-        # picks up the correct voiceprint DB and config paths.
+        # picks up the correct per-team voiceprint DB and config paths.
         summary_err: str | None = None
-        home = meet_runner.build_home_shim(session_id)
+        home = meet_runner.build_home_shim(session_id, team_id)
         saved_env = {k: os.environ.get(k) for k in ("HOME", "XDG_CONFIG_HOME")}
         try:
             os.environ["HOME"] = str(home)
@@ -527,7 +558,7 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
             log.info("retry-summary %s: sync_enabled=0", session_id)
         else:
             queue.update_status(session_id, "syncing", artifacts=artifacts)
-            src = meet_runner.sync(sd, session_id, log_path)
+            src = meet_runner.sync(sd, session_id, team_id, log_path)
             if src != 0:
                 sync_err_msg = _error_with_tail(
                     f"millet sync exited {src}", log_path,
@@ -578,6 +609,17 @@ def finalize_after_labeling(session_id: str) -> None:
         # All that remains is sync (or not — both VEZIR_SKIP_SYNC and the
         # per-job sync_enabled flag can independently veto).
         job = queue.get(session_id) or {}
+        team_id = job.get("team_id") or ""
+        if not team_id:
+            log.error(
+                "post-labeling: session %s has empty team_id; aborting",
+                session_id,
+            )
+            queue.update_status(
+                session_id, "error",
+                error=f"session {session_id} has empty team_id",
+            )
+            return
         sync_enabled = bool(job.get("sync_enabled", 1))
         sync_err_msg: str | None = None
         if _skip_sync():
@@ -592,7 +634,7 @@ def finalize_after_labeling(session_id: str) -> None:
             )
         else:
             queue.update_status(session_id, "syncing")
-            rc = meet_runner.sync(sd, session_id, log_path)
+            rc = meet_runner.sync(sd, session_id, team_id, log_path)
             if rc != 0:
                 sync_err_msg = _error_with_tail(
                     f"millet sync exited {rc}", log_path,

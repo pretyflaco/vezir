@@ -58,9 +58,10 @@ def test_transcribe_runs_built_args(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
     _patch_transcribe_config(monkeypatch, device="cpu", compute_type="int8")
 
-    def fake_run_meet(args, job_id, log_path=None):
+    def fake_run_meet(args, job_id, team_id, log_path=None):
         captured["args"] = args
         captured["job_id"] = job_id
+        captured["team_id"] = team_id
         captured["log_path"] = log_path
         return 0
 
@@ -69,7 +70,7 @@ def test_transcribe_runs_built_args(monkeypatch, tmp_path):
     session_dir = _session_dir(tmp_path)
     log_path = tmp_path / "worker.log"
 
-    rc = meet_runner.transcribe(session_dir, "job-1", log_path)
+    rc = meet_runner.transcribe(session_dir, "job-1", "blink", log_path)
 
     assert rc == 0
     assert captured["args"] == [
@@ -81,6 +82,7 @@ def test_transcribe_runs_built_args(monkeypatch, tmp_path):
         str(session_dir),
     ]
     assert captured["job_id"] == "job-1"
+    assert captured["team_id"] == "blink"
     assert captured["log_path"] == log_path
 
 

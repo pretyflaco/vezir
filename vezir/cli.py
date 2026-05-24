@@ -721,6 +721,90 @@ def team_create(team_id, name, sync_remote, sync_meeting_type):
     click.echo(f"  sync_meeting_type: {sync_meeting_type}")
 
 
+@team.command("set-name")
+@click.option("--id", "team_id", required=True, help="Team slug.")
+@click.option("--name", required=True, help="New display name.")
+def team_set_name(team_id, name):
+    """Rename a team's display name (v0.6.2+).
+
+    Slug (id) is immutable — see CHANGELOG / vezir_plan.md for the
+    rationale.  Use this to fix typos or to update a company name
+    after a rebrand.
+    """
+    from .server import queue as _queue
+    try:
+        _queue.update_team_name(team_id, name)
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    row = _queue.get_team(team_id)
+    click.echo(f"team renamed: id={team_id} name={row['name']!r}")
+
+
+@team.command("delete")
+@click.option("--id", "team_id", required=True, help="Team slug.")
+@click.option(
+    "--reassign-to", "reassign_to", default=None,
+    help="If given, jobs are reassigned to this team and tokens are "
+         "revoked.  If omitted, the command refuses when the team has "
+         "any jobs or tokens still scoped to it.",
+)
+@click.option(
+    "--yes", "confirm", is_flag=True, default=False,
+    help="Skip the interactive confirmation prompt.",
+)
+def team_delete(team_id, reassign_to, confirm):
+    """Delete a team (v0.6.2+).
+
+    Default policy is refuse-if-not-empty: operator must clean up
+    jobs (``vezir session move``) and tokens (``vezir token revoke``)
+    first, then re-run.  Pass ``--reassign-to <slug>`` to cascade
+    both in one shot.
+
+    Tokens are REVOKED (not migrated) on cascade — the destination
+    team's members are probably different humans, so moving tokens
+    across would be a privilege escalation.
+
+    The on-disk ``teams/<id>/`` directory (roster, voiceprints,
+    sync_config) is removed too.
+    """
+    from .server import queue as _queue, auth as _auth
+    if _queue.get_team(team_id) is None:
+        click.echo(f"error: team {team_id!r} does not exist", err=True)
+        sys.exit(2)
+
+    # Show a preview of what will happen.
+    job_rows = [r for r in _queue.list_recent(limit=10_000)
+                if r.get("team_id") == team_id]
+    n_jobs = len(job_rows)
+    n_tokens = _auth.count_tokens_for_team(team_id)
+
+    click.echo(f"Deleting team {team_id!r}:")
+    click.echo(f"  jobs scoped to this team: {n_jobs}")
+    click.echo(f"  tokens scoped to this team: {n_tokens}")
+    if reassign_to:
+        click.echo(f"  on cascade: jobs -> {reassign_to!r}, tokens -> REVOKED")
+    else:
+        click.echo("  cascade: NONE (will refuse if any jobs/tokens exist)")
+
+    if not confirm:
+        click.confirm("Proceed?", abort=True)
+
+    try:
+        stats = _queue.delete_team(team_id, reassign_to=reassign_to)
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+
+    click.echo(f"team {team_id!r} deleted.")
+    click.echo(f"  jobs reassigned: {stats['jobs_reassigned']} "
+               f"(-> {stats['reassigned_to']})"
+               if stats['reassigned_to']
+               else f"  jobs reassigned: 0")
+    click.echo(f"  tokens revoked:  {stats['tokens_revoked']}")
+    click.echo(f"  on-disk dir removed: {stats['on_disk_removed']}")
+
+
 @team.command("set-sync")
 @click.option("--id", "team_id", required=True, help="Team slug.")
 @click.option("--remote", "sync_remote", default=None,
@@ -862,11 +946,121 @@ def team_config_remove(team_id):
         click.echo("no teams remaining; active is unset")
 
 
+# ── session (v0.6.2+: cross-team move) ───────────────────────────────────────
+
+@main.group()
+def session():
+    """Manage individual sessions (v0.6.2+)."""
+
+
+@session.command("move")
+@click.argument("session_id")
+@click.option(
+    "--to-team", "to_team", required=True,
+    help="Destination team slug.  Must exist (use `vezir team list`).",
+)
+@click.option(
+    "--yes", "confirm", is_flag=True, default=False,
+    help="Skip the interactive confirmation prompt.",
+)
+def session_move(session_id, to_team, confirm):
+    """Reassign a session to a different team (v0.6.2+).
+
+    Pure DB-row update: session artifacts on disk are team-agnostic
+    (``~/vezir-data/sessions/<id>/`` is keyed by session_id only) so
+    nothing needs to move.
+
+    Known limitations (intentional, documented):
+
+    * Voiceprint backwash: any embeddings already trained from
+      previously-confirmed labels on this session live in the SOURCE
+      team's voiceprint DB.  They stay there; nothing is copied to
+      the destination.  A future ``vezir voiceprints reseed`` could
+      address this if anyone needs it.
+    * Sync backwash: if this session has already been pushed to the
+      source team's sync remote, that copy stays in the source repo.
+      The next sync (manual or post-edit) will push a copy to the
+      destination team's repo, so the session ends up in both.
+    """
+    from .server import queue as _queue
+    row = _queue.get(session_id)
+    if not row:
+        click.echo(f"error: session {session_id!r} not found", err=True)
+        sys.exit(2)
+    src_team = row.get("team_id") or "(unassigned)"
+    if src_team == to_team:
+        click.echo(
+            f"session {session_id} is already in team {to_team!r}; "
+            f"nothing to do"
+        )
+        return
+    if _queue.get_team(to_team) is None:
+        available = [t["id"] for t in _queue.list_teams()]
+        click.echo(
+            f"error: destination team {to_team!r} does not exist "
+            f"(known teams: {', '.join(available) or '(none)'})",
+            err=True,
+        )
+        sys.exit(2)
+
+    click.echo(f"session {session_id}: team {src_team} -> {to_team}")
+    if not confirm:
+        click.confirm("Proceed?", abort=True)
+
+    try:
+        _queue.set_job_team(session_id, to_team)
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"moved.  Note: source team's voiceprint DB still holds any "
+        f"embeddings trained from this session's prior labels."
+    )
+
+
 # ── voiceprints ───────────────────────────────────────────────────────────────
 
 @main.group()
 def voiceprints():
-    """Manage the central voiceprint database."""
+    """Manage per-team voiceprint databases (v0.6.2+)."""
+
+
+def _resolve_team_arg(team_id: str | None) -> str:
+    """Resolve --team for CLI commands that need a per-team scope.
+
+    v0.6.2+: every per-team CLI command requires a team.  When the
+    server has exactly one team, default to it for convenience (the
+    same UX pattern v0.6.0 established for ``vezir token issue``).
+    Otherwise fail with a clear list of valid options.
+    """
+    from .server import queue as _queue
+    if team_id:
+        if _queue.get_team(team_id) is None:
+            available = [t["id"] for t in _queue.list_teams()]
+            click.echo(
+                f"error: team {team_id!r} not found "
+                f"(known teams: {', '.join(available) or '(none)'})",
+                err=True,
+            )
+            sys.exit(2)
+        return team_id
+    teams = _queue.list_teams()
+    if len(teams) == 1:
+        return teams[0]["id"]
+    if not teams:
+        click.echo(
+            "error: no teams configured; run `vezir team create --id <slug> "
+            "--name <name>` first",
+            err=True,
+        )
+        sys.exit(2)
+    available = ", ".join(t["id"] for t in teams)
+    click.echo(
+        f"error: --team is required when multiple teams exist "
+        f"(choose one of: {available})",
+        err=True,
+    )
+    sys.exit(2)
 
 
 @voiceprints.command("seed")
@@ -876,29 +1070,43 @@ def voiceprints():
     help="Path to an existing millet speaker_profiles.json to copy in",
 )
 @click.option(
+    "--team", "team_id", default=None,
+    help="Team slug to seed.  Required when more than one team exists; "
+         "defaults to the only team otherwise.",
+)
+@click.option(
     "--merge", is_flag=True, default=False,
-    help="Merge into the existing central DB instead of refusing when it is populated. "
+    help="Merge into the existing team DB instead of refusing when it is populated. "
     "Per-name policy: the profile with the higher n_sessions wins.",
 )
-def voiceprints_seed(source, merge):
-    """Seed or merge the central voiceprint DB from an existing millet profile file."""
+def voiceprints_seed(source, team_id, merge):
+    """Seed or merge a team's voiceprint DB from an existing millet profile file."""
     from .server import voiceprints as vp_mod
-    stats = vp_mod.seed_from(source, merge=merge)
+    team_id = _resolve_team_arg(team_id)
+    stats = vp_mod.seed_from(source, team_id, merge=merge)
     click.echo(
         f"Done: {stats['added']} added, {stats['updated']} updated, "
         f"{stats['kept']} kept (source had fewer sessions). "
-        f"Central DB now has {stats['total']} profile(s) at {config.speaker_profiles_path()}"
+        f"Team {team_id!r} DB now has {stats['total']} profile(s) at "
+        f"{config.team_speaker_profiles_path(team_id)}"
     )
 
 
 @voiceprints.command("list")
-def voiceprints_list():
-    """List names enrolled in the central voiceprint DB."""
+@click.option(
+    "--team", "team_id", default=None,
+    help="Team slug to list.  Required when more than one team exists; "
+         "defaults to the only team otherwise.",
+)
+def voiceprints_list(team_id):
+    """List names enrolled in a team's voiceprint DB."""
     from .server import voiceprints as vp_mod
-    names = vp_mod.list_known_names()
+    team_id = _resolve_team_arg(team_id)
+    names = vp_mod.list_known_names(team_id)
     if not names:
-        click.echo("(no voiceprints)")
+        click.echo(f"(no voiceprints for team {team_id!r})")
         return
+    click.echo(f"voiceprints in team {team_id!r}:")
     for n in names:
         click.echo(f"  {n}")
 
@@ -912,7 +1120,7 @@ def status():
     click.echo(f"vezir version: {__version__}")
     click.echo(f"data dir:      {config.data_dir()}")
     click.echo(f"sessions dir:  {config.sessions_dir()}")
-    click.echo(f"profile DB:    {config.speaker_profiles_path()}")
+    click.echo(f"teams dir:     {config.teams_dir()}  (per-team voiceprint DBs)")
     click.echo(f"queue DB:      {config.queue_db_path()}")
     # v0.6.0: status is an admin-side overview, so it uses the global
     # path (no team scope, no viewer filter) — see queue.list_recent

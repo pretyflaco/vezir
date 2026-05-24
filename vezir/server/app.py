@@ -16,6 +16,7 @@ from . import (
     labels,
     login,
     migrations,
+    queue,
     sessions,
     teams,
     uploads,
@@ -37,7 +38,12 @@ def create_app() -> FastAPI:
     # queue or roster files.  Migrations are idempotent and write an
     # audit log per run.
     migrations.run_pending_migrations()
-    voiceprints.ensure_db_exists()
+    # v0.6.2: voiceprint DBs are per-team.  Ensure every team has its
+    # own DB file so the per-job HOME shim's symlink target always
+    # resolves (millet treats a missing profile file as a hard error
+    # when MEET_PROFILES_PATH is set).
+    for _t in queue.list_teams():
+        voiceprints.ensure_db_exists(_t["id"])
 
     app = FastAPI(
         title="vezir",

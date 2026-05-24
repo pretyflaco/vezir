@@ -184,17 +184,30 @@ def label_clip(
     return FileResponse(cached, media_type="audio/wav")
 
 
-def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str) -> None:
+def _apply_and_finalize(
+    session_id: str,
+    label_map: dict[str, str],
+    github: str,
+    team_id: str,
+) -> None:
     """Shared logic for both the HTML form POST and the JSON API POST.
 
-    Applies labels via millet, updates the voiceprint DB, and spawns
-    a background thread for sync + cleanup.
+    Applies labels via millet, updates the team's voiceprint DB, and
+    spawns a background thread for sync + cleanup.
+
+    v0.6.2+: ``team_id`` is required so the HOME shim points at the
+    correct per-team voiceprint DB, and the
+    ``update_profiles_from_confirmed_labels`` call writes to that
+    same DB.
     """
-    log.info("session=%s labels=%s by=%s", session_id, label_map, github)
+    log.info(
+        "session=%s team=%s labels=%s by=%s",
+        session_id, team_id, label_map, github,
+    )
 
     import os
 
-    home = meet_runner.build_home_shim(session_id)
+    home = meet_runner.build_home_shim(session_id, team_id)
     saved = {k: os.environ.get(k) for k in ("HOME", "XDG_CONFIG_HOME")}
     try:
         os.environ["HOME"] = str(home)
@@ -227,7 +240,7 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
                     transcript.segments,
                     label_map,
                     channel_map,
-                    profiles_path=config.speaker_profiles_path(),
+                    profiles_path=config.team_speaker_profiles_path(team_id),
                 )
             else:
                 log.warning(
@@ -235,7 +248,9 @@ def _apply_and_finalize(session_id: str, label_map: dict[str, str], github: str)
                     session_id, wav_path is not None, tj_path.exists(),
                 )
         except Exception:
-            log.exception("could not update central voiceprint DB")
+            log.exception(
+                "could not update team %s voiceprint DB", team_id,
+            )
 
     finally:
         for k, v in saved.items():
@@ -296,7 +311,7 @@ async def submit_labels(
         speaker_id = key[len("label_"):]
         label_map[speaker_id] = name
 
-    _apply_and_finalize(session_id, label_map, github)
+    _apply_and_finalize(session_id, label_map, github, team_id)
     return RedirectResponse(url=f"/s/{session_id}", status_code=303)
 
 
@@ -400,5 +415,5 @@ def api_label_post(
         if name:
             label_map[str(speaker_id)] = name
 
-    _apply_and_finalize(session_id, label_map, github)
+    _apply_and_finalize(session_id, label_map, github, team_id)
     return {"ok": True, "session_id": session_id}

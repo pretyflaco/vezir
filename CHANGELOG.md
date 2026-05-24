@@ -3,6 +3,187 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.2 — per-team voiceprints + per-team sync + session move + team lifecycle
+
+Completes the multi-team isolation work started in v0.6.0.  After
+this release every team owns its own voiceprint training surface, its
+own millet sync remote, and can be renamed / deleted as a unit.
+Operators can move individual sessions between teams (e.g. when a
+recording was uploaded under the wrong scribe token).
+
+### Added
+
+#### Per-team voiceprint DB (Feature A)
+
+* **Per-team voiceprint files**: each team now holds its own
+  ``~/vezir-data/teams/<id>/speaker_profiles.json`` instead of
+  sharing a single central DB.  The per-job HOME shim symlinks the
+  caller's team DB into the millet subprocess.
+* Migration ``0.6.2-per-team-voiceprints`` moves the legacy
+  ``~/vezir-data/speaker_profiles.json`` under
+  ``teams/blink/speaker_profiles.json`` and seeds an empty
+  ``teams/twentyone/speaker_profiles.json`` (locked-in decision:
+  twentyone starts with a clean training surface).  Idempotent;
+  audit log at ``~/vezir-data/logs/migration-0.6.2-per-team-voiceprints.log``.
+* New helper: ``vezir.config.team_speaker_profiles_path(team_id)``.
+* CLI ``vezir voiceprints seed/list`` gained a required ``--team``
+  flag (defaults to the only team when exactly one exists,
+  mirroring the ``vezir token issue --team`` UX from v0.6.0).
+
+#### Per-team sync remote (Feature B)
+
+* **Per-team sync wiring**: the worker now reads the team row's
+  ``sync_remote`` and ``sync_meeting_type`` columns (added as
+  reserved schema slots in v0.6.0) and materializes a per-team
+  ``sync_config.json`` that gets symlinked into the per-job HOME
+  shim.  Different teams push to different git repos with zero
+  operator config changes after ``vezir team set-sync --remote``.
+* **B2 escape hatch**: if
+  ``~/vezir-data/teams/<id>/sync_config.json`` exists, the worker
+  uses it verbatim and ignores ``team.sync_remote``.  Lets ops
+  hand-tune millet's full sync config (branch, ssh key, etc.) per
+  team without losing it on the next worker pass.  Vezir's
+  auto-managed copy lives at
+  ``sync_config.materialized.json`` (sibling file, never
+  overwrites the operator override).
+* Materialization is idempotent: the worker only rewrites
+  ``sync_config.materialized.json`` when ``team.sync_remote``
+  drifts from the stored value.
+* The legacy ``VEZIR_SYNC_MEETING_TYPE`` env var is now a
+  deprecation fallback (kept for muscle's existing install; removed
+  in v0.7.0).  Set ``team.sync_meeting_type`` via
+  ``vezir team set-sync --meeting-type ...`` instead.
+
+#### Session move (Feature C)
+
+* **`vezir session move <id> --to-team <slug>`**: reassigns a
+  session to a different team in one DB-row update.
+  - Refuses when the destination team doesn't exist (closes a
+    silent-orphan hole in ``queue.set_job_team`` from v0.6.0).
+  - Refuses when source == destination.
+  - Requires interactive confirmation unless ``--yes``.
+  - Session artifacts on disk (``~/vezir-data/sessions/<id>/``)
+    are team-agnostic so nothing needs to move.
+  - **Known limitation**: voiceprint backwash.  Any embeddings
+    trained from previously-confirmed labels on this session live
+    in the SOURCE team's voiceprint DB.  They stay there; nothing
+    is copied to the destination.  Documented in CLI help and
+    locked-in policy decision per vezir_plan.md.
+
+#### Team lifecycle (Feature D)
+
+* **`vezir team set-name --id <slug> --name <new>`**: rename a
+  team's display name.  Slug rename is intentionally NOT
+  implemented (deferred to v0.7.0; would cascade across
+  jobs.team_id, the token store, and on-disk dirs, and break
+  in-flight web sessions).
+* **`vezir team delete --id <slug> [--reassign-to <other>] [--yes]`**:
+  - **Default policy: refuse-if-not-empty.**  Errors out if any
+    jobs or tokens are scoped to the team.  Operator must
+    ``vezir session move`` / ``vezir token revoke`` first.
+  - **`--reassign-to <slug>`**: cascade.  Jobs are moved to the
+    destination team; tokens are REVOKED (not migrated — the
+    destination's members are probably different humans).
+  - On success, removes the on-disk ``teams/<id>/`` directory
+    (roster, voiceprints, sync_config).
+  - No ``--force-purge``; deletion never silently drops jobs.
+* Admin HTTP endpoints:
+  - ``PATCH /admin/teams/{id}`` now accepts ``name`` (alongside
+    the v0.6.0 ``sync_remote`` and ``sync_meeting_type`` fields).
+    Uses ``model_fields_set`` so omitted fields no longer
+    accidentally clear stored values.
+  - ``DELETE /admin/teams/{id}?reassign_to=<slug>`` exposes the
+    cascade-delete to admin web clients.  Returns 409 when the
+    team is non-empty and ``reassign_to`` is omitted.
+
+### Changed
+
+* ``meet_runner.transcribe / label_auto / sync / run_meet /
+  build_home_shim`` all gained a required ``team_id`` parameter
+  so the HOME shim's voiceprint and sync_config symlinks resolve
+  per-team.  All call sites in ``worker.py`` and ``labels.py``
+  updated; ``job["team_id"]`` is plumbed through (with a defensive
+  early-error if a job row somehow has an empty team_id).
+* ``voiceprints.ensure_db_exists / list_known_names / seed_from``
+  all require an explicit ``team_id`` (no more central-DB default).
+* App startup now iterates ``queue.list_teams()`` and creates an
+  empty DB for any team that doesn't have one, so the HOME shim's
+  symlink target always resolves.
+* ``vezir status`` output now shows the ``teams/`` dir instead of
+  the legacy central voiceprint DB path.
+* ``queue.set_job_team`` now defaults to ``require_team_exists=True``;
+  the v0.6.0 migration backfill explicitly opts out with
+  ``require_team_exists=False`` so seed teams can be inserted in
+  the same transaction.
+
+### Compatibility
+
+* **Zero schema changes.**  Everything reuses v0.6.0 columns; only
+  on-disk files move (and are moved automatically by the migration).
+* **Operator action required**: none for existing single-team
+  installs.  The migration auto-routes the legacy voiceprint DB
+  to blink.
+* **Token compatibility**: unchanged.  No tokens revoked by the
+  migration; no token re-issue needed.
+* **Web cookies**: unchanged.
+
+### Tests
+
+285 passing (up from 226 in v0.6.1):
+
+* ``tests/test_voiceprints_per_team.py`` (16) — migration moves
+  legacy DB into blink, twentyone starts empty, migration is
+  idempotent, voiceprints module API requires team_id, HOME shim
+  symlinks per-team, CLI ``--team`` flag works.
+* ``tests/test_sync_per_team.py`` (10) — meeting-type prefix
+  precedence (team row > env > default), sync_config resolution
+  precedence (override > materialized > legacy > real), idempotent
+  materialization, HOME shim symlinks per-team sync config.
+* ``tests/test_session_move.py`` (10) — destination-existence
+  check, backfill mode, end-to-end visibility flip, CLI happy
+  path + errors, voiceprint-backwash documented limitation.
+* ``tests/test_team_lifecycle.py`` (18) — rename happy + validation
+  paths, delete policy (refuse-if-not-empty, cascade with reassign,
+  reject self-reassign, reject unknown reassign), CLI happy paths,
+  admin HTTP endpoints (PATCH name, DELETE with/without cascade,
+  admin role required).
+
+Plus updates to:
+
+* ``tests/test_permissions.py`` — voiceprint DB now lives under
+  ``teams/blink/``.
+* ``tests/test_meet_runner.py`` — ``transcribe`` now takes
+  ``team_id``.
+* ``tests/test_label_api.py`` — ``_apply_and_finalize`` now takes
+  ``team_id`` as a fourth positional arg.
+
+### Operator setup
+
+Existing installs:
+
+```
+pip install --upgrade vezir
+sudo systemctl restart vezir  # or however you run it
+# migration 0.6.2-per-team-voiceprints runs at startup;
+# audit log: ~/vezir-data/logs/migration-0.6.2-per-team-voiceprints.log
+```
+
+After upgrade, to wire per-team git sync remotes:
+
+```
+vezir team set-sync --id blink     --remote git@github.com:org/blink-meetings.git
+vezir team set-sync --id twentyone --remote git@github.com:org/21-meetings.git
+```
+
+For hand-tuned millet sync configs (branch, ssh key, etc.) per team:
+
+```
+$EDITOR ~/vezir-data/teams/blink/sync_config.json
+```
+
+(If this file exists it shadows the auto-materialized one.)
+
+
 ## 0.6.1 — TUI team-switcher + GET /api/me + client-side teams.json
 
 Follow-up to v0.6.0's server-side multi-team support: thin clients

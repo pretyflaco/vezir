@@ -357,10 +357,118 @@ def migrate_0_6_0() -> dict:
     return summary
 
 
+# ── v0.6.2: per-team voiceprint DB ─────────────────────────────────────────
+
+
+def _move_voiceprints() -> dict:
+    """Move legacy central speaker_profiles.json -> teams/blink/speaker_profiles.json.
+
+    Per the v0.6.2 design (matching the v0.6.0 job-backfill default
+    "everything-not-bettermorning -> blink"), the existing central
+    voiceprint training surface migrates into blink.  Twentyone starts
+    with an empty DB (locked-in user decision: clean slate, no
+    cross-team contamination).
+
+    Idempotent: skips when blink already has its per-team DB; always
+    ensures twentyone has at least an empty file so the per-job HOME
+    shim's symlink target resolves.
+    """
+    legacy = config.speaker_profiles_path()
+    blink_dst = config.team_speaker_profiles_path("blink")
+    twentyone_dst = config.team_speaker_profiles_path("twentyone")
+
+    stats = {
+        "blink_voiceprints_moved": False,
+        "twentyone_voiceprints_seeded": False,
+    }
+
+    config.secure_mkdir(blink_dst.parent)
+    config.secure_mkdir(twentyone_dst.parent)
+
+    # 1. Blink: move the legacy DB into place (or seed empty if missing).
+    if not blink_dst.exists():
+        if legacy.exists():
+            shutil.move(str(legacy), str(blink_dst))
+            config.secure_chmod_file(blink_dst)
+            stats["blink_voiceprints_moved"] = True
+            log.info(
+                "migration 0.6.2: moved %s -> %s", legacy, blink_dst,
+            )
+        else:
+            config.secure_write_text(blink_dst, "{}")
+            log.info(
+                "migration 0.6.2: no legacy voiceprint DB; "
+                "seeded empty %s", blink_dst,
+            )
+    else:
+        log.info(
+            "migration 0.6.2: blink voiceprint DB already at %s; "
+            "skipping move", blink_dst,
+        )
+
+    # 2. Twentyone: seed empty (user decision: clean slate, no
+    #    cross-team contamination of voiceprints).
+    if not twentyone_dst.exists():
+        config.secure_write_text(twentyone_dst, "{}")
+        stats["twentyone_voiceprints_seeded"] = True
+        log.info(
+            "migration 0.6.2: seeded empty %s "
+            "(twentyone starts with no voiceprints)",
+            twentyone_dst,
+        )
+    else:
+        log.info(
+            "migration 0.6.2: twentyone voiceprint DB already at %s; "
+            "skipping seed", twentyone_dst,
+        )
+
+    return stats
+
+
+def migrate_0_6_2() -> dict:
+    """Apply the v0.6.2 per-team-voiceprint migration.
+
+    Single step (idempotent): move the legacy central voiceprint DB
+    (``~/vezir-data/speaker_profiles.json``) under
+    ``~/vezir-data/teams/blink/speaker_profiles.json`` and seed an
+    empty DB at ``~/vezir-data/teams/twentyone/speaker_profiles.json``.
+
+    No schema changes are needed for v0.6.2: per-team sync_remote was
+    already a schema slot in v0.6.0; per-team voiceprint DBs are pure
+    on-disk reshuffles.
+
+    Returns a stats dict suitable for the migration log.
+    """
+    version = "0.6.2-per-team-voiceprints"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+    vp_stats = _move_voiceprints()
+    _mark_applied(version)
+
+    summary = {
+        "version": version,
+        "voiceprints": vp_stats,
+    }
+
+    log_dir = config.logs_dir()
+    config.secure_mkdir(log_dir)
+    log_file = log_dir / f"migration-{version}.log"
+    config.secure_write_text(
+        log_file,
+        json.dumps(summary, indent=2) + "\n",
+    )
+    log.info("migration %s complete; audit at %s", version, log_file)
+
+    return summary
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
-ALL_MIGRATIONS = [migrate_0_6_0]
+ALL_MIGRATIONS = [migrate_0_6_0, migrate_0_6_2]
 
 
 def run_pending_migrations() -> list[dict]:
