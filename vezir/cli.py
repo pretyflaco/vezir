@@ -752,6 +752,116 @@ def team_set_sync(team_id, sync_remote, sync_meeting_type):
     click.echo(f"  sync_meeting_type: {row['sync_meeting_type']}")
 
 
+# ── team config (v0.6.1: client-side multi-team credentials) ────────────────
+
+@team.group("config")
+def team_config():
+    """Manage client-side team credentials (~/.config/vezir/teams.json).
+
+    v0.6.1+: lets a thin client hold credentials for multiple teams
+    and switch between them at runtime (TUI ctrl+t binding, or
+    `vezir team config use <id>` from the CLI).  When teams.json
+    has an active entry, those credentials WIN over env vars and
+    over the legacy client.json url/token.
+
+    The store is at ``~/.config/vezir/teams.json`` (mode 0600).
+    """
+
+
+@team_config.command("add")
+@click.option("--id", "team_id", required=True,
+              help="Team slug (matches the server-side team id).")
+@click.option("--url", required=True,
+              help="Server URL for this team (typically the same vezir "
+                   "server, just different team slug).")
+@click.option("--token", required=True,
+              help="Bearer token issued by `vezir token issue --team <id>`.")
+@click.option("--label", default=None,
+              help="Human display name shown in the TUI title bar "
+                   "(defaults to team id).")
+@click.option("--activate/--no-activate", "activate", default=False,
+              help="Make this the active team immediately.  Implicit "
+                   "for the first team added.")
+def team_config_add(team_id, url, token, label, activate):
+    """Add or update a team in the client-side credentials store."""
+    from .client.config import add_team_credentials
+    cfg = add_team_credentials(
+        team_id, url, token, label=label, activate=activate,
+    )
+    click.echo(f"team added: id={team_id} url={url} label={label or team_id}")
+    if cfg.get("active") == team_id:
+        click.echo(f"  (active)")
+    click.echo(
+        f"  stored at: ~/.config/vezir/teams.json "
+        f"({len(cfg['teams'])} team(s) configured)"
+    )
+
+
+@team_config.command("list")
+def team_config_list():
+    """List teams configured in the client-side credentials store."""
+    from .client.config import load_teams_config
+    cfg = load_teams_config()
+    teams = cfg["teams"]
+    if not teams:
+        click.echo("(no teams configured locally)")
+        click.echo(
+            "Add one with: vezir team config add --id <slug> "
+            "--url <https://...> --token <vzr_...>"
+        )
+        return
+    active = cfg.get("active")
+    ids = [t["id"] for t in teams]
+    labels = [str(t.get("label") or t["id"]) for t in teams]
+    urls = [str(t.get("url") or "") for t in teams]
+    id_w = max([len("id")] + [len(s) for s in ids])
+    lbl_w = max([len("label")] + [len(s) for s in labels])
+    url_w = max([len("url")] + [len(s) for s in urls])
+    click.echo(
+        f"  {'':<2}{'id':<{id_w}}  {'label':<{lbl_w}}  {'url':<{url_w}}"
+    )
+    for t in teams:
+        marker = "* " if t["id"] == active else "  "
+        click.echo(
+            f"  {marker}{t['id']:<{id_w}}  "
+            f"{(t.get('label') or t['id']):<{lbl_w}}  "
+            f"{t.get('url') or '':<{url_w}}"
+        )
+    click.echo()
+    click.echo(f"active: {active or '(none)'}")
+
+
+@team_config.command("use")
+@click.argument("team_id")
+def team_config_use(team_id):
+    """Set the active team in the client-side credentials store."""
+    from .client.config import set_active_team
+    try:
+        cfg = set_active_team(team_id)
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(f"active team set to: {team_id}")
+    click.echo(f"({len(cfg['teams'])} team(s) configured)")
+
+
+@team_config.command("remove")
+@click.argument("team_id")
+def team_config_remove(team_id):
+    """Remove a team from the client-side credentials store."""
+    from .client.config import load_teams_config, remove_team_credentials
+    before = load_teams_config()
+    if not any(t["id"] == team_id for t in before["teams"]):
+        click.echo(f"team {team_id!r} is not configured locally; nothing to remove")
+        return
+    cfg = remove_team_credentials(team_id)
+    click.echo(f"team removed: {team_id}")
+    if cfg.get("active"):
+        click.echo(f"active is now: {cfg['active']}")
+    else:
+        click.echo("no teams remaining; active is unset")
+
+
 # ── voiceprints ───────────────────────────────────────────────────────────────
 
 @main.group()

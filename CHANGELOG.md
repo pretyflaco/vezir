@@ -3,6 +3,118 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.1 — TUI team-switcher + GET /api/me + client-side teams.json
+
+Follow-up to v0.6.0's server-side multi-team support: thin clients
+can now hold credentials for multiple teams and switch between them
+at runtime, instead of requiring an env-var swap + TUI restart.
+
+### Added
+
+* **`GET /api/me`** server endpoint returning
+  ``{github, team_id, team_name, is_admin}``.  Powers the TUI title-bar
+  display + the post-switch confirmation in the team-switcher.
+* **`~/.config/vezir/teams.json`** client-side credentials store
+  (mode 0600).  Schema:
+
+      {
+        "teams": [
+          {"id": "blink",     "url": "...", "token": "vzr_...", "label": "Blink"},
+          {"id": "twentyone", "url": "...", "token": "vzr_...", "label": "Twentyone"}
+        ],
+        "active": "blink"
+      }
+
+  When teams.json has an active entry, those credentials WIN over
+  env vars and over the legacy single-team ``client.json``
+  ``url``/``token`` keys.  Precedence: env vars > teams.json active >
+  client.json > localhost default.  Env stays top so ad-hoc
+  ``VEZIR_TOKEN=xxx vezir ...`` overrides still work.
+
+* **TUI binding `^t` ("Switch team")** cycles through teams
+  configured in ``teams.json``:
+  - Persists the new ``active`` to disk.
+  - Rebuilds the in-process ``VezirClient`` against the new url/token.
+  - Re-fetches identity from ``/api/me`` to update the title-bar
+    team label.
+  - Reloads the Sessions tab so it shows the new team's sessions.
+  - Refuses while a recording or upload is in flight (would orphan
+    the upload on the old team's server view).
+  - No-ops with a friendly toast when only one team (or none) is
+    configured.
+
+* **TUI title-bar team display**: the subtitle now reads
+  ``team: <team_name>`` once ``/api/me`` resolves.  Falls back to
+  ``thin client`` placeholder when the call fails (older server or
+  network hiccup), so the TUI stays usable.
+
+* **CLI `vezir team config` subgroup**:
+  - ``vezir team config add --id <slug> --url <url> --token <vzr_...>
+    [--label <name>] [--activate]`` — add or update a team in
+    teams.json.  Implicit-activate for the first team added.
+  - ``vezir team config list`` — print configured teams with an
+    asterisk marking the active one.
+  - ``vezir team config use <slug>`` — switch active team (CLI side;
+    matches what ``^t`` does in the TUI).
+  - ``vezir team config remove <slug>`` — drop a team entry; if it
+    was active, falls back to the first remaining team.
+
+### Changed
+
+* **`vezir/config.py::server_url()` and `client_token()`** now
+  consult ``teams.json`` after env vars and before the localhost
+  default, so CLI commands (``vezir scribe``, ``vezir upload``,
+  ``vezir token enroll``) automatically pick up the active team's
+  credentials.  Env vars remain top priority.
+
+### Deferred (still)
+
+* Per-team voiceprint DB (planned for 0.6.2).
+* Per-team git sync remote in the worker (planned for 0.6.2;
+  ``teams.sync_remote`` schema slot exists since 0.6.0).
+* ``vezir session move <id> --to-team <slug>`` for retroactive
+  job re-classification (planned for 0.6.2).
+
+### Operator + thin-client setup (typical flow)
+
+On muscle, mint a token per (handle, team) pair:
+
+    vezir token issue --github pretyflaco --team blink     --label laptop-blink
+    vezir token issue --github pretyflaco --team twentyone --label laptop-twentyone
+
+Both commands print plaintext bearers ONCE; capture them.
+
+On the thin client (laptop), populate teams.json:
+
+    vezir team config add --id blink     --url https://10.44.141.239 --token vzr_blink_token     --label Blink     --activate
+    vezir team config add --id twentyone --url https://10.44.141.239 --token vzr_twentyone_token --label Twentyone
+
+Confirm:
+
+    vezir team config list
+
+In the TUI:
+
+    vezir tui
+    # ctrl+t cycles to twentyone
+    # ctrl+t again cycles back to blink
+
+The title bar reads ``team: Blink`` / ``team: Twentyone`` to reflect
+the active team.  Sessions tab auto-reloads on every switch.
+
+### Compatibility
+
+* **Single-team users** (using only ``client.json`` ``url``/``token``)
+  see no behavior change.  teams.json is opt-in.
+* **Env-var users** see no behavior change.  Env still wins.
+* **Web/dashboard cookies minted under v0.6.0** keep working; they
+  carry team_id from /login as captured in v0.6.0.
+* **No schema migration**.  v0.6.1 is purely additive: new server
+  endpoint, new client-side file, new CLI/TUI surface.  No DB
+  changes; no token-file changes.
+
+---
+
 ## 0.6.0 — multi-team support (β-minimal): team isolation, seed blink + twentyone
 
 Vezir grew up.  Previously every authenticated bearer token saw every

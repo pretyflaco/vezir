@@ -455,11 +455,50 @@ def log_level() -> str:
 
 
 def server_url() -> str:
-    return os.environ.get("VEZIR_URL", "http://localhost:8000")
+    """Resolve the server URL using v0.6.1+ multi-team precedence.
+
+    Precedence:
+      1. ``VEZIR_URL`` env var
+      2. teams.json active team's url (if any)
+      3. client.json ``url`` (if any)
+      4. ``http://localhost:8000`` default
+
+    The fallback chain matches :func:`vezir.client.config.resolve_credentials`
+    but lives here in the shared config module so server-side code
+    (which can't import client.config without a circular dep) still
+    has a single source of truth for the default URL.
+    """
+    env = os.environ.get("VEZIR_URL")
+    if env:
+        return env
+    try:
+        from .client.config import resolve_credentials as _rc
+        url, _tok, _src = _rc()
+        if url:
+            return url
+    except Exception:
+        pass
+    return "http://localhost:8000"
 
 
 def client_token() -> str | None:
-    return os.environ.get("VEZIR_TOKEN")
+    """Resolve the bearer token using v0.6.1+ multi-team precedence.
+
+    See :func:`server_url` for the precedence chain.  Returns ``None``
+    when no token is configured anywhere; callers must surface a
+    helpful error in that case.
+    """
+    env = os.environ.get("VEZIR_TOKEN")
+    if env:
+        return env
+    try:
+        from .client.config import resolve_credentials as _rc
+        _url, tok, _src = _rc()
+        if tok:
+            return tok
+    except Exception:
+        pass
+    return None
 
 
 _TOKEN_PREFIX = "vzr_"

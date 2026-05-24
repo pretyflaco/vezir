@@ -326,6 +326,43 @@ def share_with_team(
     return {"ok": True, "session_id": session_id}
 
 
+# ── /api/me (v0.6.1) ────────────────────────────────────────────────────────
+
+
+@router.get("/api/me", dependencies=[Depends(ratelimit.limit_api)])
+def api_me(auth_triple: tuple = Depends(auth.require_bearer_full)):
+    """Return identity + team info for the calling token.
+
+    Used by:
+      * TUI title-bar display ("vezir — blink — sessions (N)").
+      * TUI ^t team-switcher after switching tokens to confirm the
+        new identity + display name.
+      * Future ``vezir whoami`` CLI (not in v0.6.1).
+
+    Response shape:
+
+        {
+          "github": "pretyflaco",
+          "team_id": "blink",
+          "team_name": "Blink",
+          "is_admin": false
+        }
+
+    ``team_name`` is the human-friendly name from the ``teams`` table;
+    falls back to the slug if the team row is somehow missing (shouldn't
+    happen post-migration but defensive in case the row was deleted).
+    """
+    github, team_id, is_admin = auth_triple
+    row = queue.get_team(team_id)
+    team_name = row.get("name") if row else team_id
+    return {
+        "github": github,
+        "team_id": team_id,
+        "team_name": team_name or team_id,
+        "is_admin": is_admin,
+    }
+
+
 # ── exchange-code minting ───────────────────────────────────────────────────
 
 

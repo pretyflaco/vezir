@@ -5,8 +5,9 @@ Architecture:
 * ``VezirTuiApp`` owns one ``VezirClient`` instance (constructed from
   ``VEZIR_URL`` / ``VEZIR_TOKEN`` or the persisted client.json) and
   passes it via ``self.app.api`` so every screen reads the same auth
-  state (token rotation in a future settings screen is a one-line
-  change).
+  state.  v0.6.1+: when ``~/.config/vezir/teams.json`` exists with an
+  active entry, those credentials win over env+client.json — see
+  :func:`vezir.client.config.resolve_credentials`.
 * A single root ``MainScreen`` wraps the two top-level views
   (RecordScreen, SessionsScreen) inside a ``TabbedContent``.  This is
   the Textual-idiomatic shape for "bottom-nav" UIs and dodges the
@@ -24,6 +25,7 @@ Global bindings (priority on the App):
   ctrl+s  Sessions tab
   ctrl+l  Refresh
   ctrl+q  Quit
+  ctrl+t  Cycle active team (v0.6.1+, requires teams.json)
   f1 / ?  Help
 """
 from __future__ import annotations
@@ -37,22 +39,32 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from ..api import VezirClient
-from ..config import load_client_prefs
+from ..config import (
+    load_client_prefs,
+    load_teams_config,
+    next_team_id,
+    resolve_credentials,
+    set_active_team,
+)
 
 log = logging.getLogger("vezir.client.tui")
 
 
-def _resolve_credentials() -> tuple[str, str | None]:
-    """Resolve server URL + token: env > client.json > defaults."""
-    url = os.environ.get("VEZIR_URL")
-    token = os.environ.get("VEZIR_TOKEN")
-    if not url or not token:
-        cfg = load_client_prefs()
-        url = url or cfg.get("url")
-        token = token or cfg.get("token")
+def _resolve_credentials() -> tuple[str, str | None, str]:
+    """Resolve server URL + token: env > teams.json > client.json > defaults.
+
+    Returns ``(url, token, source)`` where ``source`` is one of
+    ``"env"``, ``"teams:<id>"``, ``"client"``, or ``"default"``.
+    Wraps :func:`vezir.client.config.resolve_credentials` with a
+    ``localhost`` fallback so the TUI can still mount on a fresh
+    machine with no config (will get 401 on the first API call but
+    won't crash).
+    """
+    url, token, source = resolve_credentials()
     if not url:
         url = "http://localhost:8000"
-    return url, token
+        source = source or "default"
+    return url, token, source
 
 
 # ─── MainScreen: tabbed root holding the two top-level views ────────────────
@@ -212,6 +224,13 @@ class VezirTuiApp(App):
         # ctrl+shift+c is the conventional terminal "copy" keystroke
         # so it composes naturally with the user's muscle memory.
         Binding("ctrl+shift+c", "screen.copy_text", "Copy selection", show=False),
+        # v0.6.1: ^t cycles through teams configured in
+        # ~/.config/vezir/teams.json.  Hidden from the footer (not
+        # show=True) when no teams.json or only one team is configured,
+        # because dynamic-show isn't supported by Textual's Footer.
+        # Always-shown is the right tradeoff: discoverable when present,
+        # one extra footer cell when not (cheap).
+        Binding("ctrl+t", "switch_team", "Switch team"),
         Binding("f1", "help", "Help"),
         Binding("question_mark", "help", show=False),
     ]
@@ -221,7 +240,18 @@ class VezirTuiApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.server_url, self.token = _resolve_credentials()
+        self.server_url, self.token, self.cred_source = _resolve_credentials()
+        # active_team_id tracks the team slug currently selected from
+        # teams.json (if any).  Used by action_switch_team to cycle
+        # to the next entry without re-resolving precedence.
+        self.active_team_id: str | None = None
+        if self.cred_source.startswith("teams:"):
+            self.active_team_id = self.cred_source.split(":", 1)[1]
+        # team_label is the human display name (from /api/me).  Filled
+        # in by _refresh_identity() shortly after mount.  Default
+        # placeholder reads "?" so the title bar shows something while
+        # the network round-trip is in flight.
+        self.team_label: str = "?"
         if not self.token:
             log.warning("VEZIR_TOKEN is not set; TUI will run in degraded mode")
         self.api = VezirClient(
@@ -231,6 +261,157 @@ class VezirTuiApp(App):
 
     def on_mount(self) -> None:
         self.push_screen(MainScreen())
+        # Fetch identity asynchronously so the title bar gets the real
+        # team name once it lands.  Failure is silent (the title-bar
+        # placeholder stays "?"; users can `vezir --version` or run
+        # the CLI's `vezir status` to debug).
+        self._refresh_identity()
+
+    # ── identity / team-switching ──
+
+    def _refresh_identity(self) -> None:
+        """Pull team_name from GET /api/me and update the title bar.
+
+        Called once at mount and after every successful team switch.
+        Server-side endpoint added in v0.6.1; against an older server
+        the call returns 404 and we just leave the placeholder.
+
+        Runs synchronously (one quick HTTP call); could move to a
+        worker if it ever shows up in profiling, but a single ~50ms
+        roundtrip at startup is invisible.
+        """
+        try:
+            import httpx
+            verify = self.api._resolve_verify(None)
+            r = httpx.get(
+                self.server_url.rstrip("/") + "/api/me",
+                headers={"Authorization": f"Bearer {self.token or ''}"},
+                timeout=5.0,
+                verify=verify,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                self.team_label = data.get("team_name") or data.get("team_id") or "?"
+                # Keep active_team_id in sync with the server's view if
+                # we connected via env vars (where we didn't know the
+                # team id at startup).
+                if not self.active_team_id:
+                    self.active_team_id = data.get("team_id")
+            else:
+                log.info(
+                    "GET /api/me returned %s; leaving team label as '?'",
+                    r.status_code,
+                )
+        except Exception as exc:
+            log.info("GET /api/me failed (%s); leaving team label as '?'", exc)
+        self._update_subtitle()
+
+    def _update_subtitle(self) -> None:
+        """Refresh the title bar TITLE to reflect the active team.
+
+        SUB_TITLE is owned by the active screen (SessionsBody sets
+        "sessions (N)", DetailScreen sets "session <id>", etc.).  To
+        avoid stomping that surface, the team label lives in the main
+        TITLE: "vezir — team: Blink".  Screens leave TITLE alone, so
+        the team display sticks.
+        """
+        if self.team_label and self.team_label != "?":
+            self.title = f"vezir — team: {self.team_label}"
+        else:
+            self.title = "vezir"
+
+    def action_switch_team(self) -> None:
+        """Cycle to the next team configured in teams.json.
+
+        Refuses while a recording or upload is in flight (because the
+        upload pipeline uses the current credentials; switching mid-
+        flight would orphan the upload on the old team's server view).
+
+        After the swap:
+          1. Persist the new ``active`` in teams.json.
+          2. Re-resolve credentials, rebuild ``self.api``.
+          3. Re-fetch identity for the new team.
+          4. Refresh the visible screen so the Sessions list re-loads
+             scoped to the new team.
+          5. Toast the user with the new team name.
+        """
+        cfg = load_teams_config()
+        teams = cfg["teams"]
+        if not teams:
+            self.notify(
+                "No teams configured.  Run "
+                "`vezir team config add --id <slug> --url ... --token ...` "
+                "first.",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        if len(teams) == 1:
+            self.notify(
+                f"Only one team configured ({teams[0]['id']}).  "
+                "Add another with `vezir team config add`.",
+                severity="information",
+                timeout=4,
+            )
+            return
+
+        # Refuse while a recording or upload is in flight.  The Record
+        # screen owns the only blocking state we care about; query it
+        # if it's mounted.
+        try:
+            from .record_screen import RecordBody
+            body = self.query_one(RecordBody)
+            if body.is_recording or body.is_uploading:
+                self.notify(
+                    "Cannot switch teams while recording or uploading.",
+                    severity="error",
+                    timeout=5,
+                )
+                return
+        except Exception:
+            pass  # Record screen not mounted; no inflight work to guard.
+
+        new_id = next_team_id(self.active_team_id)
+        if new_id is None or new_id == self.active_team_id:
+            return  # nothing to switch to
+
+        try:
+            set_active_team(new_id)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error", timeout=5)
+            return
+
+        # Find the new credentials.  By construction (set_active_team
+        # validated the id) one of these entries matches.
+        new_url = ""
+        new_token = ""
+        for t in teams:
+            if t["id"] == new_id:
+                new_url = t.get("url", "")
+                new_token = t.get("token", "")
+                break
+
+        self.server_url = new_url or self.server_url
+        self.token = new_token or self.token
+        self.active_team_id = new_id
+        self.cred_source = f"teams:{new_id}"
+        self.team_label = "?"  # cleared until /api/me round-trips
+        self.api = VezirClient(self.server_url, self.token or "vzr_unset")
+        self._refresh_identity()
+
+        # Force the Sessions tab to reload against the new server.
+        try:
+            from .sessions_screen import SessionsBody
+            body = self.query_one(SessionsBody)
+            body.action_refresh()
+        except Exception:
+            pass
+
+        self.notify(
+            f"Switched to team: {self.team_label if self.team_label != '?' else new_id}",
+            severity="information",
+            timeout=4,
+        )
 
     # ── global actions ──
 
