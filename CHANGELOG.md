@@ -494,3 +494,195 @@ collapses npub + nvpn invite + bearer into a single QR) is deferred.
 * Dependency lockfiles across the four repos.
 * meetscribe path sanitization in `meet/cli.py` (not reachable through
   vezir's upload path, so genuinely lower priority).
+
+## 0.1.11 — preset selector + auto-label/sync opt-outs + retroactive sync ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.11))
+
+Three-release rollup over [v0.1.8](https://github.com/pretyflaco/vezir/releases/tag/v0.1.8): the summarization preset selector (originally tagged 0.1.9), the GUI brand-lockup PNG (originally 0.1.10), and the two new per-upload privacy toggles (0.1.11).
+
+Requires **`meetscribe-offline >= 0.8.1`** for the preset features; pinned in the `[server]` extra.
+
+### Added
+
+* **Summarization preset selector** (originally 0.1.9). `vezir scribe` and `vezir upload` accept `--preset {high-quality,confidential,alternative}`; the Tkinter GUI gets a dropdown above the recorder. Default on desktop is `high-quality`; Android default is `confidential`. The preset id flows: client → multipart form field `summary_preset` → server `Form()` → queue row → worker subprocess → `meet transcribe --summary-preset <id>` → meetscribe resolves to `(backend, model)`. When the chosen backend fails, the server refuses to silently fall back — the job ends in `error` with a clear reason.
+
+* **Brand-lockup PNG in the GUI header** (originally 0.1.10). The "vezir scribe" text label is replaced by the pre-rendered brand mark + wordmark lockup (88×28 by default — matches the Record button height). Window title also rebranded from "vezir scribe" to "vezir". Falls back to a textual label if the PNG asset is missing.
+
+* **Auto-label opt-out** (`--auto-label/--no-auto-label`, default ON). When off, the server skips voiceprint matching and the session always routes to manual labeling.
+
+* **Sync opt-out** (`--sync/--no-sync`, default ON). When off, the session reaches `done (local-only)` on the dashboard. Artifacts stay on the vezir server but are not pushed to the configured destination repo.
+
+* **Retroactive sync** — new endpoint `POST /session/<id>/sync` flips `sync_enabled=1` on the queue row and re-runs the finalize-sync flow. The dashboard's session detail page shows a "Sync now" button when the session reached `done` with `sync_enabled=0`. Status badge reads `local-only` (purple) instead of `done` (green) in that case.
+
+### Changed
+
+* Server schema gains `summary_preset TEXT`, `auto_label_enabled INTEGER NOT NULL DEFAULT 1`, and `sync_enabled INTEGER NOT NULL DEFAULT 1` via idempotent `ALTER TABLE`. Existing rows get the defaults; no manual migration needed.
+
+### Backwards compatibility
+
+* Older servers (< 0.1.11) ignore the new form fields and behave as today (always auto-label, always sync).
+* Older clients (< 0.1.11) don't send the new fields; the new server treats absent fields as ON (today's behavior).
+* The operator-side `VEZIR_SKIP_SYNC=1` env var continues to act as a global kill switch — per-job `sync_enabled` AND the env var both have to allow sync for sync to happen.
+
+### Notes on the 3-version rollup
+
+Tags `v0.1.9`, `v0.1.10`, and `v0.1.12` (later) were created in git but never published to PyPI as standalone releases. 0.1.11 is the canonical PyPI artifact carrying all three features.
+
+## 0.1.8 — macOS Sequoia TCC pre-flight check ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.8))
+
+`vezir scribe` and `vezir gui` now run `meet check` before starting a recording. On macOS, this triggers the TCC permission dialog on first use so the user can grant Microphone and System Audio Recording access interactively.
+
+### Fixed
+
+* **macOS Sequoia silent permission failure.** On macOS 15+, new users running `vezir scribe` for the first time hit a silent failure — the microphone permission dialog never appeared because the old `probe-permissions` subcommand only *read* TCC status without triggering the prompt. Apple removed the `+` button from System Settings > Privacy > Microphone in Sequoia, so there was no manual workaround. Fix requires `meetscribe-record >= 0.3.0` which adds a `request-permissions` subcommand calling `AVCaptureDevice.requestAccess(for: .audio)`. Pre-flight check in vezir calls `meet check` and surfaces actionable errors instead of opaque subprocess failures.
+
+### Changed
+
+* `scribe.py`: `_check_meet_prerequisites()` runs `meet check` before spawning `meet record`.
+* `gui.py`: same pre-flight check with `messagebox.showerror()` on failure.
+* `pyproject.toml`: bump `meetscribe-record` from `>=0.1.0` to `>=0.3.0`.
+
+## 0.1.7 — labeling wait, persistent cookie, session auto-refresh ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.7))
+
+### Added
+
+* **`vezir scribe --wait` extended through labeling.** Polls past `transcribing` and `syncing` into `needs_labeling`, prints a clickable login URL to the labeling page, then continues polling until `done`.
+
+* **Persistent browser cookie.** Login cookie no longer expires on browser close; survives across sessions until explicit `/logout` or token revocation.
+
+* **Session detail page auto-refresh.** Long-running summaries no longer require a manual reload to see status transitions.
+
+## 0.1.6 — token format validation, nvpn macOS onboarding ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.6))
+
+### Added
+
+* **Client-side token format validation.** `vezir scribe` and `vezir upload` check `VEZIR_TOKEN` before starting and warn on common copy-paste errors (missing `vzr_` prefix, wrong length, trailing backslash from line-wrap, accidentally using an nvpn invite as the token).
+
+* **Restructured nostr-vpn setup guide** (`infra/nvpn/README.md`) — separate Linux and macOS sections. Incorporates onboarding feedback: macOS native app invite import via URL scheme, root config copy step, explicit vezir upgrade step, two-secrets callout, token troubleshooting.
+
+## 0.1.5 — CLI login URL, --wait polling, nostr-vpn guide ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.5))
+
+### Added
+
+* **`vezir scribe` prints a browser-friendly URL.** Output URL includes `/login?token=...&next=...` so clicking it in a browser works immediately (sets auth cookie and redirects to the session page). Previously printed a bare URL that returned 401.
+
+* **`vezir scribe --wait` (on by default).** After upload, polls the server for processing status and prints transitions (`transcribing`, `syncing`, `done`). When speakers need manual labeling, prints a clickable URL to the labeling page. Use `--no-wait` for fire-and-forget. `vezir upload` also gains `--wait/--no-wait` (default: off).
+
+* **nostr-vpn onboarding guide** (`infra/nvpn/README.md`) — step-by-step setup for teammates connecting to vezir via [nostr-vpn](https://github.com/mmalmi/nostr-vpn), a decentralized mesh VPN with no accounts or fees.
+
+### Changed
+
+* **VPN-agnostic documentation.** README and code comments updated to support both nostr-vpn and Tailscale as network layer options.
+
+* **Improved 401 error message.** Now tells you to visit `/login` or use the URL from CLI output, instead of referencing only the GUI.
+
+## 0.1.4 — fix auto-labeling gate, voiceprint update, version drift ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.4))
+
+### Fixed
+
+* **Auto-labeling gate no longer bypassed** ([#6](https://github.com/pretyflaco/vezir/issues/6)). `_has_unresolved_speakers()` was reading `.frontmatter.json` instead of the transcript because the glob-and-exclude pattern didn't account for frontmatter files. Now positively selects the canonical transcript by name.
+
+* **Voiceprint update no longer silently fails** ([#8](https://github.com/pretyflaco/vezir/issues/8)). `update_profiles_from_confirmed_labels()` was called with 2 args but expects 4 (`audio_path`, `transcript_segments`, `confirmed_label_map`, `channel_map`). The `TypeError` was swallowed by a broad `except Exception`. Now loads the transcript and detects channel layout before calling, matching meetscribe-offline's canonical call shape.
+
+* **Dynamic versioning** ([#7](https://github.com/pretyflaco/vezir/issues/7)). `vezir --version` now reads from package metadata via `importlib.metadata`. No more double-edit hazard between `pyproject.toml` and `__init__.py`.
+
+## 0.1.3 — meetscribe 0.6.0 compatibility ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.3))
+
+### Changed
+
+* Pin `meetscribe-offline >= 0.6.0` in the `[server]` extra. No vezir code changes; meetscribe 0.6.0 ships Apple Silicon auto-defaults for `--device` and `--torch-device`, runtime device-availability validation, a new GUI Advanced settings panel for ASR backend / torch device / MLX model, and the first CI workflow on the meetscribe repo.
+
+### Compatibility
+
+* **vezir 0.1.3 + meetscribe-offline 0.6.0** is the required pairing for the cleanest Apple Silicon UX. Vezir's `meet_supports_option` helper already absorbed the new flags in 0.1.2, so this is mostly a documentation + pin update.
+* **vezir-android 0.1.x** unchanged. Android communicates only with vezir's HTTP API; no Android update needed.
+
+## 0.1.2 — OGG/Opus compression by default + upload integrity ([commit 0f15122](https://github.com/pretyflaco/vezir/commit/0f15122))
+
+A real Blink meeting recording (~233 MB raw WAV) exposed slow uploads over Tailscale and a silent partial-upload failure mode. This release moves to OGG/Opus by default and adds end-to-end size verification.
+
+### Added
+
+* **`vezir scribe` compresses to OGG/Opus before upload by default.** Raw WAV stays under `~/meet-recordings`. Use `vezir scribe --no-compress` to send raw WAV.
+
+* **`vezir upload --compress`** for compressing an existing WAV before uploading.
+
+* **CLI upload progress** — percent, uploaded/total bytes, upload speed, ETA.
+
+### Changed
+
+* **Client sends expected audio byte count with the upload.** Server verifies received bytes against expected.
+* **Retry messages explicitly say retries restart from byte 0** (no resumable upload yet).
+
+### Fixed
+
+* **Incomplete uploads** are rejected and deleted instead of being enqueued / processed.
+
+### Note
+
+* Not tagged in git (`v0.1.2` was a PyPI-only release). Tag created retroactively in the 2026-05-24 housekeeping pass.
+
+## 0.1.1 — existing-recording upload, hardened runtime permissions ([commit 56ac2ce](https://github.com/pretyflaco/vezir/commit/56ac2ce))
+
+First post-0.1.0 follow-up addressing onboarding feedback.
+
+### Added
+
+* **`vezir upload AUDIO_FILE --title "..."`** — upload an existing recording (`.wav` / `.ogg`) without recording live. Closes the gap reported by `@openoms`: "what I think is lacking the most is being able to upload the previous recordings".
+
+* **Server-side upload size/type limits.**
+
+### Changed
+
+* **Hardened runtime file permissions.**
+  - Runtime directories: `0700`
+  - Sensitive files (tokens, profiles, sync_config): `0600`
+  - systemd unit gains `UMask=0077` so subprocess artifacts inherit private defaults.
+
+### Docs
+
+* Updated onboarding for Tailscale IP fallback when MagicDNS doesn't work, local recordings under `~/meet-recordings`, and the `vezir status` semantics (local/server-side, not remote-server status).
+
+### Note
+
+* Not tagged in git (`v0.1.1` was a PyPI-only release). Tag created retroactively in the 2026-05-24 housekeeping pass.
+
+## 0.1.0 — initial public release ([release](https://github.com/pretyflaco/vezir/releases/tag/v0.1.0))
+
+Self-hosted scribe service for team meetings: a designated scribe records on a laptop, the audio uploads to a central GPU box over Tailscale, and the team gets back a diarized transcript, AI summary, and PDF — with speaker labels resolved to GitHub handles via a shared web UI.
+
+### Added
+
+#### Server (`vezir serve`)
+
+* FastAPI app with sqlite-backed job queue.
+* Background worker that shells out to unmodified meetscribe (`meet transcribe` → `meet label --auto` → `meet sync`).
+* Per-job `$HOME` shim so meetscribe's voiceprint DB and sync config point at vezir's central versions while the rest of the user's environment (model caches, etc.) stays visible.
+* Per-session sync folders: `meetings/{date}_{meeting-type}-{HHMMSSZ}-{rand6}/` in the configured git repo.
+* Silent-failure detection on `meet sync` (catches DNS hiccups, auth failures that cause `meet sync` to exit 0 even when git push failed).
+* Last ~2 KB of subprocess log captured into the session's `error` field so the dashboard surfaces real failure causes.
+
+#### Web UI
+
+* Dashboard, session detail, label page, artifact downloads.
+* Cookie-based browser auth via `/login?token=...&next=...` hand-off (HttpOnly, SameSite=Lax); JSON API stays bearer-only.
+* `/logout` clears the cookie.
+* Speaker labeling with GitHub-handle autocomplete (reads team roster from `team.json`).
+* Audio clip preview per speaker.
+
+#### Scribe clients
+
+* `vezir scribe` — CLI wrapper around `meet record`; uploads on Ctrl+C.
+* `vezir gui` — Tkinter widget (always-on-top; record/stop, live timer, server-side status badge, dashboard link). Cross-platform via stdlib Tkinter; needs `apt install python3-tk` on Debian-style minimal installs.
+* Lightweight install footprint (~30 MB) thanks to the [meetscribe-record](https://github.com/pretyflaco/meetscribe-record) split.
+
+#### Operations
+
+* Bearer tokens issued / revoked / listed via `vezir token ...`.
+* Central voiceprint DB seeded from existing meetscribe `~/.config/meet/speaker_profiles.json` (`vezir voiceprints seed`).
+* Systemd user unit template for unattended deployment.
+* All runtime state under a single env-configurable directory (`$VEZIR_DATA`, default `~/vezir-data`).
+
+### Known limitations at 0.1.0
+
+* macOS thin client deferred (Linux scribe clients fully supported).
+* Voiceprint enrollment for non-Blink-team external participants not yet a first-class flow.

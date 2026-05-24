@@ -17,6 +17,7 @@ labels resolved to GitHub handles via a shared web UI.
 Alpha (0.3.1). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one private mesh VPN + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
+Full release history in [`CHANGELOG.md`](CHANGELOG.md).
 
 **Highlights of the 0.3.x line (current):**
 
