@@ -3,6 +3,39 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.2 — TUI Record screen redesign: uniform 4-column grid
+
+### Changed
+
+* **Record screen: uniform 4-column grid layout.**  Rows 2 (toggles)
+  and 3 (controls) now share an identical 4-column equal-width grid
+  with uniform `border: round $primary` on every cell.  The result
+  is a clean, aligned layout where all interactive elements look like
+  consistently-sized bordered cells.
+
+  Layout:
+  ```
+  Row 1:  [──────────── optional meeting title ───────────────]
+  Row 2:  [ Auto-label ] [   Sync    ] [ Personal  ] [ Preset ▼]
+  Row 3:  [ ● Record   ] [ ⏸ Pause  ] [ 00:00:00  ] [ ⬆ Upload]
+  ```
+
+* **"Title:" label removed.**  The `Title:` label was redundant
+  with the placeholder text; the input now spans the full row width.
+
+* **Checkboxes replaced with toggle-buttons.**  Auto-label, Sync,
+  and Personal are now `Button` widgets that toggle on/off with
+  color feedback: green (`$success`) for Auto-label and Sync,
+  yellow/orange (`$warning`) for Personal (privacy-mode indicator).
+  Same persistence behavior as before (prefs saved to client.json).
+
+* **"Upload last" shortened to "Upload".**  Fits better in the
+  equal-width grid cell.
+
+  Server: no changes.  Client TUI only.
+
+---
+
 ## 0.4.1 — TUI Record screen layout polish
 
 ### Fixed

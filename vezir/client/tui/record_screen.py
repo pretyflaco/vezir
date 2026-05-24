@@ -42,7 +42,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
-from textual.widgets import Button, Checkbox, Input, Label, Select, Static
+from textual.widgets import Button, Input, Label, Select, Static
 
 from .. import config as _client_config_mod
 from ..config import load_client_prefs, save_client_prefs
@@ -150,55 +150,65 @@ class RecordBody(Vertical):
         padding: 1 2;
     }
 
-    /* ── title row ── */
+    /* ── title row: full-width input, no label ── */
     #title-row {
         height: 3;
         margin-bottom: 1;
-        align: left middle;
-    }
-    #title-row Label {
-        width: 10;
     }
     #title-row Input {
         width: 1fr;
     }
 
-    /* ── toggles row ── */
-    #toggles-row {
-        height: 3;
-        margin-bottom: 1;
-        align: left middle;
-    }
-    #toggles-row Checkbox,
-    #toggles-row Select {
-        width: 1fr;
-        margin-right: 1;
-    }
-    #toggles-row > :last-child {
-        margin-right: 0;
-    }
-
-    /* ── controls row ── */
+    /* ── shared 4-column grid for toggles + controls rows ── */
+    #toggles-row,
     #controls-row {
         height: 3;
         margin-bottom: 1;
         align: left middle;
     }
-    #controls-row Button {
-        margin-right: 1;
-    }
-    #controls-row #upload-btn {
-        margin-right: 0;
-        margin-left: 1;
-    }
-    #timer-label {
+    #toggles-row > *,
+    #controls-row > * {
         width: 1fr;
-        content-align: center middle;
-        border: round $primary;
-        padding: 0 1;
         height: 3;
+        margin-right: 1;
+        border: round $primary;
+        content-align: center middle;
+    }
+    #toggles-row > :last-child,
+    #controls-row > :last-child {
+        margin-right: 0;
+    }
+
+    /* ── toggle buttons: green when on, default when off ── */
+    .toggle-on {
+        background: $success;
+        color: $text;
+        border: round $success;
+    }
+    /* Personal uses warning color when on (privacy-mode indicator) */
+    .toggle-personal-on {
+        background: $warning;
+        color: $text;
+        border: round $warning;
+    }
+
+    /* ── timer label: read-only display cell ── */
+    #timer-label {
         text-style: bold;
         color: $accent;
+        padding: 0 1;
+    }
+
+    /* ── recording / paused state overrides ── */
+    Button.recording {
+        background: $error;
+        color: $text;
+        border: round $error;
+    }
+    Button.paused {
+        background: $warning;
+        color: $text;
+        border: round $warning;
     }
 
     #status-line {
@@ -210,18 +220,6 @@ class RecordBody(Vertical):
         color: $error;
         height: auto;
         min-height: 0;
-    }
-    Button.recording {
-        background: $error;
-        color: $text;
-    }
-    Button.paused {
-        background: $warning;
-        color: $text;
-    }
-    Checkbox.personal-on > .toggle--label {
-        color: $warning;
-        text-style: bold;
     }
     """
 
@@ -256,21 +254,12 @@ class RecordBody(Vertical):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="title-row"):
-            yield Label("Title:", classes="muted")
             yield Input(placeholder="optional meeting title", id="title-input")
 
         with Horizontal(id="toggles-row"):
-            yield Checkbox(
-                "Auto-label",
-                value=bool(self._prefs.get("auto_label", True)),
-                id="auto-label",
-            )
-            yield Checkbox(
-                "Sync",
-                value=bool(self._prefs.get("sync", True)),
-                id="sync",
-            )
-            yield Checkbox("Personal", value=False, id="personal")
+            yield Button("Auto-label", id="auto-label-btn")
+            yield Button("Sync", id="sync-btn")
+            yield Button("Personal", id="personal-btn")
             yield Select(
                 options=_PRESET_OPTIONS,
                 value=self._prefs.get("preset", "high-quality"),
@@ -286,10 +275,22 @@ class RecordBody(Vertical):
                 id="timer-label",
                 classes="timer",
             )
-            yield Button("⬆ Upload last", id="upload-btn", disabled=True)
+            yield Button("⬆ Upload", id="upload-btn", disabled=True)
 
         yield Static(f"Status: {self.status_text}", id="status-line")
         yield Static("", id="error-line", classes="error")
+
+    # ── mount: apply initial toggle states from prefs ──
+
+    def on_mount(self) -> None:
+        """Style toggle-buttons to match persisted preferences."""
+        al = self.query_one("#auto-label-btn", Button)
+        self._style_toggle(al, bool(self._prefs.get("auto_label", True)))
+        sy = self.query_one("#sync-btn", Button)
+        self._style_toggle(sy, bool(self._prefs.get("sync", True)))
+        # Personal always starts off (not persisted).
+        pe = self.query_one("#personal-btn", Button)
+        self._style_toggle(pe, False, personal=True)
 
     # ── reactive watchers ──
 
@@ -368,28 +369,45 @@ class RecordBody(Vertical):
             self.action_toggle_pause()
         elif bid == "upload-btn":
             self.action_upload_last()
+        elif bid == "auto-label-btn":
+            self._toggle_pref_button(event.button, "auto_label")
+            event.stop()
+        elif bid == "sync-btn":
+            self._toggle_pref_button(event.button, "sync")
+            event.stop()
+        elif bid == "personal-btn":
+            self.action_toggle_personal()
+            event.stop()
 
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        cid = event.checkbox.id
-        if cid == "auto-label":
-            self._prefs["auto_label"] = bool(event.value)
-            save_client_prefs(self._prefs)
-        elif cid == "sync":
-            self._prefs["sync"] = bool(event.value)
-            save_client_prefs(self._prefs)
-        elif cid == "personal":
-            # Per the gui.py pattern: when personal flips on, force sync
-            # off (server will enforce this anyway; we just keep the UI
-            # honest).  When it flips off, restore the persisted pref.
-            sync_cb = self.query_one("#sync", Checkbox)
-            if event.value:
-                sync_cb.value = False
-                sync_cb.disabled = True
-                event.checkbox.add_class("personal-on")
+    # ── toggle-button helpers ──
+
+    def _toggle_pref_button(self, btn: Button, pref_key: str) -> None:
+        """Flip a preference toggle-button on/off, persist, and restyle."""
+        current = bool(self._prefs.get(pref_key, True))
+        new_val = not current
+        self._prefs[pref_key] = new_val
+        save_client_prefs(self._prefs)
+        self._style_toggle(btn, new_val)
+
+    @staticmethod
+    def _style_toggle(btn: Button, is_on: bool, *, personal: bool = False) -> None:
+        """Apply visual on/off styling to a toggle-button."""
+        if personal:
+            if is_on:
+                btn.variant = "warning"
+                btn.add_class("toggle-personal-on")
+                btn.remove_class("toggle-on")
             else:
-                sync_cb.disabled = False
-                sync_cb.value = bool(self._prefs.get("sync", True))
-                event.checkbox.remove_class("personal-on")
+                btn.variant = "default"
+                btn.remove_class("toggle-personal-on")
+                btn.remove_class("toggle-on")
+        else:
+            if is_on:
+                btn.variant = "success"
+                btn.add_class("toggle-on")
+            else:
+                btn.variant = "default"
+                btn.remove_class("toggle-on")
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "preset":
@@ -418,8 +436,26 @@ class RecordBody(Vertical):
             self.error_text = f"pause/resume failed: {exc}"
 
     def action_toggle_personal(self) -> None:
-        cb = self.query_one("#personal", Checkbox)
-        cb.value = not cb.value
+        """Toggle personal mode.  When personal is on, force sync off
+        and disable the sync button (server enforces this anyway; we
+        keep the UI honest).  When personal is off, restore the
+        persisted sync preference."""
+        btn = self.query_one("#personal-btn", Button)
+        is_on = "toggle-personal-on" not in btn.classes
+        self._style_toggle(btn, is_on, personal=True)
+
+        sync_btn = self.query_one("#sync-btn", Button)
+        if is_on:
+            # Force sync off and disable.
+            self._prefs["sync"] = False
+            save_client_prefs(self._prefs)
+            self._style_toggle(sync_btn, False)
+            sync_btn.disabled = True
+        else:
+            # Restore persisted sync pref and re-enable.
+            sync_btn.disabled = False
+            restored = bool(self._prefs.get("sync", True))
+            self._style_toggle(sync_btn, restored)
 
     def action_upload_last(self) -> None:
         if self.is_uploading:
@@ -514,9 +550,9 @@ class RecordBody(Vertical):
 
     def _kick_upload(self, audio_path: Path) -> None:
         title_widget = self.query_one("#title-input", Input)
-        auto_label = bool(self.query_one("#auto-label", Checkbox).value)
-        sync = bool(self.query_one("#sync", Checkbox).value)
-        personal = bool(self.query_one("#personal", Checkbox).value)
+        auto_label = "toggle-on" in self.query_one("#auto-label-btn", Button).classes
+        sync = "toggle-on" in self.query_one("#sync-btn", Button).classes
+        personal = "toggle-personal-on" in self.query_one("#personal-btn", Button).classes
         preset = str(self.query_one("#preset", Select).value)
         title = (title_widget.value or "").strip() or None
 
