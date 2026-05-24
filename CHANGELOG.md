@@ -3,6 +3,62 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.5.0 — TUI: import existing audio file + preset Select fix + version line
+
+### Changed (breaking UX)
+
+* **Upload button repurposed to "Import file".**  In v0.4.x the
+  Upload button (and `^u` keyboard binding) re-uploaded the most
+  recently finished in-TUI recording.  In v0.5.0 it instead opens
+  a modal file picker (`DirectoryTree` rooted at `~/`, filtered
+  to directories + `.wav`/`.ogg` files only) for selecting an
+  arbitrary audio file on disk.  The selected file is uploaded
+  through the same pipeline as in-TUI recordings.
+
+  Visual design of the Upload button is unchanged (still rightmost
+  cell in row 3, same border/label `⬆ Upload`).  The footer
+  binding label updates from `^u Upload last` → `^u Import`.
+
+  **Auto-upload on Stop is unchanged**: fresh in-TUI recordings
+  still upload automatically when the recorder finishes.  Manual
+  retry path for a failed auto-upload: open the picker (Upload
+  button or `^u`), navigate to the recording (default location
+  `~/vezir-data/recordings/`), select it.  Or from the CLI:
+  `vezir upload <path>`.
+
+  Picker behavior:
+  - Starts at `~/` on first use; subsequently remembers the
+    parent directory of the last imported file (`last_import_dir`
+    in `~/.config/vezir/client.json`).
+  - Hidden files (dot-prefixed) and non-audio files are filtered
+    out so the tree shows only navigable directories + importable
+    `.wav`/`.ogg` files.
+  - Picking a non-`.wav`/`.ogg` (shouldn't happen with the filter,
+    but defensive) keeps the modal open with an inline error hint.
+  - Esc cancels silently; Enter selects the cursor node.
+
+### Fixed
+
+* **Preset Select rendered empty in v0.4.2** (reported in
+  `~/vezir-data/errors/tui_0.4.2.png`).  The universal
+  `border: round $primary` rule on row-2 cells double-bordered
+  the `Select` widget — outer border + inner `SelectCurrent`
+  border = 4 rows of chrome on a `height: 3` cell, collapsing
+  the visible text to 0 rows.  Stripped our outer border on
+  `Select`; its native chrome (which includes the `▼` glyph and
+  its own subtle border) provides the cell visual.
+
+* **Footer label inconsistency**: `^u Upload last` →
+  `^u Import` reflects the new button behavior.
+
+### Added
+
+* **Version line** under the status/error rows shows the running
+  client version (`v0.5.0`) for quick "what am I running?"
+  troubleshooting.  Italic, muted-gray, right-aligned.
+
+---
+
 ## 0.4.2 — TUI Record screen redesign: uniform 4-column grid
 
 ### Changed

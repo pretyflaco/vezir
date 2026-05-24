@@ -42,10 +42,27 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
-from textual.widgets import Button, Input, Label, Select, Static
+from textual.screen import ModalScreen
+from textual.widgets import (
+    Button,
+    DirectoryTree,
+    Input,
+    Label,
+    Select,
+    Static,
+)
 
 from .. import config as _client_config_mod
 from ..config import load_client_prefs, save_client_prefs
+
+
+def _vezir_version() -> str:
+    """Return the running vezir client version (lazy to avoid import cycles)."""
+    try:
+        from vezir import __version__
+        return __version__
+    except Exception:
+        return "?"
 
 log = logging.getLogger("vezir.client.tui.record")
 
@@ -132,6 +149,127 @@ class SessionUploadComplete(Message):
     status: str  # "done" | "error" | "needs_labeling"
 
 
+# ─── Import file picker (v0.5.0+) ───────────────────────────────────────────
+
+
+_AUDIO_EXTS = {".wav", ".ogg"}
+
+
+class _AudioOnlyDirectoryTree(DirectoryTree):
+    """DirectoryTree that hides non-audio non-directory entries.
+
+    Shows directories so the user can navigate; filters files to
+    .wav and .ogg only so the picker is uncluttered.  Hidden files
+    (dot-prefixed) are also hidden, which matches typical OS file
+    pickers and prevents the tree from being dominated by .cache /
+    .config / .git noise.
+    """
+
+    def filter_paths(self, paths):  # type: ignore[override]
+        out = []
+        for p in paths:
+            try:
+                name = p.name
+            except Exception:
+                continue
+            if name.startswith("."):
+                continue
+            if p.is_dir():
+                out.append(p)
+                continue
+            if p.suffix.lower() in _AUDIO_EXTS:
+                out.append(p)
+        return out
+
+
+class ImportScreen(ModalScreen["Path | None"]):
+    """Modal file picker for selecting an audio file (.wav/.ogg) to upload.
+
+    Dismisses with the selected ``Path`` on confirmation, or ``None`` on
+    cancel.  Validation: only `.wav` and `.ogg` are accepted; invalid
+    selections keep the modal open with an inline hint.
+    """
+
+    DEFAULT_CSS = """
+    ImportScreen {
+        align: center middle;
+    }
+    #picker-box {
+        width: 80%;
+        height: 80%;
+        border: round $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    #picker-title {
+        height: 1;
+        margin-bottom: 1;
+        text-style: bold;
+    }
+    #picker-tree {
+        height: 1fr;
+    }
+    #picker-hint {
+        height: 1;
+        margin-top: 1;
+        color: $text-muted;
+    }
+    #picker-hint.error {
+        color: $error;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "select", "Select"),
+    ]
+
+    def __init__(self, start_path: Path) -> None:
+        super().__init__()
+        self._start_path = start_path
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-box"):
+            yield Static(
+                "Import audio file (.wav or .ogg)  —  Enter: select  ·  Esc: cancel",
+                id="picker-title",
+            )
+            yield _AudioOnlyDirectoryTree(str(self._start_path), id="picker-tree")
+            yield Static("", id="picker-hint")
+
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
+        path = Path(event.path)
+        if path.suffix.lower() not in _AUDIO_EXTS:
+            hint = self.query_one("#picker-hint", Static)
+            hint.add_class("error")
+            hint.update(
+                f"unsupported file type {path.suffix or '(none)'}; "
+                f"expected .wav or .ogg"
+            )
+            return
+        self.dismiss(path)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_select(self) -> None:
+        """Triggered by Enter; treats the cursor node as the selection."""
+        try:
+            tree = self.query_one("#picker-tree", _AudioOnlyDirectoryTree)
+        except Exception:
+            return
+        node = tree.cursor_node
+        if node is None or node.data is None:
+            return
+        path = Path(node.data.path)
+        if path.is_file() and path.suffix.lower() in _AUDIO_EXTS:
+            self.dismiss(path)
+        # If it's a directory, the tree's own Enter handling expands it;
+        # we noop here.
+
+
 # ─── Screen ──────────────────────────────────────────────────────────────────
 
 
@@ -142,7 +280,7 @@ class RecordBody(Vertical):
         Binding("ctrl+space", "toggle_record", "Start/Stop"),
         Binding("ctrl+p", "toggle_pause", "Pause/Resume"),
         Binding("ctrl+x", "toggle_personal", "Personal"),
-        Binding("ctrl+u", "upload_last", "Upload last"),
+        Binding("ctrl+u", "import_file", "Import"),
     ]
 
     DEFAULT_CSS = """
@@ -177,6 +315,17 @@ class RecordBody(Vertical):
     #toggles-row > :last-child,
     #controls-row > :last-child {
         margin-right: 0;
+    }
+
+    /* ── preset Select: strip our outer border so its inner SelectCurrent
+       chrome (which has its own border + the ▼ glyph) renders the value
+       text without double-bordering collapse.  v0.4.2 forced height: 3
+       on every cell, but Select's outer border + inner SelectCurrent
+       border consumed 4 rows of chrome on a 3-row cell, hiding the text
+       (issue reported in vezir-data/errors/tui_0.4.2.png). */
+    #toggles-row Select {
+        border: none;
+        padding: 0;
     }
 
     /* ── toggle buttons: green when on, default when off ── */
@@ -220,6 +369,12 @@ class RecordBody(Vertical):
         color: $error;
         height: auto;
         min-height: 0;
+    }
+    #version-line {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: right;
     }
     """
 
@@ -275,10 +430,11 @@ class RecordBody(Vertical):
                 id="timer-label",
                 classes="timer",
             )
-            yield Button("⬆ Upload", id="upload-btn", disabled=True)
+            yield Button("⬆ Upload", id="upload-btn")
 
         yield Static(f"Status: {self.status_text}", id="status-line")
         yield Static("", id="error-line", classes="error")
+        yield Static(f"v{_vezir_version()}", id="version-line")
 
     # ── mount: apply initial toggle states from prefs ──
 
@@ -368,7 +524,7 @@ class RecordBody(Vertical):
         elif bid == "pause-btn":
             self.action_toggle_pause()
         elif bid == "upload-btn":
-            self.action_upload_last()
+            self.action_import_file()
         elif bid == "auto-label-btn":
             self._toggle_pref_button(event.button, "auto_label")
             event.stop()
@@ -457,13 +613,46 @@ class RecordBody(Vertical):
             restored = bool(self._prefs.get("sync", True))
             self._style_toggle(sync_btn, restored)
 
-    def action_upload_last(self) -> None:
+    def action_import_file(self) -> None:
+        """Open a file-picker modal to import an existing .wav/.ogg
+        recording from disk and upload it through the same pipeline
+        used by in-TUI recordings.
+
+        v0.5.0 repurposed the Upload button + ^u binding from
+        "re-upload the last in-TUI recording" to "import a file".
+        Auto-upload on Stop is unchanged: fresh in-TUI recordings
+        still upload automatically when the recorder finishes.  The
+        manual retry path for a failed auto-upload is now: open the
+        picker, navigate to the recording (default location
+        ~/vezir-data/recordings/), select it.  Or: `vezir upload
+        <path>` from the CLI.
+        """
         if self.is_uploading:
+            self.error_text = "upload in progress; wait for it to finish"
             return
-        if self._last_audio_path is None or not self._last_audio_path.exists():
-            self.error_text = "no recording to upload yet"
+        if self.is_recording:
+            self.error_text = "stop the current recording before importing"
             return
-        self._kick_upload(self._last_audio_path)
+
+        start = self._prefs.get("last_import_dir") or str(Path.home())
+        start_path = Path(start)
+        if not start_path.is_dir():
+            start_path = Path.home()
+
+        def _after_pick(picked: Path | None) -> None:
+            if picked is None:
+                return  # silent cancel
+            # Remember the parent directory for next open.
+            try:
+                self._prefs["last_import_dir"] = str(picked.parent)
+                save_client_prefs(self._prefs)
+            except Exception:
+                pass  # non-fatal
+            self.error_text = ""
+            self.status_text = f"importing {picked.name}"
+            self._kick_upload(picked)
+
+        self.app.push_screen(ImportScreen(start_path), _after_pick)
 
     # ── recording lifecycle ──
 
@@ -680,7 +869,9 @@ class RecordBody(Vertical):
         self.is_recording = False
         self.is_paused = False
         self._last_audio_path = message.audio_path
-        self.query_one("#upload-btn", Button).disabled = False
+        # (Upload button no longer toggles on/off based on _last_audio_path
+        # in v0.5.0+; it's always enabled and opens the Import picker.
+        # Auto-upload of the just-finished recording still happens below.)
         size = message.audio_path.stat().st_size if message.audio_path.exists() else 0
         self.file_bytes = size
         self.status_text = (
