@@ -14,16 +14,51 @@ labels resolved to GitHub handles via a shared web UI.
 
 ## Status
 
-Alpha (0.1.11). Designed for small teams that want to keep meeting audio
+Alpha (0.3.1). Designed for small teams that want to keep meeting audio
 inside their own infrastructure: one private mesh VPN + one server (Linux
 GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
 
-**Highlights of the 0.1.9 - 0.1.11 line:**
+**Highlights of the 0.3.x line (current):**
+
+- **`vezir tui` — Textual terminal thin client** (v0.3.0+).  Native
+  desktop UI with feature parity to the Android client plus
+  desktop-only conveniences: artifact viewing via `xdg-open`/`open`,
+  system clipboard integration (OSC 52 + xclip/wl-copy/pbcopy
+  fallback for VTE terminals), ffplay-driven speaker-sample
+  playback during labeling, and a background poll that surfaces
+  "needs labeling" notifications via `notify-send`/`osascript`.
+  Installed with `pip install vezir[tui]`.
+- **`vezir scribe-widget` — slimmed always-on-top Tkinter
+  recorder** (v0.3.0+).  Replaces the floating-widget half of
+  `vezir gui` for users who want a small recorder without the
+  full GUI's session browser.
+- **`--personal` per-recording flag** (v0.3.0+).  Forces sync off
+  for one recording regardless of session default; the session is
+  tagged "Personal" in the UI and stays private to you.  Available
+  on `vezir scribe`, `vezir upload`, the Tkinter GUI, and the TUI.
+  Per-recording only — not persisted to client config.
+- **Library-direct recording** (v0.3.0+).  `vezir scribe` now drives
+  `meet_record.capture.RecordingSession` in-process so the CLI gains
+  an interactive `p` keystroke for pause/resume.  Subprocess
+  fallback retained for older deployments and `--virtual-sink`.
+- **Auto-refresh Sessions tab** (v0.3.1).  Switching to the
+  Sessions tab in the TUI re-fetches `/api/sessions`; toasts when
+  a freshly uploaded session reaches `done` / `needs_labeling` /
+  `error` so you don't have to eyeball the screen.
+- **`o` opens session in browser** (v0.3.1).  From the Sessions
+  list or DetailScreen, `o` opens the dashboard URL via
+  `webbrowser.open`.
+- **HTTPS verify against internal CAs.**  The thin client honors
+  `SSL_CERT_FILE` then `VEZIR_CADDY_ROOT_CERT_PATH` (default httpx
+  uses `certifi.where()` which doesn't include internal CAs).
+  Needed when Caddy fronts the server with its internal CA.
+
+**Established features (0.1.x line, still current):**
 
 - **Summarization preset selector** (per upload) — pick between
   `high-quality` (Sonnet 4.6), `confidential` (DeepSeek V4 Pro in a
   Tinfoil hardware-attested TEE), or `alternative` (Kimi K2.6).
-  CLI: `--preset`; GUI: dropdown; Android: dropdown.  When the
+  CLI: `--preset`; TUI/GUI: dropdown; Android: dropdown.  When the
   `confidential` preset is chosen the PDF carries a red CONFIDENTIAL
   watermark on every page.
 - **Auto-label opt-out** (per upload) — `--no-auto-label` skips
@@ -33,51 +68,61 @@ GPU box or Apple Silicon Mac). Currently dogfooded by the Blink team.
   `local-only` on the dashboard; artifacts stay on the vezir server
   and aren't pushed to the configured destination repo.
   Retroactively syncable from the dashboard's "Sync now" button.
-- **Brand-lockup PNG in the GUI header** (replaces the older
-  "vezir scribe" text label).
+- **Retry summary with preset override** — `POST /api/sessions/{id}/retry-summary`
+  accepts a JSON body `{"preset": "high-quality"}` for swapping
+  backends when the original fails (e.g. Tinfoil outage → retry
+  with Claude Max).
 
 Supported VPN options:
-- [nostr-vpn](https://github.com/mmalmi/nostr-vpn) — decentralized,
-  no accounts or fees, Nostr keys for identity (see `infra/nvpn/README.md`)
-- [Tailscale](https://tailscale.com/) — established, easy setup,
-  requires third-party account
+- [nostr-vpn](https://github.com/mmalmi/nostr-vpn) — **recommended.**
+  Decentralized, no accounts or fees, Nostr keys for identity.
+  No third-party gatekeeper.  See [`infra/nvpn/README.md`](infra/nvpn/README.md).
+- [Tailscale](https://tailscale.com/) — established alternative,
+  easy setup, requires a third-party account.
 
 Linux and macOS Apple Silicon clients are fully supported.  An
 Android thin client lives at
-[vezir-android](https://github.com/pretyflaco/vezir-android) (v0.1.4
-ships the same three opt-outs + preset selector).  On Apple Silicon
-the server auto-selects MLX Whisper ASR + PyTorch MPS when available,
-falling back to CPU/MPS-split mode otherwise.
+[vezir-android](https://github.com/pretyflaco/vezir-android) (v0.2.5
+ships the same three opt-outs + preset selector + the `--personal`
+flag).  On Apple Silicon the server auto-selects MLX Whisper ASR +
+PyTorch MPS when available, falling back to CPU/MPS-split mode otherwise.
 
-Requires **`meetscribe-offline >= 0.8.1`** (pinned via the `[server]`
+Requires **`meetscribe-offline >= 0.8.3`** (pinned via the `[server]`
 extra).  0.8.x adds the preset system, the Tinfoil TEE backend, the
 CONFIDENTIAL PDF watermark, and several voiceprint / relabel
-correctness fixes that vezir's worker depends on.
+correctness fixes that vezir's worker depends on.  0.8.3 specifically
+re-raises summary exceptions when `summary_preset` is set, fixing
+silent retry-summary "success" without an actual summary.
 
 ## Architecture
 
 ```
-[Scribe laptop / phone]               [GPU server]
-  vezir scribe / gui / upload ──▶     vezir serve (FastAPI)
-   (wraps meet record;                   │   form fields:
-    sends summary_preset,                │     summary_preset
-    auto_label, sync as                  │     auto_label
-    multipart form fields)               │     sync
-                                         ├── sqlite job queue
-                                         │   (summary_preset,
-                                         │    auto_label_enabled,
-                                         │    sync_enabled columns)
-                                         ▼
-                                       worker
-                                         │ shells out via HOME-shim
-                                         ▼
+[Scribe laptop / phone]               [GPU server, over nvpn / Tailscale]
+  vezir tui            ──▶            vezir serve (FastAPI, 127.0.0.1
+   (Textual; record,                    │  fronted by Caddy w/ TLS)
+    list, label, view                   │
+    artifacts, copy,                    │   multipart form fields:
+    open-in-browser)                    │     summary_preset
+                                        │     auto_label
+  vezir scribe         ──▶              │     sync
+   (CLI; library-direct                 │     personal
+    record w/ pause)                    │
+                                        ├── sqlite job queue
+  vezir scribe-widget  ──▶              │   (summary_preset,
+   (Tk floating recorder;               │    auto_label_enabled,
+    start / pause / stop)               │    sync_enabled, personal)
+                                        ▼
+  vezir gui            ──▶            worker
+   (Tk full UI; recorder                 │ shells out via HOME-shim
+    + sessions list)                     ▼
                                        meet transcribe --summary-preset <id>
-                                       meet label --auto  (if auto_label_enabled)
-                                       meet sync          (if sync_enabled
-                                                           and VEZIR_SKIP_SYNC unset)
-                                                ──▶ private git repo
-                                                    OR sit at `done (local-only)`
-                                                       on the dashboard
+  vezir upload <file>  ──▶             meet label --auto  (if auto_label_enabled)
+   (resume any WAV/OGG)                meet sync          (if sync_enabled
+                                                           and not personal
+  vezir-android (Kotlin) ──▶                               and VEZIR_SKIP_SYNC unset)
+                                                  ──▶ private git repo
+                                                      OR sit at `done (local-only)`
+                                                         on the dashboard
                                          │
                                          ▼
                                        web UI (labeling, dashboard,
@@ -87,8 +132,34 @@ correctness fixes that vezir's worker depends on.
 
 Meetscribe is invoked as an unmodified subprocess. Vezir owns its own
 job queue, voiceprint database, team roster, and browser auth, and
-exposes the three per-upload toggles end-to-end (client → form field
+exposes the per-upload toggles end-to-end (client → form field
 → queue column → worker gate).
+
+## Clients
+
+Vezir ships five client surfaces; pick whichever fits the moment.
+All speak the same multipart upload + JSON API; you can mix and match
+across devices.
+
+| Client | Best for | Install |
+|---|---|---|
+| **`vezir tui`** | Day-to-day desktop use.  Record + browse sessions + view artifacts + label speakers, all in one terminal-native UI.  Has system-clipboard integration, ffplay sample playback, background "needs labeling" toasts. | `pip install vezir[tui]` |
+| **`vezir scribe`** | Headless / ssh / dotfile-driven workflows.  Pure CLI; pause/resume with `p` key during recording. | `pip install vezir` |
+| **`vezir scribe-widget`** | "Just a recorder, get out of my way."  Always-on-top Tkinter floating widget — start/pause/stop and upload, no session browser. | `pip install vezir` + `apt install python3-tk` |
+| **`vezir gui`** | Legacy Tkinter full UI (recorder + session list + dashboard launcher).  Still works; future of this surface depends on dogfood feedback. | `pip install vezir[gui]` + `apt install python3-tk` |
+| **`vezir upload <file>`** | Existing WAV/OGG you recorded another way (e.g. phone, Audio Hijack, OBS).  Resumes from byte 0 after transient failures. | `pip install vezir` |
+| **[vezir-android](https://github.com/pretyflaco/vezir-android)** | Field recording from phone.  Mirrors TUI feature set (v0.2.5); confidential preset is the Android default. | Play Store / sideload |
+
+All desktop clients honor `VEZIR_URL` + `VEZIR_TOKEN` from env or
+`~/.config/vezir/client.json`; the TUI / scribe-widget / GUI persist
+preset + auto-label + sync preferences across launches, while the
+`--personal` flag stays per-recording and is never persisted.
+
+For internal-CA HTTPS endpoints (Caddy with its built-in CA), set
+`SSL_CERT_FILE=/etc/caddy/certs/vezir-internal-ca.crt` or
+`VEZIR_CADDY_ROOT_CERT_PATH=<same>` so the thin clients trust the
+server.  (Default httpx uses `certifi.where()` which doesn't include
+internal CAs.)
 
 ## Summarization presets
 
@@ -124,22 +195,34 @@ lives in `TINFOIL_API_KEY` or at `~/models/tinfoil/tinfoil.txt`.
 
 ## Privacy toggles
 
-Two further per-upload toggles, both **default ON** (preserves
-pre-0.1.11 behavior):
+Three per-upload toggles.  `auto_label` and `sync` default ON
+(preserves pre-0.1.11 behavior) and are sticky; `personal` defaults
+OFF and is **per-recording only — never persisted** (treating the
+"I want this one to be private" intent as ephemeral by design).
 
-| Toggle | Default | When OFF |
-|---|---|---|
-| `auto_label` | ON  | Server skips `meet label --auto`; session always routes to manual labeling.  Useful when you don't want the server attempting to identify speakers from previously enrolled voiceprints. |
-| `sync` | ON | Server keeps the session local-only (status `done (local-only)` on the dashboard).  Artifacts stay on the vezir server but aren't pushed to the configured destination repo. |
+| Toggle | Default | When set | Persisted? |
+|---|---|---|---|
+| `auto_label` | ON | OFF skips `meet label --auto`; session always routes to manual labeling.  Useful when you don't want the server attempting to identify speakers from previously enrolled voiceprints. | Yes (`~/.config/vezir/client.json`) |
+| `sync` | ON | OFF keeps the session local-only (status `done (local-only)` on the dashboard).  Artifacts stay on the vezir server but aren't pushed to the configured destination repo. | Yes (`~/.config/vezir/client.json`) |
+| `personal` | OFF | ON marks the session "Personal" in the UI, forces `sync` off for this recording regardless of session default, and keeps the session private to the uploader.  Useful for 1:1s, draft notes, anything you might not want to publish even if you forget to flip the sync toggle. | **No** — per-recording only |
 
-CLI: `--auto-label/--no-auto-label` and `--sync/--no-sync` on both
-`scribe` and `upload`.  Explicit choices are persisted to
-`~/.config/vezir/client.json` so the next session remembers them.
+CLI: `--auto-label/--no-auto-label`, `--sync/--no-sync`,
+`--personal` on both `scribe` and `upload`.  Explicit choices for
+the first two are persisted to `~/.config/vezir/client.json` so the
+next session remembers them; `--personal` is intentionally
+per-recording.
 
-GUI: two checkboxes between the preset combobox and the recorder row.
+TUI: three checkboxes between the title row and the recorder controls
+(personal checkbox greys out the sync checkbox when active to make
+the forced-OFF behavior visible).  `ctrl+x` toggles personal from
+the keyboard.
 
-Android: two `Switch` rows on the record screen, persisted in
-EncryptedSharedPreferences.
+GUI: two checkboxes between the preset combobox and the recorder row;
+personal toggle on the same line as Record.
+
+Android: three `Switch` rows on the record screen, persisted in
+EncryptedSharedPreferences (personal resets to OFF on each launch
+per v0.2.5 semantics).
 
 ### Retroactive sync
 
@@ -186,30 +269,57 @@ client and you want them to use a preset / opt-out, ask them to
 ```
 vezir/
   vezir/                    # python package
-    cli.py                  # serve, scribe, upload, token issue
+    cli.py                  # serve, scribe, tui, scribe-widget,
+                            # gui, upload, token, voiceprints
     config.py               # paths, env
     server/                 # FastAPI app, queue, worker, meet_runner
-    client/                 # vezir scribe (wraps meet record + uploads)
-    web/                    # templates + static
+    client/
+      api.py                # VezirClient (httpx) — shared by TUI + scribe-widget
+      uploader.py           # multipart upload w/ resume + verify discovery
+      scribe.py             # library-direct recorder (pause/resume)
+      scribe_widget.py      # Tkinter floating recorder
+      gui.py                # Tkinter full UI (recorder + sessions list)
+      audio.py              # ffplay wrapper + notify_desktop
+      tui/                  # Textual TUI
+        app.py              # VezirTuiApp + MainScreen (TabbedContent)
+        record_screen.py
+        sessions_screen.py
+        detail_screen.py
+        artifact_screen.py
+        label_screen.py
+        help_screen.py
+        notify.py           # background "needs labeling" poll
+    web/                    # templates + static (dashboard, labeling UI)
   data/
     team.json.example
   infra/
-    systemd/vezir.service
-  tests/
+    nvpn/                   # nostr-vpn join guide (Linux + macOS)
+    caddy/                  # Caddy install script + Caddyfile templates
+    systemd/                # vezir.service unit
+  assets/
+    logo/                   # vezir wordmark, lockup, icons
+  tests/                    # 225 passing as of v0.3.1
 ```
 
-Runtime data lives **outside** the repo at `~/vezir-data/`.
+Runtime data lives **outside** the repo at `~/vezir-data/` (server)
+or `~/.config/vezir/` (client preferences).
 
 ## Install profiles
 
 | Role | Install command | Footprint |
 |---|---|---|
-| **Scribe client only** (record + upload, GUI optional) | `pip install --user vezir` (or `pip install --user 'vezir[gui]'` if you also want `apt install python3-tk`) | ~30 MB |
+| **Scribe client (CLI only)** | `pip install --user vezir` | ~30 MB |
+| **Scribe client + Textual TUI** *(recommended for desktop)* | `pip install --user 'vezir[tui]'` | ~35 MB |
+| **Scribe client + Tkinter GUI / scribe-widget** | `pip install --user 'vezir[gui]'` plus `apt install python3-tk` (Debian/Ubuntu) | ~30 MB |
 | **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB on Linux/CUDA (meetscribe-offline = whisperx + torch + pyannote); on Apple Silicon also pulls `mlx-whisper` for the MLX ASR backend (~few hundred MB extra) |
+
+You can combine extras: `pip install --user 'vezir[tui,gui]'` gets you
+both the TUI and the Tkinter widgets on the same box.
 
 The split is enforced by `pyproject.toml`'s `[project.optional-dependencies]`:
 the base install uses [meetscribe-record](https://github.com/pretyflaco/meetscribe-record)
-(capture only). The `[server]` extra adds [meetscribe-offline](https://github.com/pretyflaco/meetscribe)
+(capture only). The `[tui]` extra adds [Textual](https://textual.textualize.io/);
+the `[server]` extra adds [meetscribe-offline](https://github.com/pretyflaco/meetscribe)
 for the heavy transcription/diarization/summarization pipeline.
 
 On Apple Silicon, the same `[server]` extra additionally installs
@@ -306,49 +416,65 @@ decide what to push.
 ## Quick start (scribe client)
 
 ```bash
-# Install vezir + meetscribe-record (lightweight; ~30 MB).
+# Install vezir + meetscribe-record (lightweight; ~30 MB base).
 pip install --user vezir
 
-# Optional: GUI widget (Tkinter); on Debian/Ubuntu:
+# Add the Textual TUI (recommended for daily desktop use; ~5 MB extra).
+pip install --user 'vezir[tui]'
+
+# Optional: Tkinter widgets (GUI / scribe-widget); on Debian/Ubuntu:
 sudo apt install python3-tk
 
 # Configure (one-time): server URL = your vezir server's VPN hostname or tunnel IP.
 # For nostr-vpn: use the server's tunnel IP (see infra/nvpn/README.md).
 # For Tailscale: use the MagicDNS name or Tailscale IP.
-export VEZIR_URL=http://your-vezir-server:8000
+export VEZIR_URL=https://your-vezir-server     # https when fronted by Caddy
 export VEZIR_TOKEN=<token-issued-on-server>
 
-# CLI scribe
+# Internal CA (Caddy default): tell the thin client where to find it.
+export SSL_CERT_FILE=/etc/caddy/certs/vezir-internal-ca.crt
+
+# ── Textual TUI (recommended) ────────────────────────────────────────
+# Record + browse sessions + label speakers + view artifacts in one
+# terminal-native UI.  Press F1 for the in-app help.
+vezir tui
+
+# Boot a local server in the background and connect to it (single-box
+# self-hosted setups):
+vezir tui --serve
+
+# ── CLI scribe ───────────────────────────────────────────────────────
 vezir scribe --title "what this meeting is about"
-# Talk; Ctrl+C when done.
+# Talk; press `p` to pause / resume; Ctrl+C when done.
 # By default, the recorded WAV is compressed to OGG/Opus before upload.
 # Use --no-compress to upload the raw WAV instead.
 
-# Pick a summarization preset.  Default is whatever the GUI/CLI last
-# used (sticky in ~/.config/vezir/client.json); flag overrides for one
-# session and updates the stickied value.
+# Pick a summarization preset.  Default is whatever the GUI/CLI/TUI
+# last used (sticky in ~/.config/vezir/client.json); flag overrides
+# for one session and updates the stickied value.
 vezir scribe --preset confidential --title "board meeting"
 
-# Privacy toggles.  Both default ON; passing the negative form opts out
-# AND stickies the OFF state for next session until explicitly toggled
-# back on.
+# Privacy toggles.  --auto-label / --sync default ON and stick to the
+# last chosen state; --personal defaults OFF and never persists.
 vezir scribe --no-auto-label --title "research interview"
 vezir scribe --no-sync --title "draft notes"
-vezir scribe --preset confidential --no-sync --no-auto-label    # paranoid mode
+vezir scribe --personal --title "1:1 with Alice"                 # forces sync off, never sticks
+vezir scribe --preset confidential --personal --no-auto-label    # maximum-privacy mode
 
-# GUI scribe (always-on-top widget): preset dropdown + 'Auto-label
-# speakers' + 'Sync to git' checkboxes are visible directly above the
-# Record button; choices persist across launches.
+# ── Always-on-top floating recorder (Tkinter; minimal) ───────────────
+vezir scribe-widget       # just start/pause/stop + upload, no browser
+
+# ── Legacy Tkinter full UI (recorder + session list) ─────────────────
 vezir gui
 
-# Or upload an existing recording (WAV/OGG)
+# ── Upload an existing recording (WAV/OGG) ───────────────────────────
 vezir upload ./previous-meeting.wav --title "previous meeting"
 
 # Compress an existing WAV before uploading it
 vezir upload ./previous-meeting.wav --compress --title "previous meeting"
 
 # Same flags work on upload:
-vezir upload ./private-call.wav --preset confidential --no-sync --title "1:1"
+vezir upload ./private-call.wav --preset confidential --personal --title "1:1"
 ```
 
 When the recording is uploaded, vezir prints a dashboard URL. Open it in
@@ -401,11 +527,15 @@ For end-to-end local transcription on Apple Silicon (no server needed), see
 | Variable | Default | Effect |
 |---|---|---|
 | `VEZIR_DATA` | `~/vezir-data` | All runtime state — sessions, voiceprints, queue, tokens, sync_config |
-| `VEZIR_HOST` | `0.0.0.0` | Bind address for `vezir serve` |
+| `VEZIR_HOST` | `127.0.0.1` | Bind address for `vezir serve`.  Front with Caddy in production; set to `0.0.0.0` only as an opt-in escape hatch. |
 | `VEZIR_PORT` | `8000` | Port for `vezir serve` |
-| `VEZIR_URL` | `http://localhost:8000` | Server URL for `vezir scribe` clients |
-| `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` clients |
-| `VEZIR_SUMMARY_PRESET` | unset | Default summarization preset (`high-quality` \| `confidential` \| `alternative`).  Read by both CLI commands and the GUI as the initial value when `~/.config/vezir/client.json` has no `summary_preset` key.  CLI `--preset` flag takes precedence. |
+| `VEZIR_URL` | `http://localhost:8000` | Server URL for `vezir scribe` / `vezir tui` clients |
+| `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` / `vezir tui` clients |
+| `SSL_CERT_FILE` | unset | **Primary** CA bundle path the thin clients check first when verifying HTTPS endpoints (e.g. Caddy internal CA at `/etc/caddy/certs/vezir-internal-ca.crt`).  Falls back to `VEZIR_CADDY_ROOT_CERT_PATH` then `certifi.where()`.  Needed because httpx defaults to certifi which doesn't include internal CAs.  Standard env var name; honored by many other Python HTTP libraries. |
+| `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Secondary CA bundle path.  Also embedded into the device-enrollment QR payload (v2 format) so Android clients can trust the server on first contact.  Ignored / falls back to v1 QR when unset or the file is invalid. |
+| `VEZIR_COOKIE_SECURE` | unset | Set to `1` to add `Secure` to the session cookie. Recommended once Caddy is in front. |
+| `VEZIR_SUMMARY_PRESET` | unset | Default summarization preset (`high-quality` \| `confidential` \| `alternative`).  Read by CLI / TUI / GUI as the initial value when `~/.config/vezir/client.json` has no `summary_preset` key.  CLI `--preset` flag takes precedence. |
+| `VEZIR_TUI_DISABLE_NOTIFY_POLL` | unset | Set to `1` to disable the TUI's background "needs labeling" poll (runs every 60s by default).  Mostly useful in tests; also handy if you find the notifications noisy. |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
 | `VEZIR_MEET_BIN` | `$(which meet)` | Path to meetscribe `meet` binary |
 | `VEZIR_MEET_DEVICE` | `mps` on Apple Silicon when supported by the installed meetscribe stack, `cuda` when CUDA is available elsewhere, otherwise `cpu` | Device passed to `meet transcribe` |
@@ -413,13 +543,10 @@ For end-to-end local transcription on Apple Silicon (no server needed), see
 | `VEZIR_MEET_TORCH_DEVICE` | auto | PyTorch device passed to `meet transcribe --torch-device` when the installed meetscribe supports split ASR/PyTorch devices |
 | `VEZIR_MEET_ASR_BACKEND` | `mlx` on Apple Silicon when available | ASR backend passed to `meet transcribe --asr-backend` when supported |
 | `VEZIR_MEET_MLX_MODEL` | meetscribe default | MLX Whisper model path/repo passed to `meet transcribe --mlx-model` |
-| `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely |
+| `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `meet sync` step entirely (server-side kill switch; wins over per-job `sync_enabled=1`). |
 | `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
 | `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `meet sync --force`. Will be removed once vezir respects schedules. |
 | `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
-| `VEZIR_HOST` | `127.0.0.1` (changed in 0.1.12) | Bind address for `vezir serve`. Front with Caddy in production; set to `0.0.0.0` only as an opt-in escape hatch. |
-| `VEZIR_COOKIE_SECURE` | unset | Set to `1` to add `Secure` to the session cookie. Recommended once Caddy is in front. |
-| `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Path to a PEM file holding the Caddy internal CA root. When set, the device-enrollment QR payload bumps to v2 and embeds the cert so Android can trust the server before the first request. Ignored / falls back to v1 when unset or the file is invalid. |
 | `VEZIR_DISABLE_RATELIMIT` | unset | Set to `1` to disable the in-process rate limiter. Test/CI only. |
 
 On Apple Silicon, vezir prefers meetscribe's MLX Whisper ASR backend when
@@ -461,6 +588,24 @@ The most useful future improvements are:
 Runtime directories are created private (`0700`) and sensitive runtime files
 are written private (`0600`). The systemd unit also sets `UMask=0077` so
 artifacts created by subprocesses inherit private defaults.
+
+## What's next
+
+The post-v0.3.1 backlog, in roughly the order I'm thinking about it:
+
+- **`GET /api/me`** server endpoint so the TUI's background poll can
+  filter "needs labeling" notifications to the user's own sessions
+  rather than broadcasting team-wide.
+- **Web dashboard deprecation track.**  v0.4 will restrict the
+  dashboard to admin-only; v0.5 will remove it.  All new end-user
+  features ship to TUI + Android first.
+- **Tkinter `vezir gui` future.**  Depends on dogfood feedback from
+  the team.  If `vezir tui` and `vezir scribe-widget` cover the use
+  cases, `vezir gui` joins the dashboard on the deprecation track.
+- **TUI paper-cut polish** as it surfaces from week-by-week dogfood.
+- **Backfill `region.height` regression tests** for the older TUI
+  screens (lesson from the v0.3.0 layout-clip bug: unit tests that
+  check widget existence don't catch terminal-clipped rendering).
 
 ## License
 
