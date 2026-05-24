@@ -16,14 +16,14 @@ set -euo pipefail
 WAV="${1:-}"
 if [[ -z "${WAV}" ]]; then
   # Try to find any existing recording.
-  for d in "${HOME}/meet-recordings"/*/; do
+  for d in "${HOME}/millet-recordings"/*/; do
     for f in "$d"*.wav; do
       if [[ -f "$f" ]]; then WAV="$f"; break 2; fi
     done
   done
 fi
 if [[ -z "${WAV}" || ! -f "${WAV}" ]]; then
-  echo "ERROR: no WAV provided and none found under ~/meet-recordings/" >&2
+  echo "ERROR: no WAV provided and none found under ~/millet-recordings/" >&2
   echo "Usage: $0 path/to/meeting.wav" >&2
   exit 1
 fi

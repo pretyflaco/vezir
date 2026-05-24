@@ -3,6 +3,103 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.0 — meetscribe → millet ecosystem rename
+
+Vezir 0.4.0 follows the upstream package rename: the underlying
+meeting-transcription pipeline `meetscribe-offline` is now
+`millet-pipeline`, and its capture-only sibling `meetscribe-record`
+is now `millet-record`.  Named after the Ottoman *millet system*.
+See [the millet repo](https://github.com/pretyflaco/millet) for the
+full reasoning.
+
+This is a coordinated rebrand — no feature changes, but it is a
+**breaking install change**: teammates need to `pip install --upgrade
+'vezir[server]'` to pick up the renamed pipeline package.  The wire
+format and HTTP API are unchanged.
+
+### Changed
+
+* **Dependency pins**: `meetscribe-record>=0.3.0` →
+  `millet-record>=0.4.0`; `meetscribe-offline>=0.8.3` (in the
+  `[server]` extra) → `millet-pipeline>=0.9.0`.
+
+* **Python imports**: `from meet.label`, `from meet.voiceprint` →
+  `from millet.label`, `from millet.voiceprint` (4 sites in
+  `vezir/server/`).  `from meet_record.capture`,
+  `from meet_record.audio` → `from millet_record.capture`,
+  `from millet_record.audio` (5 sites in `vezir/client/`).
+
+  The legacy import names continue to work via aliases shipped by
+  `millet-record 0.4.0` (a `sys.modules` alias + meta-path finder);
+  vezir 0.4.0's own code uses the canonical names.
+
+* **Subprocess invocations**: `meet transcribe / record / label /
+  sync / check` etc. → `millet transcribe / record / label / sync /
+  check`.  `meet_binary()` in `vezir/config.py` searches for
+  `millet` first, falls back to `meet` (legacy) — so deployments
+  with only the pre-rename `meetscribe-record` installed continue to
+  work until they upgrade.
+
+* **Environment variables**: `VEZIR_MEET_*` → `VEZIR_MILLET_*`.  The
+  old names are still read and forwarded with a one-time
+  `WARNING: VEZIR_MEET_X is deprecated; use VEZIR_MILLET_X (will be
+  removed in vezir 0.6.0)`.  Affected vars: `VEZIR_MEET_BIN`,
+  `VEZIR_MEET_DEVICE`, `VEZIR_MEET_COMPUTE_TYPE`,
+  `VEZIR_MEET_TORCH_DEVICE`, `VEZIR_MEET_ASR_BACKEND`,
+  `VEZIR_MEET_MLX_MODEL`.
+
+* **Recordings directory default**: `~/meet-recordings/` →
+  `~/millet-recordings/`.  On first use, if the legacy directory
+  exists and the new one doesn't, vezir emits a one-time stderr
+  hint suggesting `mv ~/meet-recordings ~/millet-recordings`.  No
+  auto-move — explicit consent per the rename handoff.
+
+* **Docs**: full README pass — every meetscribe reference rewritten
+  to millet; install profiles, env var table, architecture diagram
+  refreshed; new "What's new in 0.4.0" status callout.
+
+### Compatibility
+
+* **`millet` CLI is the new primary**; `meet` continues to work for
+  two minor versions (until `millet-record 0.6.0`) and emits a
+  `DeprecationWarning` on each invocation.  Set
+  `MILLET_SUPPRESS_DEPRECATION=1` to silence.
+
+* **The bundled macOS Swift sidecar binary remains
+  `meet-record-mac`** — renaming would require code-signing
+  bundle-path changes that aren't worth doing as part of this PR.
+
+* **Wire-format / HTTP API unchanged.**  Existing sessions, queue
+  rows, voiceprint DB, team roster, dashboard, and Android client
+  continue to interoperate unchanged.
+
+### Migration
+
+```bash
+# Thin client (CLI / TUI only):
+pip install --user --upgrade vezir
+
+# Full server (muscle):
+pip install --user --upgrade 'vezir[server]'
+# (pulls millet-pipeline >= 0.9.0 + millet-record >= 0.4.0)
+
+# Optional: rename your recordings directory once
+mv ~/meet-recordings ~/millet-recordings
+
+# Optional: update env vars if you have them set
+sed -i 's/VEZIR_MEET_/VEZIR_MILLET_/g' ~/.bashrc ~/.zshrc
+```
+
+The legacy `VEZIR_MEET_*` variables, `~/meet-recordings/` directory,
+`meet` CLI, and `meet_record` import path all continue to work
+through the deprecation window.
+
+### Tests
+
+* 225 passing (unchanged from 0.3.1); the rename is a pure
+  identifier change.  vezir 0.4.0 doesn't add new features or
+  remove existing ones.
+
 ## 0.3.1 — auto-refresh Sessions, open-in-browser, enter-to-submit
 
 Pure paper-cut polish on top of v0.3.0.  No breaking changes.

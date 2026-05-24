@@ -13,7 +13,7 @@ from . import __version__, config
 @click.group()
 @click.version_option(__version__, prog_name="vezir")
 def main():
-    """vezir — internal scribe service wrapping meetscribe."""
+    """vezir — internal scribe service wrapping millet."""
 
 
 # ── serve ─────────────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ def serve(host, port, reload):
 @click.option("--title", default=None,
               help="Optional meeting title")
 @click.option("-o", "--output-dir", default=None, type=click.Path(),
-              help="Where `meet record` writes audio (default ~/meet-recordings)")
+              help="Where `millet record` writes audio (default ~/millet-recordings)")
 @click.option("--compress/--no-compress", default=True,
               help="Compress recorded WAV to OGG/Opus before upload (default: on)")
 @click.option("--wait/--no-wait", default=True,
@@ -75,7 +75,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
            open_labeling, preset, auto_label, sync, personal, record_args):
     """Record a meeting locally and upload to vezir.
 
-    Any RECORD_ARGS after `--` are forwarded to `meet record`.
+    Any RECORD_ARGS after `--` are forwarded to `millet record`.
     Example: vezir scribe --title standup -- --virtual-sink
     """
     from .client.scribe import run_scribe
@@ -274,7 +274,7 @@ def scribe_widget():
     """Launch the compact always-on-top recording widget (Tkinter).
 
     The hybrid v0.3 affordance: this small floating window handles the
-    *recording* flow (with pause/resume via the meetscribe-record
+    *recording* flow (with pause/resume via the millet-record
     library) and an 'Open TUI' button that launches `vezir tui` in a
     new terminal for sessions / labeling / artifacts.
 
@@ -579,7 +579,7 @@ def voiceprints():
 @click.option(
     "--from", "source", required=True,
     type=click.Path(exists=True, path_type=Path),
-    help="Path to an existing meetscribe speaker_profiles.json to copy in",
+    help="Path to an existing millet speaker_profiles.json to copy in",
 )
 @click.option(
     "--merge", is_flag=True, default=False,
@@ -587,7 +587,7 @@ def voiceprints():
     "Per-name policy: the profile with the higher n_sessions wins.",
 )
 def voiceprints_seed(source, merge):
-    """Seed or merge the central voiceprint DB from an existing meetscribe profile file."""
+    """Seed or merge the central voiceprint DB from an existing millet profile file."""
     from .server import voiceprints as vp_mod
     stats = vp_mod.seed_from(source, merge=merge)
     click.echo(

@@ -44,7 +44,7 @@ def compress_wav_for_upload(
     audio_path = validate_audio_path(audio_path)
     if audio_path.suffix.lower() != ".wav":
         return audio_path
-    from meet_record.audio import compress_audio
+    from millet_record.audio import compress_audio
 
     return compress_audio(audio_path, keep_wav=keep_wav, bitrate=bitrate)
 

@@ -4,8 +4,8 @@ Runtime data lives at $VEZIR_DATA (default ~/vezir-data/), outside the repo.
 
 Environment variables:
     VEZIR_DATA          Base dir for all runtime state (default ~/vezir-data)
-    VEZIR_URL           Server URL for `vezir scribe` clients
-    VEZIR_TOKEN         Bearer token for `vezir scribe` clients
+    VEZIR_URL           Server URL for `vezir scribe` / `vezir tui` clients
+    VEZIR_TOKEN         Bearer token for `vezir scribe` / `vezir tui` clients
     VEZIR_HOST          Bind address for `vezir serve` (default 127.0.0.1
                         from 0.1.12 onward, when no Caddy reverse proxy is
                         configured; previously 0.0.0.0). Set explicitly to
@@ -15,25 +15,35 @@ Environment variables:
                         (recommended when serving over HTTPS via Caddy).
     VEZIR_DISABLE_RATELIMIT  Set to 1 to disable the in-process rate
                              limiter. Tests use this; do not set in prod.
-    VEZIR_MEET_BIN      Path to meetscribe `meet` binary (default: from PATH)
-    VEZIR_MEET_DEVICE   Device for `meet transcribe` (default: mps on Apple
-                        Silicon when supported by the installed meetscribe
-                        stack, cuda when available elsewhere, otherwise cpu).
-                        meetscribe-offline >= 0.6.0 also auto-detects, so this
-                        env var is now optional even on Macs (still respected
-                        as an explicit override).
-    VEZIR_MEET_COMPUTE_TYPE Compute type for `meet transcribe` (default: int8
-                        on cpu, float16 on cuda, float32 on mps)
-    VEZIR_MEET_TORCH_DEVICE PyTorch device for meetscribe alignment/diarization
-                        when the installed `meet transcribe` supports a
-                        separate --torch-device option.  meetscribe-offline >=
-                        0.6.0 auto-defaults this to mps on Apple Silicon.
-    VEZIR_MEET_ASR_BACKEND ASR backend for `meet transcribe` when supported
-                        (auto-selects mlx on Apple Silicon when available)
-    VEZIR_MEET_MLX_MODEL MLX Whisper model path/repo when using mlx ASR
+    VEZIR_MILLET_BIN    Path to millet (formerly `meet`) binary (default:
+                        from PATH).  Legacy alias: VEZIR_MEET_BIN — read
+                        with a DeprecationWarning, removed in vezir 0.6.0.
+    VEZIR_MILLET_DEVICE Device for `millet transcribe` (default: mps on
+                        Apple Silicon when supported by the installed
+                        millet stack, cuda when available elsewhere,
+                        otherwise cpu).  millet-pipeline auto-detects, so
+                        this env var is optional (still respected as an
+                        explicit override).  Legacy alias: VEZIR_MEET_DEVICE.
+    VEZIR_MILLET_COMPUTE_TYPE Compute type for `millet transcribe`
+                        (default: int8 on cpu, float16 on cuda, float32
+                        on mps).  Legacy alias: VEZIR_MEET_COMPUTE_TYPE.
+    VEZIR_MILLET_TORCH_DEVICE PyTorch device for alignment/diarization
+                        when the installed `millet transcribe` supports a
+                        separate --torch-device option.  Legacy alias:
+                        VEZIR_MEET_TORCH_DEVICE.
+    VEZIR_MILLET_ASR_BACKEND ASR backend for `millet transcribe` when
+                        supported (auto-selects mlx on Apple Silicon
+                        when available).  Legacy alias:
+                        VEZIR_MEET_ASR_BACKEND.
+    VEZIR_MILLET_MLX_MODEL MLX Whisper model path/repo when using mlx
+                        ASR.  Legacy alias: VEZIR_MEET_MLX_MODEL.
     VEZIR_SUMMARY_PRESET    Summary quality preset (high-quality|confidential|alternative)
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
+
+All ``VEZIR_MEET_*`` aliases continue to work for two minor versions
+(through vezir 0.5.x) and emit a one-time ``DeprecationWarning`` on
+read.  Removed in vezir 0.6.0.
 """
 from __future__ import annotations
 
@@ -55,6 +65,60 @@ _KNOWN_MEET_DEVICES = {"cpu", "cuda", "mps"}
 _KNOWN_MEET_COMPUTE_TYPES = {"int8", "float16", "float32"}
 _KNOWN_MEET_ASR_BACKENDS = {"whisperx", "mlx"}
 
+# ── env-var deprecation aliasing (vezir 0.4.0 — millet rename) ──────────────
+#
+# Every VEZIR_MEET_X env var has a VEZIR_MILLET_X equivalent.  The new name
+# wins if both are set; the old name still works for two minor versions
+# (through vezir 0.5.x) and logs a one-time ``DeprecationWarning``.  Removed
+# in vezir 0.6.0.
+
+_DEPRECATED_ENV_ALIASES = {
+    "VEZIR_MEET_BIN": "VEZIR_MILLET_BIN",
+    "VEZIR_MEET_DEVICE": "VEZIR_MILLET_DEVICE",
+    "VEZIR_MEET_COMPUTE_TYPE": "VEZIR_MILLET_COMPUTE_TYPE",
+    "VEZIR_MEET_TORCH_DEVICE": "VEZIR_MILLET_TORCH_DEVICE",
+    "VEZIR_MEET_ASR_BACKEND": "VEZIR_MILLET_ASR_BACKEND",
+    "VEZIR_MEET_MLX_MODEL": "VEZIR_MILLET_MLX_MODEL",
+}
+
+_warned_env_aliases: set[str] = set()
+
+
+def _read_millet_env(new_name: str, default: str | None = None) -> str | None:
+    """Read a ``VEZIR_MILLET_*`` env var with legacy ``VEZIR_MEET_*`` fallback.
+
+    Order of precedence:
+      1. New-name env var if set and non-empty.
+      2. Legacy old-name env var if set and non-empty — emits a one-time
+         DeprecationWarning per old name.
+      3. ``default``.
+
+    Empty strings are treated as "unset" to match ``os.environ.get`` behavior
+    for the existing callsites (most of which short-circuit on falsy).
+    """
+    # Find the legacy alias for this new-name var.
+    legacy_name = None
+    for legacy, new in _DEPRECATED_ENV_ALIASES.items():
+        if new == new_name:
+            legacy_name = legacy
+            break
+
+    value = os.environ.get(new_name)
+    if value:
+        return value
+    if legacy_name:
+        legacy_value = os.environ.get(legacy_name)
+        if legacy_value:
+            if legacy_name not in _warned_env_aliases:
+                _warned_env_aliases.add(legacy_name)
+                log.warning(
+                    "%s is deprecated; use %s instead.  Will be removed "
+                    "in vezir 0.6.0.",
+                    legacy_name, new_name,
+                )
+            return legacy_value
+    return default
+
 
 def data_dir() -> Path:
     """Root dir for all vezir runtime state."""
@@ -66,7 +130,7 @@ def sessions_dir() -> Path:
 
 
 def jobs_dir() -> Path:
-    """Per-job HOME-shim directories for shelling out to meetscribe."""
+    """Per-job HOME-shim directories for shelling out to millet."""
     return data_dir() / "jobs"
 
 
@@ -113,22 +177,38 @@ def port() -> int:
 
 
 def meet_binary() -> str:
-    """Path to the meetscribe `meet` CLI."""
-    explicit = os.environ.get("VEZIR_MEET_BIN")
+    """Path to the millet (formerly `meet`) CLI.
+
+    Resolution order:
+      1. ``VEZIR_MILLET_BIN`` env var (or its legacy alias ``VEZIR_MEET_BIN``
+         with deprecation warning) if set.
+      2. ``<scripts_dir>/millet`` — primary, when millet-record is installed.
+      3. ``<scripts_dir>/meet`` — legacy, when only the pre-rename
+         millet-record is installed.
+      4. ``shutil.which("millet")`` — primary.
+      5. ``shutil.which("meet")`` — legacy.
+
+    The function name is preserved (``meet_binary``) for now since several
+    callers reference it; renaming to ``millet_binary`` is a follow-up.
+    """
+    explicit = _read_millet_env("VEZIR_MILLET_BIN")
     if explicit:
         return explicit
     scripts_dir = sysconfig.get_path("scripts")
     if scripts_dir:
-        candidate = Path(scripts_dir) / "meet"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    found = shutil.which("meet")
-    if not found:
-        raise RuntimeError(
-            "meetscribe `meet` binary not found in PATH. "
-            "Install meetscribe-offline or set VEZIR_MEET_BIN."
-        )
-    return found
+        for bin_name in ("millet", "meet"):
+            candidate = Path(scripts_dir) / bin_name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    for bin_name in ("millet", "meet"):
+        found = shutil.which(bin_name)
+        if found:
+            return found
+    raise RuntimeError(
+        "millet binary not found in PATH.  "
+        "Install millet-pipeline (or set VEZIR_MILLET_BIN to the "
+        "executable path)."
+    )
 
 
 def _cuda_available() -> bool:
@@ -169,11 +249,11 @@ def _mlx_whisper_available() -> bool:
 
 @lru_cache(maxsize=1)
 def _meet_transcribe_help() -> str:
-    """Return cached `meet transcribe --help` output.
+    """Return cached `millet transcribe --help` output.
 
     The cache assumes the `meet` binary and its supported options do not
     change while the vezir process is running. Restart vezir after upgrading
-    meetscribe so option auto-detection sees the new CLI surface.
+    millet so option auto-detection sees the new CLI surface.
     """
     try:
         meet = meet_binary()
@@ -192,7 +272,7 @@ def _meet_transcribe_help() -> str:
 
 
 def _meet_supports_device(device: str) -> bool:
-    """Return True if the installed meetscribe CLI accepts a device value."""
+    """Return True if the installed millet CLI accepts a device value."""
     help_text = _meet_transcribe_help()
     if not help_text:
         return False
@@ -205,7 +285,7 @@ def _meet_supports_device(device: str) -> bool:
 
 
 def meet_supports_option(option: str) -> bool:
-    """Return True if `meet transcribe --help` advertises an option."""
+    """Return True if `millet transcribe --help` advertises an option."""
     help_text = _meet_transcribe_help()
     if not help_text:
         return False
@@ -220,7 +300,7 @@ def _warn_unknown_env_choice(name: str, value: str, known: set[str]) -> None:
         return
     log.warning(
         "%s=%r is not one of the known values: %s. Passing it through to "
-        "`meet transcribe`; check for typos if transcription fails.",
+        "`millet transcribe`; check for typos if transcription fails.",
         name,
         value,
         ", ".join(sorted(known)),
@@ -248,10 +328,10 @@ def _best_torch_device() -> str:
 
 
 def meet_device() -> str:
-    """Primary ASR device to use for `meet transcribe`."""
-    explicit = os.environ.get("VEZIR_MEET_DEVICE")
+    """Primary ASR device to use for `millet transcribe`."""
+    explicit = _read_millet_env("VEZIR_MILLET_DEVICE")
     if explicit:
-        _warn_unknown_env_choice("VEZIR_MEET_DEVICE", explicit, _KNOWN_MEET_DEVICES)
+        _warn_unknown_env_choice("VEZIR_MILLET_DEVICE", explicit, _KNOWN_MEET_DEVICES)
         return explicit
     if (
         _apple_silicon()
@@ -266,18 +346,18 @@ def meet_device() -> str:
 
 
 def meet_torch_device(primary_device: str | None = None) -> str | None:
-    """Optional PyTorch device for alignment/diarization in newer meetscribe.
+    """Optional PyTorch device for alignment/diarization in newer millet.
 
-    The current meetscribe 0.5 CLI has one --device flag that feeds both
+    The current millet 0.5 CLI has one --device flag that feeds both
     CTranslate2 ASR and PyTorch stages. That cannot use Apple MPS because
-    CTranslate2 does not support it. A newer meetscribe can expose a
+    CTranslate2 does not support it. A newer millet can expose a
     separate --torch-device flag; when present, Vezir will keep ASR on the
     primary device and move PyTorch work to the best available accelerator.
     """
-    explicit = os.environ.get("VEZIR_MEET_TORCH_DEVICE")
+    explicit = _read_millet_env("VEZIR_MILLET_TORCH_DEVICE")
     if explicit:
         _warn_unknown_env_choice(
-            "VEZIR_MEET_TORCH_DEVICE",
+            "VEZIR_MILLET_TORCH_DEVICE",
             explicit,
             _KNOWN_MEET_DEVICES,
         )
@@ -292,11 +372,11 @@ def meet_torch_device(primary_device: str | None = None) -> str | None:
 
 
 def meet_compute_type(device: str | None = None) -> str:
-    """Compute type to use for `meet transcribe`."""
-    explicit = os.environ.get("VEZIR_MEET_COMPUTE_TYPE")
+    """Compute type to use for `millet transcribe`."""
+    explicit = _read_millet_env("VEZIR_MILLET_COMPUTE_TYPE")
     if explicit:
         _warn_unknown_env_choice(
-            "VEZIR_MEET_COMPUTE_TYPE",
+            "VEZIR_MILLET_COMPUTE_TYPE",
             explicit,
             _KNOWN_MEET_COMPUTE_TYPES,
         )
@@ -310,11 +390,11 @@ def meet_compute_type(device: str | None = None) -> str:
 
 
 def meet_asr_backend() -> str | None:
-    """Optional ASR backend for newer meetscribe."""
-    explicit = os.environ.get("VEZIR_MEET_ASR_BACKEND")
+    """Optional ASR backend for newer millet."""
+    explicit = _read_millet_env("VEZIR_MILLET_ASR_BACKEND")
     if explicit:
         _warn_unknown_env_choice(
-            "VEZIR_MEET_ASR_BACKEND",
+            "VEZIR_MILLET_ASR_BACKEND",
             explicit,
             _KNOWN_MEET_ASR_BACKENDS,
         )
@@ -327,8 +407,8 @@ def meet_asr_backend() -> str | None:
 
 
 def meet_mlx_model(asr_backend: str | None = None) -> str | None:
-    """Optional MLX Whisper model path/repo for newer meetscribe."""
-    explicit = os.environ.get("VEZIR_MEET_MLX_MODEL")
+    """Optional MLX Whisper model path/repo for newer millet."""
+    explicit = _read_millet_env("VEZIR_MILLET_MLX_MODEL")
     if not explicit:
         return None
     resolved_backend = asr_backend or meet_asr_backend()

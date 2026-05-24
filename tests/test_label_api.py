@@ -74,7 +74,7 @@ def test_api_label_get_returns_speakers(mock_get_speakers, client_and_token, tmp
     sdir = tmp_data / "sessions" / "01TEST"
     sdir.mkdir(parents=True, exist_ok=True)
 
-    # Mock meetscribe's get_speakers
+    # Mock millet's get_speakers
     sp1 = MagicMock()
     sp1.id = "REMOTE_0"
     sp1.channel = 1

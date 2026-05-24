@@ -18,7 +18,7 @@ spawn worker threads via Textual's @work for blocking I/O.
 
 The TUI imports heavyweight deps (meet_record, textual, etc.) lazily
 so that ``vezir --help`` and ``vezir token list`` stay snappy on boxes
-that don't have meetscribe-record installed.
+that don't have millet-record installed.
 """
 from __future__ import annotations
 

@@ -1,9 +1,9 @@
 """Record screen: start/stop/pause/resume + upload.
 
 Calls into ``meet_record.capture`` directly (the library exposes
-``pause()`` / ``resume()`` as of meetscribe-record 0.3.0; we verified
+``pause()`` / ``resume()`` as of millet-record 0.3.0; we verified
 this in the spike at the start of the v0.2.0-tui work).  No subprocess
-invocation of ``meet record`` -- that path doesn't expose pause.
+invocation of ``millet record`` -- that path doesn't expose pause.
 
 State machine (mirrors RecordingState in gui.py):
 
@@ -392,14 +392,14 @@ class RecordBody(Vertical):
     # ── recording lifecycle ──
 
     def _start_recording(self) -> None:
-        # Lazy-import meetscribe-record so a system that only wants to
+        # Lazy-import millet-record so a system that only wants to
         # list sessions doesn't pay for the pulseaudio / sidecar import.
         try:
-            from meet_record.capture import create_session, check_prerequisites
+            from millet_record.capture import create_session, check_prerequisites
         except ImportError as exc:
             self.error_text = (
-                f"meetscribe-record not installed: {exc}. "
-                f"pip install meetscribe-record."
+                f"millet-record not installed: {exc}. "
+                f"pip install millet-record."
             )
             return
 

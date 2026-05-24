@@ -20,7 +20,7 @@ Slimmed down from ``vezir/client/gui.py`` (744 lines).  Key differences:
 * KEEPS the personal toggle -- it's the one per-recording decision
   that the user must make consciously every time.
 * Uses ``meet_record.capture`` library directly (pause/resume).
-  The current ``vezir gui`` shells out to ``meet record`` via Popen
+  The current ``vezir gui`` shells out to ``millet record`` via Popen
   which loses pause/resume.
 * Uses ``vezir.client.api.VezirClient`` for status polling instead of
   inline httpx calls.
@@ -287,11 +287,11 @@ class ScribeWidget:
             )
             return
         try:
-            from meet_record.capture import create_session, check_prerequisites
+            from millet_record.capture import create_session, check_prerequisites
         except ImportError as exc:
             self._set_error(
-                f"meetscribe-record not installed: {exc}.  "
-                f"pip install meetscribe-record"
+                f"millet-record not installed: {exc}.  "
+                f"pip install millet-record"
             )
             return
 
