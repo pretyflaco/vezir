@@ -51,9 +51,9 @@ log = logging.getLogger("vezir.client.tui.record")
 
 
 _PRESET_OPTIONS = [
-    ("High Quality (Sonnet 4.6)", "high-quality"),
-    ("Confidential (TEE)", "confidential"),
-    ("Alternative (Kimi)", "alternative"),
+    ("High Quality", "high-quality"),
+    ("Confidential", "confidential"),
+    ("Alternative", "alternative"),
 ]
 
 
@@ -149,22 +149,58 @@ class RecordBody(Vertical):
     RecordBody {
         padding: 1 2;
     }
+
+    /* ── title row ── */
     #title-row {
         height: 3;
         margin-bottom: 1;
+        align: left middle;
     }
+    #title-row Label {
+        width: 10;
+    }
+    #title-row Input {
+        width: 1fr;
+    }
+
+    /* ── toggles row ── */
     #toggles-row {
         height: 3;
         margin-bottom: 1;
+        align: left middle;
     }
+    #toggles-row Checkbox,
+    #toggles-row Select {
+        width: 1fr;
+        margin-right: 1;
+    }
+    #toggles-row > :last-child {
+        margin-right: 0;
+    }
+
+    /* ── controls row ── */
     #controls-row {
         height: 3;
         margin-bottom: 1;
+        align: left middle;
     }
-    .timer {
+    #controls-row Button {
+        margin-right: 1;
+    }
+    #controls-row #upload-btn {
+        margin-right: 0;
+        margin-left: 1;
+    }
+    #timer-label {
+        width: 1fr;
+        content-align: center middle;
+        border: round $primary;
+        padding: 0 1;
+        height: 3;
         text-style: bold;
         color: $accent;
     }
+
     #status-line {
         height: 1;
         margin-bottom: 1;
@@ -246,7 +282,7 @@ class RecordBody(Vertical):
             yield Button("● Record", id="record-btn", variant="error")
             yield Button("⏸ Pause", id="pause-btn", disabled=True)
             yield Label(
-                "00:00:00  0 B",
+                "00:00:00",
                 id="timer-label",
                 classes="timer",
             )
@@ -313,10 +349,14 @@ class RecordBody(Vertical):
         except Exception:
             return
         suffix = "  (paused)" if self.is_paused else ""
-        lbl.update(
-            f"{_fmt_elapsed(self.elapsed_seconds)}  "
-            f"{_fmt_bytes(self.file_bytes)}{suffix}",
-        )
+        elapsed_str = _fmt_elapsed(self.elapsed_seconds)
+        # Hide byte counter until real audio data has accumulated.
+        # WAV header alone is ~44 B; show only once we exceed 4 KB.
+        if self.file_bytes >= 4096:
+            bytes_str = f"  {_fmt_bytes(self.file_bytes)}"
+        else:
+            bytes_str = ""
+        lbl.update(f"{elapsed_str}{bytes_str}{suffix}")
 
     # ── button + binding handlers ──
 

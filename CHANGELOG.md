@@ -3,6 +3,39 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.1 — TUI Record screen layout polish
+
+### Fixed
+
+* **Record screen layout was visually scattered.**  The three rows
+  (title, toggles, controls) had widgets at uneven widths with no
+  vertical centering, the preset Select wrapped to two lines, the
+  bare timer Label floated mid-row without visual grouping, and the
+  byte counter showed `0 B` from t=0 (just the WAV header) which
+  read as "nothing recording" until real audio arrived.
+
+  CSS-only alignment fix — no Python logic, state machine, worker,
+  or binding changes:
+  - Vertically center contents in every Horizontal row
+    (`align: left middle`).
+  - Title label fixed-width gutter (10 cols); input fills remainder
+    (`width: 1fr`).
+  - Toggle row: all four widgets equal-fr columns with 1-cell
+    gutters.
+  - Controls row: buttons clustered with 1-cell margins; timer
+    placed in a bordered center cell (`border: round $primary`)
+    for visual parity with the buttons.
+  - Shortened preset labels: "High Quality" / "Confidential" /
+    "Alternative" (model-name hints removed to prevent Select
+    line-wrap).
+  - Byte counter suppressed until `file_bytes >= 4 KB` so the
+    initial state reads `00:00:00` cleanly without misleading
+    `44 B` header-only telemetry.
+
+  Server: no changes.  Client TUI only.  Pure cosmetic.
+
+---
+
 ## 0.4.0 — meetscribe → millet ecosystem rename
 
 Vezir 0.4.0 follows the upstream package rename: the underlying
