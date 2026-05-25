@@ -52,6 +52,7 @@ from textual.widgets import (
     Static,
 )
 
+from ... import config
 from ..config import load_client_prefs, save_client_prefs
 
 
@@ -89,6 +90,11 @@ def _fmt_bytes(n: int) -> str:
 
 
 # ─── Messages posted from workers back to the screen ─────────────────────────
+#
+# v0.7.0: every message carries a ``gen`` (generation) field.  When the
+# user starts a new recording, the generation counter increments.
+# Message handlers discard messages whose gen < self._gen, preventing
+# stale poll/upload threads from clobbering state of a newer session.
 
 
 @dataclass
@@ -96,16 +102,19 @@ class TimerTick(Message):
     elapsed: float
     bytes: int
     paused: bool
+    gen: int = 0
 
 
 @dataclass
 class RecorderFailed(Message):
     reason: str
+    gen: int = 0
 
 
 @dataclass
 class RecorderFinished(Message):
     audio_path: Path
+    gen: int = 0
 
 
 @dataclass
@@ -113,24 +122,28 @@ class UploadProgress(Message):
     sent: int
     total: int
     rate: float
+    gen: int = 0
 
 
 @dataclass
 class UploadFinished(Message):
     session_id: str
     dashboard_url: str | None
+    gen: int = 0
 
 
 @dataclass
 class UploadFailed(Message):
     error: str
     audio_path: Path | None
+    gen: int = 0
 
 
 @dataclass
 class ServerStatus(Message):
     status: str
     extra: str = ""
+    gen: int = 0
 
 
 @dataclass
@@ -398,6 +411,9 @@ class RecordBody(Vertical):
         self._last_session_id: str | None = None
         # Persisted preferences cache.
         self._prefs = load_client_prefs()
+        # v0.7.0: session generation counter.  Incremented on each
+        # _start_recording(); message handlers discard stale messages.
+        self._gen: int = 0
 
     @classmethod
     def body_widget(cls) -> "RecordBody":
@@ -673,31 +689,38 @@ class RecordBody(Vertical):
             return
 
         try:
-            self._session = create_session()
+            output_dir = config.recordings_dir()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self._session = create_session(output_dir=str(output_dir))
         except Exception as exc:
             self.error_text = f"could not create session: {exc}"
             return
 
+        # v0.7.0: bump generation so stale messages from the previous
+        # session's upload/poll workers are discarded.
+        self._gen += 1
         self.error_text = ""
+        self.elapsed_seconds = 0.0
+        self.file_bytes = 0
         self.status_text = "starting recorder"
-        self._record_worker(self._session)
+        self._record_worker(self._session, self._gen)
 
     def _stop_recording(self) -> None:
         if self._session is None:
             return
         self.status_text = "draining (flushing audio buffer)"
-        self._stop_worker(self._session)
+        self._stop_worker(self._session, self._gen)
 
     @work(thread=True, exclusive=True, group="recorder")
-    def _record_worker(self, session) -> None:
+    def _record_worker(self, session, gen: int) -> None:
         """Drive the recorder: start, then poll status every second."""
         try:
             session.start()
         except Exception as exc:
-            self.post_message(RecorderFailed(reason=str(exc)))
+            self.post_message(RecorderFailed(reason=str(exc), gen=gen))
             return
         # Notify the UI to flip into recording mode.
-        self.post_message(ServerStatus(status="recording"))
+        self.post_message(ServerStatus(status="recording", gen=gen))
         # Tick loop: poll the session's own status() and emit TimerTick
         # messages.  Stops when the session is no longer alive (i.e.
         # _stop_worker has finalized it).
@@ -705,16 +728,18 @@ class RecordBody(Vertical):
             try:
                 st = session.status()
             except Exception as exc:
-                self.post_message(RecorderFailed(reason=f"status() raised: {exc}"))
+                self.post_message(RecorderFailed(reason=f"status() raised: {exc}", gen=gen))
                 return
             self.post_message(TimerTick(
                 elapsed=st.elapsed_seconds,
                 bytes=st.file_size_bytes,
                 paused=st.paused,
+                gen=gen,
             ))
             if st.failed:
                 self.post_message(RecorderFailed(
                     reason=st.fail_reason or "unknown recorder error",
+                    gen=gen,
                 ))
                 return
             if not st.is_alive and not st.paused:
@@ -726,13 +751,13 @@ class RecordBody(Vertical):
             time.sleep(1.0)
 
     @work(thread=True, exclusive=True, group="recorder-stop")
-    def _stop_worker(self, session) -> None:
+    def _stop_worker(self, session, gen: int) -> None:
         try:
             out = session.stop()
         except Exception as exc:
-            self.post_message(RecorderFailed(reason=f"stop() raised: {exc}"))
+            self.post_message(RecorderFailed(reason=f"stop() raised: {exc}", gen=gen))
             return
-        self.post_message(RecorderFinished(audio_path=out))
+        self.post_message(RecorderFinished(audio_path=out, gen=gen))
 
     # ── upload lifecycle ──
 
@@ -750,7 +775,7 @@ class RecordBody(Vertical):
         self.is_uploading = True
         self.status_text = "compressing" if audio_path.suffix.lower() == ".wav" else "uploading"
         self.error_text = ""
-        self._upload_worker(audio_path, title, preset, auto_label, sync, personal)
+        self._upload_worker(audio_path, title, preset, auto_label, sync, personal, self._gen)
 
     @work(thread=True, exclusive=True, group="upload")
     def _upload_worker(
@@ -761,6 +786,7 @@ class RecordBody(Vertical):
         auto_label: bool,
         sync: bool,
         personal: bool,
+        gen: int,
     ) -> None:
         from .. import uploader
 
@@ -773,17 +799,19 @@ class RecordBody(Vertical):
             self.post_message(UploadFailed(
                 error=f"compression failed: {exc}",
                 audio_path=audio_path,
+                gen=gen,
             ))
             return
 
         def on_progress(sent: int, total: int, elapsed: float) -> None:
             rate = sent / elapsed if elapsed > 0 else 0.0
-            self.post_message(UploadProgress(sent=sent, total=total, rate=rate))
+            self.post_message(UploadProgress(sent=sent, total=total, rate=rate, gen=gen))
 
         def on_retry(attempt: int, retries: int, exc: Exception) -> None:
             self.post_message(ServerStatus(
                 status="uploading",
                 extra=f"attempt {attempt}/{retries} failed; retrying",
+                gen=gen,
             ))
 
         try:
@@ -803,6 +831,7 @@ class RecordBody(Vertical):
             self.post_message(UploadFailed(
                 error=f"upload failed: {exc}",
                 audio_path=audio_path,
+                gen=gen,
             ))
             return
 
@@ -810,10 +839,11 @@ class RecordBody(Vertical):
             session_id=result.get("session_id", ""),
             dashboard_url=result.get("dashboard_url")
                           or result.get("dashboard_login_url"),
+            gen=gen,
         ))
 
     @work(thread=True, exclusive=True, group="poll")
-    def _poll_worker(self, session_id: str) -> None:
+    def _poll_worker(self, session_id: str, gen: int) -> None:
         """Poll /api/sessions/{id} until terminal status.
 
         Terminal statuses include ``needs_labeling`` because the
@@ -828,6 +858,10 @@ class RecordBody(Vertical):
         last_status = ""
         deadline = _t.time() + 600
         while _t.time() < deadline:
+            # v0.7.0: bail early if the generation has moved on (user
+            # started a new recording and that recording also uploaded).
+            if gen < self._gen:
+                return
             result = self.app.api.get_session(session_id)
             if not result.is_ok():
                 _t.sleep(5)
@@ -838,8 +872,26 @@ class RecordBody(Vertical):
                 self.post_message(ServerStatus(
                     status=session.status,
                     extra=session.error or session.summary_error or "",
+                    gen=gen,
                 ))
             if session.status in terminal:
+                # v0.7.0: auto-download artifacts into the local
+                # recording directory when the server finishes.
+                if session.status == "done" and self._last_audio_path:
+                    try:
+                        from ..artifacts import download_session_artifacts
+                        dest = self._last_audio_path.parent
+                        saved = download_session_artifacts(
+                            self.app.api, session, dest,
+                        )
+                        if saved:
+                            self.post_message(ServerStatus(
+                                status="done",
+                                extra=f"artifacts saved ({len(saved)} files)",
+                                gen=gen,
+                            ))
+                    except Exception as exc:
+                        log.warning("artifact download failed: %s", exc)
                 # PR9: notify the rest of the UI that this session is
                 # now displayable (done) or failed (error) so the
                 # Sessions tab can refresh and the user gets a toast.
@@ -851,42 +903,77 @@ class RecordBody(Vertical):
             _t.sleep(5)
 
     # ── message handlers ──
+    #
+    # v0.7.0: all handlers check ``message.gen`` against ``self._gen``.
+    # Messages from a stale generation (old recording's upload/poll
+    # workers) are silently discarded so they don't clobber the current
+    # recording's UI state.
 
     def on_timer_tick(self, message: TimerTick) -> None:
+        if message.gen < self._gen:
+            return
         self.elapsed_seconds = message.elapsed
         self.file_bytes = message.bytes
         if message.paused != self.is_paused:
             self.is_paused = message.paused
 
     def on_recorder_failed(self, message: RecorderFailed) -> None:
+        if message.gen < self._gen:
+            return
         self.is_recording = False
         self.is_paused = False
         self.status_text = "recorder failed"
         self.error_text = message.reason
 
     def on_recorder_finished(self, message: RecorderFinished) -> None:
+        if message.gen < self._gen:
+            return
         self.is_recording = False
         self.is_paused = False
-        self._last_audio_path = message.audio_path
+        # v0.7.0: rename session dir with title suffix.
+        audio_path = message.audio_path
+        try:
+            title_widget = self.query_one("#title-input", Input)
+            title = (title_widget.value or "").strip() or None
+            session_dir = config.rename_session_dir_with_title(
+                audio_path.parent, title,
+            )
+            audio_path = session_dir / audio_path.name
+        except Exception:
+            pass  # non-fatal; use original path
+        self._last_audio_path = audio_path
+        self._session = None  # release reference
         # (Upload button no longer toggles on/off based on _last_audio_path
         # in v0.5.0+; it's always enabled and opens the Import picker.
         # Auto-upload of the just-finished recording still happens below.)
-        size = message.audio_path.stat().st_size if message.audio_path.exists() else 0
+        size = audio_path.stat().st_size if audio_path.exists() else 0
         self.file_bytes = size
         self.status_text = (
-            f"recording finished ({_fmt_bytes(size)}); press u to upload"
+            f"recording finished ({_fmt_bytes(size)}); uploading..."
         )
         # Auto-kick upload to match gui.py's behavior.
-        self._kick_upload(message.audio_path)
+        self._kick_upload(audio_path)
 
     def on_server_status(self, message: ServerStatus) -> None:
-        self.is_recording = message.status == "recording"
+        if message.gen < self._gen:
+            return
+        # v0.7.0: DECOUPLED from is_recording.  ServerStatus messages
+        # from poll/upload workers should NEVER flip the recording flag.
+        # Only _record_worker posts status="recording", and that is
+        # handled separately via the initial is_recording=True set in
+        # action_toggle_record / _start_recording flow.
+        if message.status == "recording":
+            self.is_recording = True
+        # For non-recording statuses, only update the status text --
+        # do NOT reset is_recording (which caused the back-to-back bug).
         text = message.status
         if message.extra:
             text = f"{message.status}  ({message.extra})"
         self.status_text = text
 
     def on_upload_progress(self, message: UploadProgress) -> None:
+        if message.gen < self._gen:
+            return
         if message.total > 0:
             pct = message.sent / message.total * 100
             self.status_text = (
@@ -896,13 +983,17 @@ class RecordBody(Vertical):
             )
 
     def on_upload_finished(self, message: UploadFinished) -> None:
+        if message.gen < self._gen:
+            return
         self.is_uploading = False
         self._last_session_id = message.session_id
         self.status_text = f"uploaded as {message.session_id}; polling status"
         self.error_text = ""
-        self._poll_worker(message.session_id)
+        self._poll_worker(message.session_id, message.gen)
 
     def on_upload_failed(self, message: UploadFailed) -> None:
+        if message.gen < self._gen:
+            return
         self.is_uploading = False
         self.status_text = "upload failed"
         suffix = ""

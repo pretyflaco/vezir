@@ -667,6 +667,79 @@ def harden_umask() -> None:
     os.umask(0o077)
 
 
+def recordings_dir(team_id: str | None = None) -> Path:
+    """Client-side recording output directory.
+
+    Standardised layout (v0.7.0+):
+
+        ~/vezir-meetings/<team_id>/meeting-YYYYMMDD-HHMMSS[_TITLE]/
+
+    When *team_id* is ``None`` the function resolves the active team
+    from ``teams.json``; if no team is configured it falls back to
+    ``"default"``.
+
+    The ``VEZIR_RECORD_DIR`` env var overrides everything (the team
+    subdirectory is still appended beneath the override root).
+    """
+    if team_id is None:
+        try:
+            from .client.config import active_team_credentials
+            tid, _url, _tok = active_team_credentials()
+            team_id = tid or "default"
+        except Exception:
+            team_id = "default"
+
+    root = Path(
+        os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "vezir-meetings"))
+    )
+    return root / team_id
+
+
+def sanitize_title(title: str) -> str:
+    """Convert a free-form meeting title into a filesystem-safe slug.
+
+    Rules:
+      * Strip leading/trailing whitespace.
+      * Replace any run of non-alphanumeric characters with a single
+        underscore (except hyphens which are kept).
+      * Uppercase the result so it stands out as a human label in
+        ``ls`` output.
+      * Cap at 60 characters to avoid path-length issues.
+
+    >>> sanitize_title("AB Board")
+    'AB_BOARD'
+    >>> sanitize_title("  weekly sync / @blink  ")
+    'WEEKLY_SYNC_BLINK'
+    """
+    slug = re.sub(r"[^a-zA-Z0-9-]+", "_", title.strip())
+    slug = slug.strip("_").upper()
+    return slug[:60] if slug else ""
+
+
+def rename_session_dir_with_title(session_dir: Path, title: str | None) -> Path:
+    """Append ``_TITLE`` to a ``meeting-YYYYMMDD-HHMMSS`` directory name.
+
+    If the directory already carries a title suffix, or *title* is empty
+    after sanitisation, the directory is returned unchanged.  The rename
+    is a same-parent ``Path.rename()`` so it is atomic on POSIX.
+    """
+    if not title:
+        return session_dir
+    slug = sanitize_title(title)
+    if not slug:
+        return session_dir
+    name = session_dir.name
+    # Already has a label suffix?  (e.g. meeting-20260525-140054_BITIKA)
+    if "_" in name.split("-", 2)[-1]:
+        return session_dir
+    new = session_dir.parent / f"{name}_{slug}"
+    try:
+        return session_dir.rename(new)
+    except OSError as exc:
+        log.warning("could not rename %s -> %s: %s", session_dir, new, exc)
+        return session_dir
+
+
 def ensure_dirs() -> None:
     """Create runtime directories if they don't exist."""
     for d in (data_dir(), sessions_dir(), jobs_dir(), logs_dir(), teams_dir()):

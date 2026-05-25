@@ -46,6 +46,7 @@ import tkinter as tk
 
 from .api import VezirClient
 from .config import load_client_prefs
+from .. import config
 
 log = logging.getLogger("vezir.client.scribe_widget")
 
@@ -299,7 +300,9 @@ class ScribeWidget:
             return
 
         try:
-            self._session = create_session()
+            output_dir = config.recordings_dir()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self._session = create_session(output_dir=str(output_dir))
             self._session.start()
         except Exception as exc:
             self._set_error(f"could not start recorder: {exc}")
@@ -325,6 +328,10 @@ class ScribeWidget:
             self._session = None
             return
         self._session = None
+        # v0.7.0: rename session dir with title suffix.
+        title = (self.title_var.get() or "").strip() or None
+        session_dir = config.rename_session_dir_with_title(out.parent, title)
+        out = session_dir / out.name
         self.state.audio_path = out
         self.state.paused = False
         self.rec_btn.configure(text="● Record", bg="#e0e0e0")

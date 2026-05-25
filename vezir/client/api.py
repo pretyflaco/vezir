@@ -136,6 +136,7 @@ class Session:
     error: str | None = None
     summary_error: str | None = None
     sync_error: str | None = None
+    team_id: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -158,6 +159,7 @@ class Session:
             "auto_label_enabled", "sync_enabled", "personal",
             "created_at", "updated_at",
             "error", "summary_error", "sync_error",
+            "team_id",
         }
         kwargs = {k: d.get(k) for k in known if k in d}
         return cls(artifacts=artifacts, **kwargs)
@@ -332,12 +334,22 @@ class VezirClient:
 
     # ── sessions ──
 
-    def get_sessions(self, limit: int = 50) -> ApiResult:
+    def get_sessions(
+        self,
+        limit: int = 50,
+        since: str | None = None,
+    ) -> ApiResult:
         """List sessions visible to the current bearer.
 
         Returns ApiResult whose .ok is ``list[Session]`` on success.
+
+        v0.7.0: *since* (ISO 8601 date/datetime) filters to sessions
+        created at or after that timestamp.
         """
-        result = self._get(f"/api/sessions?limit={int(limit)}")
+        path = f"/api/sessions?limit={int(limit)}"
+        if since is not None:
+            path += f"&since={quote(since, safe='')}"
+        result = self._get(path)
         if not result.is_ok():
             return result
         raw = result.ok

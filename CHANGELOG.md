@@ -3,6 +3,53 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.5 — recording path harmonization + vezir pull + TUI back-to-back fix
+
+Consolidates all recording paths under `~/vezir-meetings/<team>/`,
+adds `vezir pull` for team meeting artifact sharing, and fixes
+back-to-back recording in the TUI.
+
+### Added
+
+* **`vezir pull`** — download meeting artifacts (summaries, transcripts,
+  PDFs) from the server into `~/vezir-meetings/<team>/`.  Enables
+  team-wide meeting sharing without relying on git sync.
+  Options: `--limit`, `--since`, `--session`, `-o`.
+* **Auto-download artifacts** — TUI and GUI automatically download
+  meeting artifacts into the local recording directory when server
+  processing completes (`done` status).
+* **`config.recordings_dir(team_id)`** — new unified recording path
+  (`~/vezir-meetings/<team>/`), replacing the fragmented
+  `~/millet-recordings/` and `~/meet-recordings/` directories.
+* **`config.sanitize_title()` / `config.rename_session_dir_with_title()`**
+  — recording directories get a `_TITLE` suffix after stop
+  (e.g. `meeting-20260526-143041_ABBOARD`).
+* **`since` query parameter on `GET /api/sessions`** — enables efficient
+  incremental pulls.  Filters to sessions created at or after the
+  given ISO date/datetime.
+* **`Session.team_id`** field on the client-side `Session` dataclass.
+* New modules: `vezir/client/artifacts.py`, `vezir/client/pull.py`.
+
+### Fixed
+
+* **TUI back-to-back recording race conditions** — session generation
+  counter prevents stale messages from old recordings clobbering the
+  UI state of a new recording.  `is_recording` is no longer set by
+  `ServerStatus` messages from poll/upload workers.
+* **GUI credential resolution** — `vezir gui` now honors `teams.json`
+  (same precedence as TUI/CLI).
+* **GUI `_meet_bin()`** — searches for `millet` binary before legacy
+  `meet` fallback.
+
+### Changed
+
+* All recording entry points (TUI, GUI, CLI scribe, scribe-widget)
+  now write to `~/vezir-meetings/<team>/` instead of the previous
+  fragmented paths.  The `VEZIR_RECORD_DIR` env var is still respected
+  as an override.  Old recordings in `~/millet-recordings/` and
+  `~/meet-recordings/` remain untouched.
+
+
 ## 0.6.4 — vezir doctor
 
 New ``vezir doctor`` command that diagnoses configuration and

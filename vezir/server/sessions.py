@@ -104,6 +104,7 @@ def session_detail(
 @router.get("/api/sessions", dependencies=[Depends(ratelimit.limit_api)])
 def api_sessions(
     limit: int = 50,
+    since: str | None = None,
     auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     """Return recent sessions visible to the authenticated user.
@@ -113,6 +114,10 @@ def api_sessions(
       * Personal: all non-personal sessions in that team PLUS the
         caller's own personal sessions in that team.
       * Sessions in OTHER teams are entirely invisible.
+
+    v0.7.0: optional ``since`` parameter (ISO 8601 date or datetime)
+    filters to sessions created at or after that timestamp.  Enables
+    efficient incremental ``vezir pull``.
     """
     github, team_id, _admin = auth_triple
     return {
@@ -122,6 +127,7 @@ def api_sessions(
                 limit=limit,
                 viewer_github=github,
                 viewer_team_id=team_id,
+                since=since,
             )
         ],
     }

@@ -300,6 +300,7 @@ def list_recent(
     viewer_github: str | None = None,
     viewer_team_id: str | None = None,
     team_id: str | None = None,
+    since: str | None = None,
 ) -> list[dict]:
     """Return recent jobs, filtered for visibility.
 
@@ -343,32 +344,44 @@ def list_recent(
             "or viewer_team_id (v0.6.0+ team isolation)"
         )
 
+    # v0.7.0: optional ``since`` filter for incremental ``vezir pull``.
+    since_clause = ""
+    since_params: tuple = ()
+    if since:
+        since_clause = " AND created_at >= ?"
+        since_params = (since,)
+
     with _conn() as c:
         if viewer_team_id and viewer_github:
             rows = c.execute(
                 "SELECT * FROM jobs "
-                "WHERE team_id = ? AND (personal = 0 OR github = ?) "
+                "WHERE team_id = ? AND (personal = 0 OR github = ?)"
+                f"{since_clause} "
                 "ORDER BY created_at DESC LIMIT ?",
-                (viewer_team_id, viewer_github, limit),
+                (viewer_team_id, viewer_github, *since_params, limit),
             ).fetchall()
         elif team_id and github:
             rows = c.execute(
-                "SELECT * FROM jobs WHERE team_id = ? AND github = ? "
+                "SELECT * FROM jobs WHERE team_id = ? AND github = ?"
+                f"{since_clause} "
                 "ORDER BY created_at DESC LIMIT ?",
-                (team_id, github, limit),
+                (team_id, github, *since_params, limit),
             ).fetchall()
         elif team_id:
             rows = c.execute(
-                "SELECT * FROM jobs WHERE team_id = ? "
+                "SELECT * FROM jobs WHERE team_id = ?"
+                f"{since_clause} "
                 "ORDER BY created_at DESC LIMIT ?",
-                (team_id, limit),
+                (team_id, *since_params, limit),
             ).fetchall()
         else:
             # No team scope at all — only reachable from internal callers
             # (tests, admin tools) that explicitly want a global view.
+            where = "WHERE created_at >= ?" if since else ""
             rows = c.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                f"SELECT * FROM jobs {where} "
+                "ORDER BY created_at DESC LIMIT ?",
+                (*since_params, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 

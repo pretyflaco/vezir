@@ -109,11 +109,19 @@ def _save_client_config(data: dict) -> None:
 
 
 def _resolve_url_and_token() -> tuple[str | None, str | None]:
-    """Resolve server URL and token: env > client.json > None."""
+    """Resolve server URL and token: env > teams.json > client.json > None."""
     url = os.environ.get("VEZIR_URL")
     token = os.environ.get("VEZIR_TOKEN")
     if url and token:
         return url, token
+    # v0.7.0: honor teams.json for the GUI (same precedence as TUI/CLI).
+    try:
+        from .config import resolve_credentials
+        rc_url, rc_token, _src = resolve_credentials()
+        if rc_url and rc_token:
+            return rc_url, rc_token
+    except Exception:
+        pass
     cfg = _load_client_config()
     return url or cfg.get("url"), token or cfg.get("token")
 
@@ -137,22 +145,27 @@ def _fmt_size(nbytes: int) -> str:
 
 
 def _meet_bin() -> str:
-    """Locate the `meet` binary (provided by millet-record)."""
-    explicit = os.environ.get("VEZIR_MEET_BIN")
+    """Locate the `millet` (or legacy `meet`) binary."""
+    explicit = os.environ.get("VEZIR_MILLET_BIN") or os.environ.get("VEZIR_MEET_BIN")
     if explicit:
         return explicit
     import shutil
-    found = shutil.which("meet")
-    if not found:
-        raise RuntimeError(
-            "`meet` binary not found in PATH. Install millet-record "
-            "(pip install millet-record)."
-        )
-    return found
+    for name in ("millet", "meet"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise RuntimeError(
+        "`millet` binary not found in PATH. Install millet-record "
+        "(pip install millet-record)."
+    )
 
 
 def _default_output_dir() -> Path:
-    return Path(os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "millet-recordings")))
+    """Recording output directory: ~/vezir-meetings/<active-team>/.
+
+    v0.7.0: standardized on per-team subdirectory under ~/vezir-meetings/.
+    """
+    return config.recordings_dir()
 
 
 def _check_meet_prerequisites(meet_bin: str) -> list[str]:
@@ -515,6 +528,9 @@ class ScribeWindow:
             if sdir is None:
                 self._gui_queue.put(("error", "no session directory found after recording"))
                 return
+            # v0.7.0: rename session dir with title suffix
+            title = self.title_var.get().strip() or None
+            sdir = config.rename_session_dir_with_title(sdir, title)
             audio_files = sorted(sdir.glob("*.wav")) or sorted(sdir.glob("*.ogg"))
             if not audio_files:
                 self._gui_queue.put(("error", f"no audio file in {sdir}"))
@@ -639,6 +655,38 @@ class ScribeWindow:
         self._poll_thread = threading.Thread(target=_poll, daemon=True)
         self._poll_thread.start()
 
+    # ── artifact download (v0.7.0) ──
+
+    def _download_artifacts(self):
+        """Download meeting artifacts into the local recording directory."""
+        if not self.state.session_id or not self.state.wav_path:
+            return
+
+        session_id = self.state.session_id
+        dest_dir = self.state.wav_path.parent
+
+        def _worker():
+            try:
+                from .api import VezirClient
+                from .artifacts import download_session_artifacts
+                api = VezirClient(self.url, self.token)
+                result = api.get_session(session_id)
+                if not result.is_ok():
+                    return
+                saved = download_session_artifacts(api, result.ok, dest_dir)
+                if saved:
+                    self._gui_queue.put((
+                        "status",
+                        f"artifacts saved ({len(saved)} files)",
+                    ))
+            except Exception as exc:
+                import logging
+                logging.getLogger("vezir.client.gui").warning(
+                    "artifact download failed: %s", exc,
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     # ── GUI event loop ──
 
     def _tick(self):
@@ -701,6 +749,9 @@ class ScribeWindow:
             if new_status in self.TERMINAL_STATUSES:
                 self.rec_btn.config(state="normal", text="● Record", bg="#e0e0e0")
                 self.title_entry.config(state="normal")
+                # v0.7.0: auto-download artifacts when done.
+                if new_status == "done" and self.state.wav_path:
+                    self._download_artifacts()
             elif new_status == "needs_labeling":
                 self.rec_btn.config(state="normal", text="● Record", bg="#e0e0e0")
                 self.title_entry.config(state="normal")

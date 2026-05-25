@@ -84,34 +84,12 @@ def _check_meet_prerequisites(meet_bin: str) -> None:
 
 
 def _default_output_dir() -> Path:
-    """Return the default recordings directory (``~/millet-recordings/``).
+    """Return the default recordings directory: ~/vezir-meetings/<team>/.
 
-    PR (vezir 0.4.0 rename): default changed from ``~/meet-recordings`` to
-    ``~/millet-recordings``.  If the legacy directory exists but the new
-    one doesn't, emit a one-time stderr hint suggesting the user move it.
-    No auto-move — pure consent per the rename handoff rule.
+    v0.7.0: standardized on per-team subdirectory under ~/vezir-meetings/.
+    Respects VEZIR_RECORD_DIR override via config.recordings_dir().
     """
-    explicit = os.environ.get("VEZIR_RECORD_DIR")
-    if explicit:
-        return Path(explicit)
-
-    new_dir = Path.home() / "millet-recordings"
-    legacy_dir = Path.home() / "meet-recordings"
-    if legacy_dir.exists() and not new_dir.exists():
-        global _migration_hint_shown
-        if not _migration_hint_shown:
-            _migration_hint_shown = True
-            print(
-                f"vezir: legacy recordings directory found at {legacy_dir}.\n"
-                f"  millet-record writes to {new_dir} by default.\n"
-                f"  To migrate: mv {legacy_dir} {new_dir}",
-                file=sys.stderr,
-                flush=True,
-            )
-    return new_dir
-
-
-_migration_hint_shown = False
+    return config.recordings_dir()
 
 
 def _find_latest_session(output_dir: Path, before: float) -> Path | None:
@@ -529,6 +507,13 @@ def run_scribe(
                 f"could not locate a session directory under {output_dir} "
                 f"from this run"
             )
+    # v0.7.0: rename session dir with title suffix for discoverability.
+    session_dir = audio.parent
+    session_dir = config.rename_session_dir_with_title(session_dir, title)
+    audio = next(
+        iter(sorted(session_dir.glob("*.ogg")) or sorted(session_dir.glob("*.wav"))),
+        audio,
+    )
     print(
         f"vezir: recording captured: {audio} ({_fmt_bytes(audio.stat().st_size)})",
         flush=True,

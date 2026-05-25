@@ -1326,5 +1326,82 @@ def doctor():
     sys.exit(run_doctor())
 
 
+# ── pull (v0.7.0: team meeting artifact sharing) ─────────────────────────────
+
+
+@main.command("pull")
+@click.option(
+    "--server", "server_url", default=None,
+    help="Server URL (default $VEZIR_URL / teams.json).",
+)
+@click.option(
+    "--token", default=None,
+    help="Bearer token (default $VEZIR_TOKEN / teams.json).",
+)
+@click.option(
+    "--limit", default=50, show_default=True,
+    help="Max sessions to fetch.",
+)
+@click.option(
+    "--since", default=None,
+    help="ISO date or datetime, e.g. 2026-05-20 or 2026-05-20T14:00:00Z.",
+)
+@click.option(
+    "--session", "session_id", default=None,
+    help="Pull a single session by ID.",
+)
+@click.option(
+    "-o", "--output-dir", default=None, type=click.Path(),
+    help="Output directory (default ~/vezir-meetings/<team>/).",
+)
+def pull_cmd(server_url, token, limit, since, session_id, output_dir):
+    """Download meeting artifacts from the vezir server.
+
+    Pulls summaries, transcripts, and PDFs for team meetings into
+    ~/vezir-meetings/<team>/.  Idempotent: already-pulled sessions
+    are skipped on re-runs.
+
+    \b
+    Examples:
+        vezir pull                       # pull recent team meetings
+        vezir pull --since 2026-05-20    # pull since a date
+        vezir pull --session 01KSG...    # pull a specific session
+        vezir pull --limit 200           # pull more history
+    """
+    from .client.api import VezirClient
+    from .client.pull import pull_team_sessions
+
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        click.echo(
+            "vezir pull: error: no token configured. "
+            "Set VEZIR_TOKEN or run `vezir team config add`.",
+            err=True,
+        )
+        sys.exit(1)
+    config.validate_token_format(token)
+
+    api = VezirClient(server_url, token)
+    out = Path(output_dir) if output_dir else None
+
+    try:
+        pulled = pull_team_sessions(
+            api,
+            output_dir=out,
+            limit=limit,
+            since=since,
+            session_id=session_id,
+        )
+    except KeyboardInterrupt:
+        click.echo("vezir pull: interrupted", err=True)
+        sys.exit(130)
+    except Exception as exc:
+        click.echo(f"vezir pull: error: {exc}", err=True)
+        sys.exit(1)
+
+    sys.exit(0 if pulled >= 0 else 1)
+
+
 if __name__ == "__main__":
     main()
