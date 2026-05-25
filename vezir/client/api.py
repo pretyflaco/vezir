@@ -481,3 +481,12 @@ class VezirClient:
     def health(self) -> ApiResult:
         """Cheap GET /health for connectivity smoke tests."""
         return self._get("/health")
+
+    def get_me(self) -> ApiResult:
+        """GET /api/me — returns ``{github, team_id, team_name, is_admin}``.
+
+        Added in server v0.6.1.  Returns an error ApiResult on older
+        servers (404) or auth failures (401/403).  Used by ``vezir doctor``
+        to validate the active token end-to-end.
+        """
+        return self._get("/api/me")

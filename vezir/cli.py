@@ -1306,5 +1306,25 @@ def status():
         click.echo(f"  {t['id']:<16} {t['name']}")
 
 
+# ── doctor ────────────────────────────────────────────────────────────────────
+
+@main.command()
+def doctor():
+    """Diagnose configuration and environment issues.
+
+    Checks credential resolution, SSL certs, server connectivity, token
+    validity, file permissions, migration status, and more.  Client checks
+    always run; server checks run only when local vezir-data is detected.
+
+    Exit code: 0 if no errors, 1 if any [ERROR] found.
+
+    \b
+    Example:
+        vezir doctor
+    """
+    from .doctor import run_doctor
+    sys.exit(run_doctor())
+
+
 if __name__ == "__main__":
     main()

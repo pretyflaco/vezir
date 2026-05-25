@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.4 — vezir doctor
+
+New ``vezir doctor`` command that diagnoses configuration and
+environment issues.  Auto-detects whether the local machine is a
+server (queue DB exists) and runs additional server-side checks.
+
+### Added
+
+* **``vezir doctor``** — 17 checks across client and server:
+  - **Client:** credential resolution summary + source disagreement
+    detection, env-var shadow detection (``/etc/environment`` vs
+    ``~/.profile``), teams.json schema validation, client.json
+    coexistence warning, token format validation, SSL cert
+    configuration, file permissions, server connectivity (``/health``),
+    token auth (``/api/me``), deprecated env vars.
+  - **Server:** orphaned tokens (missing ``team_id``), expired tokens,
+    data directory permissions, migration status, millet binary
+    availability, per-team voiceprint DB existence, stale jobs.
+* **``VezirClient.get_me()``** — new client API helper for
+  ``GET /api/me`` (backing ``vezir doctor``'s auth check).
+* 30 new tests in ``tests/test_doctor.py``.
+
+### Tests
+
+389 passing (was 359 in v0.6.3).
+
+
 ## 0.6.3 — token revoke ergonomics + first CI workflow
 
 Quality-of-life release: per-device token revocation, team-scoped
