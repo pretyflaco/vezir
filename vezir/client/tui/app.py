@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -40,12 +41,17 @@ from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from ..api import VezirClient
 from ..config import (
-    load_client_prefs,
     load_teams_config,
     next_team_id,
     resolve_credentials,
     set_active_team,
 )
+
+if TYPE_CHECKING:
+    # Forward-only reference: used purely as a string annotation in the
+    # message handler below.  Importing it eagerly would create a
+    # circular import (record_screen imports from this module too).
+    from .record_screen import SessionUploadComplete  # noqa: F401
 
 log = logging.getLogger("vezir.client.tui")
 
@@ -100,7 +106,6 @@ class MainScreen(Screen):
         # Start the background labeling-needed poll.  Skipped under
         # test (VEZIR_TUI_DISABLE_NOTIFY_POLL=1) so unrelated tests
         # don't accumulate timers that fire after teardown.
-        import os
         if os.environ.get("VEZIR_TUI_DISABLE_NOTIFY_POLL") == "1":
             return
         try:
@@ -489,7 +494,6 @@ class VezirTuiApp(App):
         cached = getattr(self, "_clipboard_cmd_cache", "unset")
         if cached != "unset":
             return cached
-        import os
         import shutil as _sh
 
         cmd: list[str] | None = None
@@ -520,7 +524,6 @@ class VezirTuiApp(App):
         restore the default fail-fast behavior; the test suite uses
         this to ensure regressions surface rather than getting hidden.
         """
-        import os
         if os.environ.get("VEZIR_TUI_CRASH_ON_ERROR") == "1":
             super()._handle_exception(error)
             return

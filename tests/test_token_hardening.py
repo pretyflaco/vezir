@@ -488,7 +488,7 @@ def test_upload_rate_limit_per_token(client_factory, ratelimit_enabled, tmp_data
 
 def test_ratelimit_disabled_by_env(client_factory, monkeypatch):
     """With VEZIR_DISABLE_RATELIMIT=1 (set by conftest) the limiter is a no-op."""
-    from vezir.server import ratelimit, auth
+    from vezir.server import ratelimit
     ratelimit._reset_for_tests()
 
     client = client_factory()

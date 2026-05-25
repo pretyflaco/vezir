@@ -95,7 +95,7 @@ def app(mock_server, monkeypatch, tmp_path):
 
 
 async def test_app_starts_and_mounts_main_screen(app, mock_server):
-    async with app.run_test() as pilot:
+    async with app.run_test():
         assert app.screen.__class__.__name__ == "MainScreen"
 
 
@@ -278,21 +278,33 @@ async def test_session_upload_complete_toasts_user(app, mock_server, monkeypatch
         assert "ready" in msg
 
 
-async def test_personal_checkbox_disables_sync(app, mock_server):
-    """RecordBody: flipping personal greys out sync and forces it false."""
-    from textual.widgets import Checkbox
+async def test_personal_toggle_disables_sync(app, mock_server):
+    """RecordBody: flipping personal greys out sync and forces it false.
+
+    v0.4.2 replaced Checkboxes with toggle-Buttons.  The personal
+    toggle uses CSS class ``toggle-personal-on`` (variant=warning)
+    and the sync toggle uses ``toggle-on`` (variant=success).  When
+    personal is on, the sync button must be disabled + off.  When
+    personal is turned off again, sync must re-enable.
+    """
+    from textual.widgets import Button
     async with app.run_test() as pilot:
         # Default tab is record.
-        personal = app.screen.query_one("#personal", Checkbox)
-        sync = app.screen.query_one("#sync", Checkbox)
-        assert not personal.value
+        personal = app.screen.query_one("#personal-btn", Button)
+        sync = app.screen.query_one("#sync-btn", Button)
+        # Default: personal off, sync enabled.
+        assert "toggle-personal-on" not in personal.classes
         assert not sync.disabled
-        personal.value = True
+        # Turn personal on via the action (simulates button press).
+        app.screen.query_one("RecordBody").action_toggle_personal()
         await pilot.pause()
+        assert "toggle-personal-on" in personal.classes
         assert sync.disabled
-        assert not sync.value
-        personal.value = False
+        assert "toggle-on" not in sync.classes
+        # Turn personal off again.
+        app.screen.query_one("RecordBody").action_toggle_personal()
         await pilot.pause()
+        assert "toggle-personal-on" not in personal.classes
         assert not sync.disabled
 
 
@@ -574,7 +586,6 @@ async def test_artifact_screen_c_copies_body(app, mock_server, monkeypatch):
 
 async def test_artifact_screen_c_copies_path_for_binary(app, mock_server, monkeypatch):
     """For binary artifacts (no body, only tmp_path), `c` copies the path."""
-    from pathlib import Path
     from vezir.client.tui.artifact_screen import ArtifactScreen
     copied: list[str] = []
     monkeypatch.setattr(

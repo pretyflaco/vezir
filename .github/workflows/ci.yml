@@ -1,0 +1,71 @@
+name: ci
+
+# v0.6.3: first CI workflow.  Rung 1 of the "introduce automation"
+# ladder per the prioritization plan:
+#
+#   1. ruff + pytest on 3.10/3.11/3.12  ← this file
+#   2. mypy on a small allowlist        (next, separate PR)
+#   3. pyright / stricter type checks   (later)
+#
+# Triggers: every push to main and every PR.  Manual dispatch is also
+# allowed so an operator can re-run a flaky job without an empty commit.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        # Pin to the same major as the dev extras pull in; ruff's defaults
+        # are what we run against locally (no [tool.ruff] block in
+        # pyproject.toml yet, so any minor 0.x bump that changes defaults
+        # would break this gate — pin tightly when that becomes painful).
+        run: python -m pip install --upgrade ruff
+      - name: Run ruff
+        run: ruff check .
+
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't bail the whole matrix on a single python-version flake.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package + dev + tui + server extras
+        # tui pulls textual (needed by test_tui_smoke.py); server pulls
+        # FastAPI/uvicorn (needed by every test that builds an app via
+        # create_app()).  We deliberately keep mlx-whisper out: it has a
+        # platform marker for darwin+arm64 and pip skips it on Linux,
+        # which is exactly what we want for CI.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,tui,server]"
+      - name: Run pytest
+        # VEZIR_COOKIE_SECURE / VEZIR_CADDY_ROOT_CERT_PATH must be unset
+        # for the test suite to pass (per the v0.6.2 plan note: muscle's
+        # env had them set, causing the auth-cookie tests to fail with
+        # an env conflict rather than a code bug).  Empty values force
+        # them off even if the runner image inherited them.
+        #
+        env:
+          VEZIR_COOKIE_SECURE: ""
+          VEZIR_CADDY_ROOT_CERT_PATH: ""
+        run: python -m pytest -q

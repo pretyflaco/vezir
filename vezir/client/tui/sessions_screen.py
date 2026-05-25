@@ -19,7 +19,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Static
 
-from ..api import ApiResult, Session
+from ..api import Session
 
 log = logging.getLogger("vezir.client.tui.sessions")
 

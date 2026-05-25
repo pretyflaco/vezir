@@ -39,13 +39,11 @@ import queue
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk
 
-from .. import config
 from .api import VezirClient
 from .config import load_client_prefs
 

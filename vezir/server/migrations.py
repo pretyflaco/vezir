@@ -44,7 +44,6 @@ import logging
 import shutil
 import sqlite3
 import time
-from pathlib import Path
 
 from .. import config
 

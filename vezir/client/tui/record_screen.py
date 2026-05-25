@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from textual import work
@@ -52,7 +52,6 @@ from textual.widgets import (
     Static,
 )
 
-from .. import config as _client_config_mod
 from ..config import load_client_prefs, save_client_prefs
 
 

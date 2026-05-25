@@ -163,6 +163,125 @@ def revoke(github: str) -> int:
     return before - len(data["tokens"])
 
 
+def revoke_by_filter(
+    github: str | None = None,
+    label: str | None = None,
+    token_id_prefix: str | None = None,
+    team_id: str | None = None,
+) -> list[dict]:
+    """Remove tokens matching ALL provided (non-None) filters.
+
+    Returns a list of the removed entries (with ``token_hash`` truncated
+    to its first 12 chars for safe logging) so callers can present a
+    confirmation summary.  Refuses to delete the entire store: at least
+    one filter must be non-None.  When no rows match, returns an empty
+    list (does not raise).
+
+    Added in v0.6.3 to give operators per-device revocation without
+    nuking every token for a github handle.  Use ``token_id_prefix``
+    (matching against ``token_hash[:N]``) to disambiguate when one
+    handle has multiple tokens with the same label.
+
+    Parameters
+    ----------
+    github:
+        If given, only consider rows where ``github`` matches exactly.
+    label:
+        If given, only consider rows where ``label`` matches exactly.
+        ``None`` (no label) is matched by the literal string ``"-"``
+        — same convention used by ``vezir token list``.
+    token_id_prefix:
+        If given (>=4 chars), only consider rows where ``token_hash``
+        starts with this string.  This is the "token id" surfaced by
+        ``vezir token list --show-id``.
+    team_id:
+        If given, only consider rows where ``team_id`` matches exactly.
+    """
+    if github is None and label is None and token_id_prefix is None and team_id is None:
+        raise ValueError(
+            "revoke_by_filter requires at least one of "
+            "github/label/token_id_prefix/team_id"
+        )
+    if token_id_prefix is not None and len(token_id_prefix) < 4:
+        raise ValueError(
+            "token_id_prefix must be at least 4 characters to avoid "
+            "accidental wide matches"
+        )
+
+    data = _load_tokens()
+    kept: list[dict] = []
+    removed: list[dict] = []
+    for entry in data["tokens"]:
+        if github is not None and entry.get("github") != github:
+            kept.append(entry)
+            continue
+        if label is not None:
+            entry_label = entry.get("label")
+            # ``-`` in the CLI is the visual stand-in for ``None``;
+            # treat both equivalently so the operator can revoke a
+            # label-less token by passing ``--label -``.
+            if label == "-":
+                if entry_label is not None:
+                    kept.append(entry)
+                    continue
+            else:
+                if entry_label != label:
+                    kept.append(entry)
+                    continue
+        if token_id_prefix is not None:
+            tid = entry.get("token_hash") or ""
+            if not tid.startswith(token_id_prefix):
+                kept.append(entry)
+                continue
+        if team_id is not None and entry.get("team_id") != team_id:
+            kept.append(entry)
+            continue
+        # Survived every filter -> remove.
+        removed.append(
+            {
+                "github": entry.get("github"),
+                "team_id": entry.get("team_id"),
+                "label": entry.get("label"),
+                "token_id": (entry.get("token_hash") or "")[:12],
+                "issued_at": entry.get("issued_at"),
+            }
+        )
+    if removed:
+        data["tokens"] = kept
+        _save_tokens(data)
+    return removed
+
+
+def list_tokens(team_id: str | None = None) -> list[dict]:
+    """Return all token rows, optionally filtered by team_id.
+
+    Returns a list of dicts with the persisted fields plus a derived
+    ``token_id`` (first 12 chars of ``token_hash``) for display use.
+    Never returns the full ``token_hash`` — callers don't need it and
+    leaking it would weaken the at-rest hashing.
+
+    Added in v0.6.3 to back ``vezir token list --team <slug>``.
+    """
+    data = _load_tokens()
+    out: list[dict] = []
+    for entry in data.get("tokens", []):
+        if team_id is not None and entry.get("team_id") != team_id:
+            continue
+        out.append(
+            {
+                "github": entry.get("github"),
+                "team_id": entry.get("team_id"),
+                "label": entry.get("label"),
+                "token_id": (entry.get("token_hash") or "")[:12],
+                "issued_at": entry.get("issued_at"),
+                "expires_at": entry.get("expires_at"),
+                "last_used_at": entry.get("last_used_at"),
+                "is_admin": bool(entry.get("is_admin", False)),
+            }
+        )
+    return out
+
+
 def count_tokens_for_team(team_id: str) -> int:
     """Return the number of (non-expired) tokens scoped to ``team_id``.
 

@@ -127,14 +127,12 @@ def test_sync_config_materialized_from_team_remote(tmp_data, monkeypatch):
 
 
 def test_sync_config_materialization_is_idempotent(tmp_data):
-    from vezir import config
     from vezir.server import meet_runner, queue
 
     queue.create_team("blink", "Blink", sync_remote="https://a.example/x.git")
 
     # First call materializes.
     p1 = meet_runner._resolve_team_sync_config("blink", Path("/none"))
-    mtime1 = p1.stat().st_mtime_ns
     # Second call with same remote: file should not be rewritten
     # (idempotent).  We can't easily assert mtime equality on fast
     # filesystems, but we can assert the content matches.
@@ -145,7 +143,6 @@ def test_sync_config_materialization_is_idempotent(tmp_data):
 
 
 def test_sync_config_materialization_rewrites_on_remote_change(tmp_data):
-    from vezir import config
     from vezir.server import meet_runner, queue
 
     queue.create_team("blink", "Blink", sync_remote="https://old.example/x.git")

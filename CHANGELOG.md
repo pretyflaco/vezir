@@ -3,6 +3,44 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.3 — token revoke ergonomics + first CI workflow
+
+Quality-of-life release: per-device token revocation, team-scoped
+token listing, and the project's first GitHub Actions CI gate.
+
+### Added
+
+* **`vezir token revoke` now accepts `--label`, `--token-id`, and
+  `--team` filters** (combinable with `--github`).  Lost-phone
+  scenario no longer requires nuking every token for a handle and
+  re-issuing.  Shows a preview of matched tokens and prompts for
+  confirmation unless `--yes` is passed.
+* **`vezir token list` gained `--team <slug>` filter and `--show-id`
+  flag**.  A `team` column is now shown by default.  The `--show-id`
+  column prints a 12-char token id prefix usable with
+  `vezir token revoke --token-id <prefix>`.
+* **`auth.revoke_by_filter()`** and **`auth.list_tokens()`** server
+  helpers backing the CLI surface above.
+* **GitHub Actions CI** (`.github/workflows/ci.yml`): ruff lint on
+  3.12 + pytest matrix on 3.10/3.11/3.12.  First automated gate on
+  the project.
+* 23 new tests in `tests/test_token_revoke_filters.py`.
+
+### Fixed
+
+* **Ruff cleanup**: 36 pre-existing lint errors resolved (35
+  auto-fixable unused imports / dead f-strings + 1 manual fix for a
+  forward-reference `F821` in the TUI app).
+* **TUI test `test_personal_toggle_disables_sync`** (was
+  `test_personal_checkbox_disables_sync`): test still referenced
+  the `#personal` Checkbox removed in v0.4.2; updated to use the
+  `#personal-btn` toggle-Button API.
+
+### Tests
+
+359 passing, 2 skipped (was 285 in v0.6.2).
+
+
 ## 0.6.2 — per-team voiceprints + per-team sync + session move + team lifecycle
 
 Completes the multi-team isolation work started in v0.6.0.  After

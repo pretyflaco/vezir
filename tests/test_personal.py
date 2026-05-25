@@ -146,7 +146,7 @@ def test_share_makes_personal_visible(client_factory):
 def test_share_only_by_uploader(client_factory):
     from vezir.server import auth, queue
     client = client_factory()
-    alice_tok = auth.issue("alice")
+    auth.issue("alice")
     bob_tok = auth.issue("bob")
 
     queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")

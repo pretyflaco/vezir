@@ -16,7 +16,6 @@ import wave
 from pathlib import Path
 
 import httpx
-import pytest
 
 
 def _tiny_wav_path(tmp_path: Path) -> Path:

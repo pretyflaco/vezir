@@ -465,12 +465,129 @@ def token_issue(github, team_id, expires_in, is_admin, label):
 
 
 @token.command("revoke")
-@click.option("--github", required=True, help="GitHub handle to revoke")
-def token_revoke(github):
-    """Revoke all tokens for a given GitHub handle."""
+@click.option(
+    "--github", default=None,
+    help="GitHub handle to revoke (with no other filter: revokes ALL of that "
+         "handle's tokens; with --label/--token-id/--team: narrows the match).",
+)
+@click.option(
+    "--label", default=None,
+    help="Restrict to tokens with this exact label (e.g. 'android-phone'). "
+         "Pass '-' to match label-less tokens.",
+)
+@click.option(
+    "--token-id", "token_id_prefix", default=None,
+    help="Restrict to tokens whose id (first chars of stored hash, as shown "
+         "by `vezir token list --show-id`) starts with this prefix. "
+         "Min 4 chars.",
+)
+@click.option(
+    "--team", "team_id", default=None,
+    help="Restrict to tokens scoped to this team slug.",
+)
+@click.option(
+    "--yes", "-y", "skip_confirm", is_flag=True, default=False,
+    help="Skip the interactive confirmation prompt.",
+)
+def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
+    """Revoke tokens by handle / label / id / team.
+
+    Examples:
+
+      \b
+      # Revoke every token for alice (legacy behavior):
+      vezir token revoke --github alice
+
+      \b
+      # Revoke just alice's lost phone:
+      vezir token revoke --github alice --label android-phone
+
+      \b
+      # Revoke a specific token by id when one handle has duplicates:
+      vezir token revoke --token-id 9f3b2a1c
+
+      \b
+      # Revoke every twentyone token (e.g. team being decommissioned):
+      vezir token revoke --team twentyone
+    """
     from .server import auth
-    n = auth.revoke(github)
-    click.echo(f"Removed {n} token(s) for github={github}")
+
+    if (
+        github is None
+        and label is None
+        and token_id_prefix is None
+        and team_id is None
+    ):
+        click.echo(
+            "error: at least one filter is required "
+            "(--github / --label / --token-id / --team). "
+            "Refusing to nuke the entire token store.",
+            err=True,
+        )
+        sys.exit(2)
+
+    try:
+        # Dry-run pass first so we can show the operator exactly what
+        # would be revoked and prompt before mutating tokens.json.
+        # We achieve this by reading the store, filtering in Python,
+        # then calling the real revoke once confirmed.
+        all_rows = auth.list_tokens()
+    except Exception as exc:  # pragma: no cover - read failure is unusual
+        click.echo(f"error: failed to read tokens.json: {exc}", err=True)
+        sys.exit(2)
+
+    if token_id_prefix is not None and len(token_id_prefix) < 4:
+        click.echo(
+            "error: --token-id must be at least 4 characters",
+            err=True,
+        )
+        sys.exit(2)
+
+    def _matches(row: dict) -> bool:
+        if github is not None and row.get("github") != github:
+            return False
+        if label is not None:
+            row_label = row.get("label")
+            if label == "-":
+                if row_label is not None:
+                    return False
+            else:
+                if row_label != label:
+                    return False
+        if token_id_prefix is not None:
+            if not (row.get("token_id") or "").startswith(token_id_prefix):
+                return False
+        if team_id is not None and row.get("team_id") != team_id:
+            return False
+        return True
+
+    matched = [r for r in all_rows if _matches(r)]
+    if not matched:
+        click.echo("(no tokens matched; nothing to revoke)")
+        return
+
+    # Preview.
+    click.echo(f"Would revoke {len(matched)} token(s):")
+    for row in matched:
+        click.echo(
+            f"  github={row.get('github') or '?'}  "
+            f"team={row.get('team_id') or '?'}  "
+            f"label={row.get('label') or '-'}  "
+            f"id={row.get('token_id') or '?'}  "
+            f"issued={row.get('issued_at') or '?'}"
+        )
+    if not skip_confirm:
+        if not click.confirm("Proceed?", default=False):
+            click.echo("Aborted; no changes made.")
+            sys.exit(1)
+
+    removed = auth.revoke_by_filter(
+        github=github,
+        label=label,
+        token_id_prefix=token_id_prefix,
+        team_id=team_id,
+    )
+    click.echo(f"Removed {len(removed)} token(s).")
 
 
 @token.command("enroll")
@@ -575,16 +692,31 @@ def token_enroll(github, team_id, server_url, expires_in, label):
 @token.command("list")
 @click.option("--dormant", "dormant_days", type=int, default=None,
               help="Only show tokens with no successful use in the last N days.")
-def token_list(dormant_days):
+@click.option(
+    "--team", "team_id", default=None,
+    help="Restrict to tokens scoped to this team slug (e.g. 'blink').",
+)
+@click.option(
+    "--show-id", is_flag=True, default=False,
+    help="Show a per-token id column (first 12 chars of the stored hash) "
+         "usable with `vezir token revoke --token-id <prefix>`.",
+)
+def token_list(dormant_days, team_id, show_id):
     """List token entries (handles, expiry, last use; never the plaintext).
 
-    Columns: github, role, label, issued, expires, last_used. ``expires``
-    of ``never`` is a legacy (pre-0.1.12) row or an explicit
-    ``--expires-in never`` issue. ``last_used`` is updated at most once
+    Default columns: github, team, role, label, issued, expires,
+    last_used.  With ``--show-id`` an additional ``id`` column appears
+    (a non-secret prefix of the stored hash, safe to copy-paste; this
+    is the value accepted by ``vezir token revoke --token-id``).
+
+    ``expires`` of ``never`` is a legacy (pre-0.1.12) row or an explicit
+    ``--expires-in never`` issue.  ``last_used`` is updated at most once
     per minute per token (debounced) and only reflects successful auth.
 
     With ``--dormant N`` only rows whose ``last_used`` is older than N
     days (or ``never used``) appear — useful for "who should I rotate?".
+
+    With ``--team <slug>`` only tokens scoped to that team appear.
     """
     import time as _time
 
@@ -597,6 +729,12 @@ def token_list(dormant_days):
     if not rows:
         click.echo("(no tokens issued)")
         return
+
+    if team_id is not None:
+        rows = [r for r in rows if r.get("team_id") == team_id]
+        if not rows:
+            click.echo(f"(no tokens scoped to team {team_id!r})")
+            return
 
     def _age_seconds(ts: str | None) -> float | None:
         if not ts:
@@ -628,20 +766,34 @@ def token_list(dormant_days):
         return max([min_w] + [len(s) for s in items])
 
     githubs = [str(r.get("github") or "?") for r in rows]
+    teams = [str(r.get("team_id") or "-") for r in rows]
     labels = [str(r.get("label") or "-") for r in rows]
     roles = ["admin" if r.get("is_admin") else "scribe" for r in rows]
+    ids = [str((r.get("token_hash") or "")[:12] or "?") for r in rows]
     g_w = _w(githubs, len("github"))
+    t_w = _w(teams, len("team"))
     l_w = _w(labels, len("label"))
     r_w = _w(roles, len("role"))
+    i_w = _w(ids, len("id"))
 
-    click.echo(
-        f"  {'github':<{g_w}}  {'role':<{r_w}}  {'label':<{l_w}}  "
-        f"{'issued':<20}  {'expires':<20}  last_used"
-    )
+    if show_id:
+        click.echo(
+            f"  {'github':<{g_w}}  {'team':<{t_w}}  {'role':<{r_w}}  "
+            f"{'label':<{l_w}}  {'id':<{i_w}}  "
+            f"{'issued':<20}  {'expires':<20}  last_used"
+        )
+    else:
+        click.echo(
+            f"  {'github':<{g_w}}  {'team':<{t_w}}  {'role':<{r_w}}  "
+            f"{'label':<{l_w}}  "
+            f"{'issued':<20}  {'expires':<20}  last_used"
+        )
     for entry in rows:
         github = str(entry.get("github") or "?")
+        team = str(entry.get("team_id") or "-")
         role = "admin" if entry.get("is_admin") else "scribe"
         label = str(entry.get("label") or "-")
+        tid = str((entry.get("token_hash") or "")[:12] or "?")
         issued = str(entry.get("issued_at") or "?")
         expires = entry.get("expires_at") or "never"
         last_used = entry.get("last_used_at") or "never used"
@@ -649,10 +801,18 @@ def token_list(dormant_days):
         # candidates at a glance.
         age = _age_seconds(expires) if expires != "never" else None
         suffix = "  (expired)" if age is not None and age > 0 else ""
-        click.echo(
-            f"  {github:<{g_w}}  {role:<{r_w}}  {label:<{l_w}}  "
-            f"{issued:<20}  {expires:<20}  {last_used}{suffix}"
-        )
+        if show_id:
+            click.echo(
+                f"  {github:<{g_w}}  {team:<{t_w}}  {role:<{r_w}}  "
+                f"{label:<{l_w}}  {tid:<{i_w}}  "
+                f"{issued:<20}  {expires:<20}  {last_used}{suffix}"
+            )
+        else:
+            click.echo(
+                f"  {github:<{g_w}}  {team:<{t_w}}  {role:<{r_w}}  "
+                f"{label:<{l_w}}  "
+                f"{issued:<20}  {expires:<20}  {last_used}{suffix}"
+            )
 
 
 # ── team ──────────────────────────────────────────────────────────────────────
@@ -800,7 +960,7 @@ def team_delete(team_id, reassign_to, confirm):
     click.echo(f"  jobs reassigned: {stats['jobs_reassigned']} "
                f"(-> {stats['reassigned_to']})"
                if stats['reassigned_to']
-               else f"  jobs reassigned: 0")
+               else "  jobs reassigned: 0")
     click.echo(f"  tokens revoked:  {stats['tokens_revoked']}")
     click.echo(f"  on-disk dir removed: {stats['on_disk_removed']}")
 
@@ -874,7 +1034,7 @@ def team_config_add(team_id, url, token, label, activate):
     )
     click.echo(f"team added: id={team_id} url={url} label={label or team_id}")
     if cfg.get("active") == team_id:
-        click.echo(f"  (active)")
+        click.echo("  (active)")
     click.echo(
         f"  stored at: ~/.config/vezir/teams.json "
         f"({len(cfg['teams'])} team(s) configured)"
@@ -1013,8 +1173,8 @@ def session_move(session_id, to_team, confirm):
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)
     click.echo(
-        f"moved.  Note: source team's voiceprint DB still holds any "
-        f"embeddings trained from this session's prior labels."
+        "moved.  Note: source team's voiceprint DB still holds any "
+        "embeddings trained from this session's prior labels."
     )
 
 
