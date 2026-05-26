@@ -85,6 +85,8 @@ class SessionsBody(Vertical):
         # Symmetric with DetailScreen's `o` so the user can jump to
         # browser without first opening the session in TUI.
         Binding("o", "open_selected_in_browser", "Open in browser"),
+        Binding("f", "open_selected_folder", "Open folder"),
+        Binding("d", "copy_selected_path", "Copy path"),
     ]
 
     DEFAULT_CSS = """
@@ -208,6 +210,136 @@ class SessionsBody(Vertical):
                 severity="warning",
                 timeout=8,
             )
+
+    def _cursor_session(self) -> Session | None:
+        """Return the Session under the cursor, or None."""
+        if self._table is None:
+            return None
+        try:
+            row_key = self._table.coordinate_to_cell_key(
+                self._table.cursor_coordinate,
+            ).row_key
+        except Exception:
+            return None
+        return self._row_index.get(str(row_key.value)) if row_key.value else None
+
+    def action_open_selected_folder(self) -> None:
+        """Open the local recording folder for the cursor-row session."""
+        session = self._cursor_session()
+        if session is None:
+            self.app.bell()
+            return
+        from ..pull import find_local_session_dir
+        local = find_local_session_dir(session.id, session.team_id)
+        if local is None:
+            self.notify(
+                "No local folder — pulling artifacts...",
+                severity="information",
+                timeout=4,
+            )
+            self._pull_and_open(session.id)
+            return
+        import shutil
+        import subprocess
+        import sys
+        if sys.platform == "darwin":
+            cmd = ["open", str(local)]
+        elif shutil.which("xdg-open"):
+            cmd = ["xdg-open", str(local)]
+        else:
+            self.notify(f"No file manager.  Path: {local}", severity="warning", timeout=8)
+            return
+        try:
+            subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.notify(f"Opened {local.name}", severity="information", timeout=4)
+        except Exception as exc:
+            self.notify(f"Could not open folder: {exc}", severity="error")
+
+    def action_copy_selected_path(self) -> None:
+        """Copy the local recording path for the cursor-row session."""
+        session = self._cursor_session()
+        if session is None:
+            self.app.bell()
+            return
+        from ..pull import find_local_session_dir
+        local = find_local_session_dir(session.id, session.team_id)
+        if local is None:
+            self.notify(
+                "No local folder — pulling artifacts...",
+                severity="information",
+                timeout=4,
+            )
+            self._pull_and_notify(session.id)
+            return
+        try:
+            self.app.copy_to_clipboard(str(local))
+        except Exception as exc:
+            self.notify(f"Copy failed: {exc}", severity="error")
+            return
+        self.notify(f"Copied: {local}", severity="information", timeout=4)
+
+    @work(thread=True, exclusive=True, group="session-pull")
+    def _pull_and_open(self, session_id: str) -> None:
+        from ..pull import pull_team_sessions, find_local_session_dir
+        try:
+            pull_team_sessions(self.app.api, session_id=session_id)
+        except Exception:
+            self.app.call_from_thread(
+                self.notify, "Pull failed.", severity="error",
+            )
+            return
+        local = find_local_session_dir(session_id)
+        if local:
+            import shutil
+            import subprocess
+            import sys
+            if sys.platform == "darwin":
+                cmd = ["open", str(local)]
+            elif shutil.which("xdg-open"):
+                cmd = ["xdg-open", str(local)]
+            else:
+                self.app.call_from_thread(
+                    self.notify, f"Pulled to: {local}", severity="information", timeout=6,
+                )
+                return
+            try:
+                subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+                self.app.call_from_thread(
+                    self.notify, f"Opened {local.name}", severity="information", timeout=4,
+                )
+            except Exception:
+                self.app.call_from_thread(
+                    self.notify, f"Pulled to: {local}", severity="information", timeout=6,
+                )
+
+    @work(thread=True, exclusive=True, group="session-pull")
+    def _pull_and_notify(self, session_id: str) -> None:
+        from ..pull import pull_team_sessions, find_local_session_dir
+        try:
+            pull_team_sessions(self.app.api, session_id=session_id)
+        except Exception:
+            self.app.call_from_thread(
+                self.notify, "Pull failed.", severity="error",
+            )
+            return
+        local = find_local_session_dir(session_id)
+        if local:
+            try:
+                self.app.call_from_thread(self.app.copy_to_clipboard, str(local))
+                self.app.call_from_thread(
+                    self.notify, f"Copied: {local}", severity="information", timeout=4,
+                )
+            except Exception:
+                self.app.call_from_thread(
+                    self.notify, f"Pulled to: {local}", severity="information", timeout=6,
+                )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         session = self._row_index.get(str(event.row_key.value))

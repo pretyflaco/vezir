@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
@@ -117,6 +118,8 @@ class DetailScreen(Screen):
         # since the Session dataclass doesn't carry dashboard_url
         # (added per-upload via /api/upload response only).
         Binding("o", "open_in_browser", "Open in browser"),
+        Binding("f", "open_folder", "Open folder"),
+        Binding("d", "copy_path", "Copy path"),
         # NOTE: do NOT bind "enter" here.  DataTable has its own
         # built-in `enter -> select_cursor` binding which fires
         # RowSelected (handled by `on_data_table_row_selected` below).
@@ -273,6 +276,92 @@ class DetailScreen(Screen):
                 f"No browser available.  URL: {url}",
                 severity="warning",
                 timeout=8,
+            )
+
+    def _resolve_local_dir(self) -> Path | None:
+        """Resolve the local recording/pull directory for this session."""
+        from ..pull import find_local_session_dir
+        team_id = self.session.team_id if self.session else None
+        return find_local_session_dir(self.session_id, team_id)
+
+    def action_open_folder(self) -> None:
+        """Open the local meeting artifacts folder in the OS file manager."""
+        local = self._resolve_local_dir()
+        if local is None:
+            self._offer_pull()
+            return
+        import shutil
+        import subprocess
+        import sys
+        if sys.platform == "darwin":
+            cmd = ["open", str(local)]
+        elif shutil.which("xdg-open"):
+            cmd = ["xdg-open", str(local)]
+        else:
+            self.notify(f"No file manager found.  Path: {local}", severity="warning", timeout=8)
+            return
+        try:
+            subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.notify(f"Opened {local.name}", severity="information", timeout=4)
+        except Exception as exc:
+            self.notify(f"Could not open folder: {exc}", severity="error")
+
+    def action_copy_path(self) -> None:
+        """Copy the local meeting artifacts path to the clipboard."""
+        local = self._resolve_local_dir()
+        if local is None:
+            self._offer_pull()
+            return
+        try:
+            self.app.copy_to_clipboard(str(local))
+        except Exception as exc:
+            self.notify(f"Copy failed: {exc}", severity="error")
+            return
+        self.notify(f"Copied: {local}", severity="information", timeout=4)
+
+    def _offer_pull(self) -> None:
+        """Pull the session artifacts when no local directory exists."""
+        self.notify(
+            "No local folder — pulling artifacts...",
+            severity="information",
+            timeout=4,
+        )
+        self._pull_worker(self.session_id)
+
+    @work(thread=True, exclusive=True, group="pull")
+    def _pull_worker(self, session_id: str) -> None:
+        """Pull a single session's artifacts in the background."""
+        from ..pull import pull_team_sessions
+        try:
+            pulled = pull_team_sessions(
+                self.app.api,
+                session_id=session_id,
+            )
+            if pulled > 0:
+                self.app.call_from_thread(
+                    self.notify,
+                    "Artifacts pulled.  Press [d] to copy path or [f] to open.",
+                    severity="information",
+                    timeout=6,
+                )
+            else:
+                self.app.call_from_thread(
+                    self.notify,
+                    "No artifacts available for this session.",
+                    severity="warning",
+                    timeout=6,
+                )
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.notify,
+                f"Pull failed: {exc}",
+                severity="error",
             )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

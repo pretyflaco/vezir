@@ -92,6 +92,44 @@ def _find_existing_dir(output_dir: Path, session: Session) -> Path | None:
     return None
 
 
+def find_local_session_dir(
+    session_id: str,
+    team_id: str | None = None,
+) -> Path | None:
+    """Find the local directory for a session, or None if not pulled/recorded.
+
+    Resolution order:
+    1. Pull manifest (O(1) lookup).
+    2. Directory scan for ``session.json`` containing the session_id.
+
+    Used by TUI actions (copy path, open folder) to locate the local
+    meeting artifacts directory.
+    """
+    output_dir = config.recordings_dir(team_id)
+    if not output_dir.is_dir():
+        return None
+    # 1. Check manifest.
+    manifest = _load_manifest(output_dir)
+    if session_id in manifest:
+        candidate = output_dir / manifest[session_id]
+        if candidate.is_dir():
+            return candidate
+    # 2. Directory scan.
+    for d in output_dir.iterdir():
+        if not d.is_dir():
+            continue
+        meta = d / "session.json"
+        if not meta.exists():
+            continue
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+            if data.get("session_id") == session_id:
+                return d
+        except Exception:
+            continue
+    return None
+
+
 def pull_team_sessions(
     api: VezirClient,
     output_dir: Path | None = None,

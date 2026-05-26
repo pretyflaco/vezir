@@ -742,6 +742,8 @@ class RecordBody(Vertical):
     @work(thread=True, exclusive=True, group="recorder")
     def _record_worker(self, session, gen: int) -> None:
         """Drive the recorder: start, then poll status every second."""
+        from textual.worker import get_current_worker
+        worker = get_current_worker()
         try:
             session.start()
         except Exception as exc:
@@ -752,7 +754,7 @@ class RecordBody(Vertical):
         # Tick loop: poll the session's own status() and emit TimerTick
         # messages.  Stops when the session is no longer alive (i.e.
         # _stop_worker has finalized it).
-        while True:
+        while not worker.is_cancelled:
             try:
                 st = session.status()
             except Exception as exc:
@@ -771,12 +773,8 @@ class RecordBody(Vertical):
                 ))
                 return
             if not st.is_alive and not st.paused:
-                # Either we haven't started yet (let the watchdog catch
-                # that) or we've finalized.  Loop again briefly and let
-                # the stop worker complete; we exit through the explicit
-                # return in _stop_worker via session attribute mutation.
                 pass
-            time.sleep(1.0)
+            worker.cancelled_event.wait(1.0)
 
     @work(thread=True, exclusive=True, group="recorder-stop")
     def _stop_worker(self, session, gen: int) -> None:
@@ -792,14 +790,17 @@ class RecordBody(Vertical):
     @work(thread=True, exclusive=True, group="level")
     def _level_worker(self, session, gen: int) -> None:
         """Read audio levels from the recording chunk at ~15 FPS."""
+        from textual.worker import get_current_worker
         from ..audio import read_chunk_levels
+
+        worker = get_current_worker()
 
         # Wait for session.start() to be called by the parallel
         # _record_worker.  The level worker may be scheduled first;
         # without this spin-wait it would see is_alive=False and exit
         # immediately (the v0.7.0 spectrometer-shows-idle bug).
         for _ in range(50):  # up to ~3.3 seconds
-            if gen < self._gen:
+            if gen < self._gen or worker.is_cancelled:
                 return
             try:
                 st = session.status()
@@ -807,9 +808,9 @@ class RecordBody(Vertical):
                     break
             except Exception:
                 pass
-            time.sleep(0.066)
+            worker.cancelled_event.wait(0.066)
 
-        while True:
+        while not worker.is_cancelled:
             if gen < self._gen:
                 return
             try:
@@ -820,7 +821,7 @@ class RecordBody(Vertical):
                 return
             chunk = getattr(session, "_current_chunk", None)
             if chunk is None or st.paused:
-                time.sleep(0.066)
+                worker.cancelled_event.wait(0.066)
                 continue
             try:
                 lvl = read_chunk_levels(chunk)
@@ -833,7 +834,7 @@ class RecordBody(Vertical):
                 ))
             except Exception:
                 pass
-            time.sleep(0.066)  # ~15 FPS
+            worker.cancelled_event.wait(0.066)  # ~15 FPS
 
     # ── upload lifecycle ──
 
@@ -929,18 +930,20 @@ class RecordBody(Vertical):
         confident voiceprint matches (PR9 latent bug).
         """
         import time as _t
+        from textual.worker import get_current_worker
 
+        worker = get_current_worker()
         terminal = {"done", "error", "needs_labeling"}
         last_status = ""
         deadline = _t.time() + 600
-        while _t.time() < deadline:
+        while _t.time() < deadline and not worker.is_cancelled:
             # v0.7.0: bail early if the generation has moved on (user
             # started a new recording and that recording also uploaded).
             if gen < self._gen:
                 return
             result = self.app.api.get_session(session_id)
             if not result.is_ok():
-                _t.sleep(5)
+                worker.cancelled_event.wait(5)
                 continue
             session = result.ok
             if session.status != last_status:
@@ -976,7 +979,7 @@ class RecordBody(Vertical):
                     status=session.status,
                 ))
                 return
-            _t.sleep(5)
+            worker.cancelled_event.wait(5)
 
     # ── message handlers ──
     #
