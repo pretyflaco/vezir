@@ -31,11 +31,15 @@ _HELP_TEXT = """\
   [b]enter[/b]   Open selected session
   [b]c[/b]       Copy selected session id
   [b]o[/b]       Open selected session in web browser
+  [b]f[/b]       Open local artifacts folder (auto-pulls if needed)
+  [b]d[/b]       Copy local artifacts path (auto-pulls if needed)
 
 [b cyan]Session detail[/b cyan]
   [b]enter[/b]   View highlighted artifact
   [b]c[/b]       Copy session id
   [b]o[/b]       Open in web browser
+  [b]f[/b]       Open local artifacts folder
+  [b]d[/b]       Copy local artifacts path
   [b]l[/b]       Open labeling for this session
   [b]y[/b]       Sync now
   [b]e[/b]       Retry summary
@@ -50,8 +54,16 @@ _HELP_TEXT = """\
 [b cyan]Record screen[/b cyan]
   [b]ctrl+space[/b] Start / stop recording
   [b]ctrl+p[/b]    Pause / resume
-  [b]ctrl+u[/b]    Upload last recording
+  [b]ctrl+u[/b]    Import file for upload
   [b]ctrl+x[/b]    Toggle personal flag
+  Audio level bars show live mic + system audio during recording.
+
+[b cyan]CLI: vezir pull[/b cyan]
+  Download meeting artifacts from the server into
+  ~/vezir-meetings/<team>/.  Enables team-wide sharing.
+    [dim]vezir pull                     # recent team meetings[/dim]
+    [dim]vezir pull --since 2026-05-20  # since a date[/dim]
+    [dim]vezir pull --session 01KSG...  # specific session[/dim]
 
 [b cyan]Label screen[/b cyan]
   [b]tab[/b]     Next field (Textual default focus traversal)

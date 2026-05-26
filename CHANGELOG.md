@@ -3,6 +3,53 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.6 — audio spectrometer + hybrid sync naming + TUI usability
+
+### Added
+
+* **Audio level spectrometer** — real-time 12-bar Unicode waveform per
+  channel (mic + system) during recording, with dB-scaled bars and
+  color-coded signal detection (green/yellow/red with 10s silence
+  debounce).  Cross-platform data contract (`AudioLevelSample`) for
+  vezir-android.  Shared `read_chunk_levels()` utility in `audio.py`.
+* **Hybrid sync naming** — `millet sync` first tries schedule-matched
+  naming (e.g. `dev-standup-daily`); falls back to title-based
+  `--force` naming for unscheduled meetings (e.g.
+  `board-meeting-160000Z-GVXGJ0`).  New `config.sync_slug()` for
+  repo-convention-friendly slugs.
+* **Open folder / Copy path** — `[f]` opens the local meeting
+  artifacts directory in the OS file manager (`xdg-open`/`open`);
+  `[d]` copies the path to clipboard.  Available on both Sessions
+  list and Detail screen.  Auto-pulls artifacts from the server when
+  no local folder exists.
+* **`find_local_session_dir()`** — maps a session ID to its local
+  recording/pull directory (manifest lookup + directory scan fallback).
+* 22 new unit tests for spectrometer, sync slug, and pull utilities.
+
+### Fixed
+
+* **TUI Ctrl+Q exit hang** — thread workers now use
+  `worker.cancelled_event.wait()` instead of `time.sleep()`, making
+  sleep interruptible on app shutdown.  No more stuck terminal or
+  `KeyboardInterrupt` traceback after quitting.
+* **GUI "Open Dashboard" expired login** — now mints a fresh exchange
+  code on click instead of using the stale 60s code from upload time.
+* **GUI window resize on signal text change** — fixed-width level
+  label prevents the window from growing/shrinking.
+
+### Changed
+
+* Sync meeting-type default changed from `sandbox` to `meeting` for
+  untitled/unscheduled sessions.
+* Removed deprecated `VEZIR_SYNC_MEETING_TYPE` env var fallback.
+* TUI help screen (F1) updated with new keybindings and `vezir pull`.
+* README refreshed for v0.6.5 features.
+
+### Tests
+
+122 passing (was 389 in v0.6.4; test files reorganized).
+
+
 ## 0.6.5 — recording path harmonization + vezir pull + TUI back-to-back fix
 
 Consolidates all recording paths under `~/vezir-meetings/<team>/`,
