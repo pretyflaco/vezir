@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from .. import config
@@ -63,9 +63,9 @@ def _dirname_for_session(session: Session) -> str:
     try:
         # Handle common formats: 2026-05-25T22:33:19Z, 2026-05-25T22:33:19
         clean = ts.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean)
+        dt = datetime.fromisoformat(clean).astimezone()  # convert to local tz
     except (ValueError, TypeError):
-        dt = datetime.now(tz=timezone.utc)
+        dt = datetime.now()
     date_str = dt.strftime("%Y%m%d-%H%M%S")
 
     title = session.title or ""
