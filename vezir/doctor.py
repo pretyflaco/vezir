@@ -637,6 +637,34 @@ def _check_voiceprint_dbs(r: _Results) -> None:
             )
 
 
+def _check_server_json(r: _Results) -> None:
+    """S8: validate server.json if present."""
+    p = config.server_json_path()
+    if not p.is_file():
+        return  # optional file, skip silently
+    try:
+        import json as _json
+        data = _json.loads(p.read_text())
+    except Exception as exc:
+        r.error(f"server.json: invalid JSON: {exc}")
+        return
+    if not isinstance(data, dict):
+        r.error("server.json: top-level value must be a JSON object")
+        return
+    alt = data.get("alternate_urls")
+    if alt is None:
+        r.ok("server.json: present (no alternate_urls)")
+        return
+    if not isinstance(alt, list):
+        r.error("server.json: alternate_urls must be a list of URL strings")
+        return
+    bad = [u for u in alt if not isinstance(u, str) or not u.startswith("http")]
+    if bad:
+        r.error(f"server.json: invalid entries in alternate_urls: {bad}")
+        return
+    r.ok(f"server.json: {len(alt)} alternate URL(s) configured")
+
+
 def _check_stale_jobs(r: _Results) -> None:
     """S7: jobs stuck in non-terminal status for >30 minutes."""
     import sqlite3
@@ -724,6 +752,7 @@ def run_doctor() -> int:
         _check_migrations(r_server)
         _check_millet_binary(r_server)
         _check_voiceprint_dbs(r_server)
+        _check_server_json(r_server)
         _check_stale_jobs(r_server)
         r_server.print_all()
         # Merge into the main results for exit code.

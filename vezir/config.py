@@ -232,6 +232,40 @@ def queue_db_path() -> Path:
     return data_dir() / "vezir.sqlite"
 
 
+def server_json_path() -> Path:
+    return data_dir() / "server.json"
+
+
+def server_config() -> dict:
+    """Read optional ``server.json`` from the data dir.
+
+    Returns an empty dict if the file is missing or unparseable.
+    The file is re-read on every call (no caching) so changes
+    take effect without a server restart.
+    """
+    p = server_json_path()
+    if not p.is_file():
+        return {}
+    try:
+        import json as _json
+        return _json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def alternate_urls() -> list[str]:
+    """Alternate server URLs for client failover.
+
+    Read from ``server.json`` → ``alternate_urls`` key.  Each entry
+    must be a full URL (``https://…``).  Clients use these as fallback
+    when the primary enrollment URL is unreachable.
+    """
+    raw = server_config().get("alternate_urls", [])
+    if not isinstance(raw, list):
+        return []
+    return [u for u in raw if isinstance(u, str) and u.startswith("http")]
+
+
 def host() -> str:
     """Bind address for `vezir serve`.
 

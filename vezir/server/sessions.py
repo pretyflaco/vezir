@@ -366,6 +366,7 @@ def api_me(auth_triple: tuple = Depends(auth.require_bearer_full)):
         "team_id": team_id,
         "team_name": team_name or team_id,
         "is_admin": is_admin,
+        "alternate_urls": config.alternate_urls(),
     }
 
 

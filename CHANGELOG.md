@@ -3,6 +3,19 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.8 — alternate server URLs for client failover
+
+### Added
+
+* **`server.json` config file** — optional `~/vezir-data/server.json` with
+  server-side settings.  First supported key: `alternate_urls` (list of
+  fallback URLs for clients when the primary enrollment URL is unreachable).
+* **`/api/me` → `alternate_urls`** — response now includes the list of
+  alternate URLs from `server.json`.  Android v0.4.3+ clients use this
+  for automatic VPN failover (e.g., nvpn → Tailscale).
+* **`vezir doctor`: server.json validation** — checks schema if present
+  (valid JSON, `alternate_urls` is a list of URL strings).
+
 ## 0.6.7 — network resilience (doctor + TUI retry)
 
 ### Added
