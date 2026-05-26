@@ -314,6 +314,67 @@ def _check_client_file_perms(r: _Results) -> None:
     _check_file_perms(r, client_config.client_config_path(), "client.json")
 
 
+def _is_private_ip(host: str) -> bool:
+    """True if *host* looks like a private/tunnel IP (10.x, 100.x, 192.168.x)."""
+    return (
+        host.startswith("10.")
+        or host.startswith("100.")
+        or host.startswith("192.168.")
+        or host in ("127.0.0.1", "localhost")
+    )
+
+
+def _check_tunnel_reachability(r: _Results, url: str | None) -> None:
+    """Probe raw TCP connectivity to the server before HTTP checks.
+
+    Only runs when the server URL points to a private/tunnel IP
+    (10.x, 100.x, 192.168.x).  A TCP timeout here usually means the
+    VPN tunnel isn't established yet.
+    """
+    if not url:
+        return
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 8000)
+    if not host or not _is_private_ip(host):
+        return  # skip for public hostnames / DNS names
+    import socket
+    try:
+        sock = socket.create_connection((host, port), timeout=5)
+        sock.close()
+        r.ok(f"TCP {host}:{port}: reachable")
+    except socket.timeout:
+        r.error(
+            f"TCP {host}:{port}: connection timed out.  "
+            "VPN tunnel may not be established.  "
+            "Check nvpn/tailscale status and restart if needed."
+        )
+    except OSError as exc:
+        r.error(f"TCP {host}:{port}: {exc}.  VPN tunnel may be down.")
+
+
+def _check_nvpn(r: _Results) -> None:
+    """Report nvpn version if installed."""
+    import shutil
+    import subprocess
+    nvpn = shutil.which("nvpn")
+    if not nvpn:
+        return  # not installed, skip silently
+    try:
+        proc = subprocess.run(
+            [nvpn, "version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        version = proc.stdout.strip()
+        if version:
+            r.ok(f"nvpn: {version}")
+        else:
+            r.warn("nvpn: could not determine version")
+    except Exception:
+        r.warn("nvpn: could not determine version")
+
+
 def _check_server_connectivity(
     r: _Results, url: str | None, token: str | None,
 ) -> None:
@@ -648,6 +709,8 @@ def run_doctor() -> int:
     _check_ssl_cert(r, url)
     _check_client_file_perms(r)
     _check_deprecated_env_vars(r)
+    _check_nvpn(r)
+    _check_tunnel_reachability(r, url)
     _check_server_connectivity(r, url, token)
     r.print_all()
 

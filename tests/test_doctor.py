@@ -489,6 +489,14 @@ def test_run_doctor_all_clean_no_server(monkeypatch, tmp_data, capsys):
         db.unlink()
     # Mock out connectivity to avoid real network.
     monkeypatch.setattr(
+        "vezir.doctor._check_tunnel_reachability",
+        lambda r, u: None,
+    )
+    monkeypatch.setattr(
+        "vezir.doctor._check_nvpn",
+        lambda r: None,
+    )
+    monkeypatch.setattr(
         "vezir.doctor._check_server_connectivity",
         lambda r, u, t: r.ok(f"server {u}: mocked ok"),
     )

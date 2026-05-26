@@ -350,11 +350,24 @@ class SessionsBody(Vertical):
 
     @work(thread=True, exclusive=True, group="sessions-refresh")
     def _refresh_worker(self) -> None:
-        result = self.app.api.get_sessions(50)
-        if not result.is_ok():
-            self.post_message(SessionsRefreshFailed(error=result.error_message()))
-            return
-        self.post_message(SessionsRefreshed(sessions=result.ok))
+        from textual.worker import get_current_worker
+        worker = get_current_worker()
+        last_error = ""
+        for attempt in range(3):
+            if worker.is_cancelled:
+                return
+            result = self.app.api.get_sessions(50)
+            if result.is_ok():
+                self.post_message(SessionsRefreshed(sessions=result.ok))
+                return
+            last_error = result.error_message()
+            # HTTP errors (server reachable, returned error) don't retry.
+            if result.http_error is not None:
+                break
+            # Network errors: retry with 10s delay (mesh may be establishing).
+            if attempt < 2:
+                worker.cancelled_event.wait(10)
+        self.post_message(SessionsRefreshFailed(error=last_error))
 
     def on_sessions_refreshed(self, message: SessionsRefreshed) -> None:
         self.sessions = message.sessions
@@ -365,6 +378,7 @@ class SessionsBody(Vertical):
         self.app.sub_title = "refresh failed"
         self.query_one("#empty-state", Static).update(
             f"[red]Failed to fetch sessions: {message.error}[/red]\n"
+            f"[dim]If using a VPN, check that the tunnel is established.[/dim]\n"
             f"Press [b]ctrl+l[/b] to retry.",
         )
 
