@@ -3,6 +3,25 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.7 — network resilience (doctor + TUI retry)
+
+### Added
+
+* **`vezir doctor`: TCP tunnel probe** — for private/tunnel IPs (10.x,
+  100.x, 192.168.x), probes raw TCP before HTTP health check.  Reports
+  "VPN tunnel may not be established" on timeout instead of generic
+  "unreachable".
+* **`vezir doctor`: nvpn version check** — reports installed nvpn
+  version if found on PATH.
+* **TUI sessions retry** — `_refresh_worker` retries up to 3 times on
+  network errors with 10s delays.  HTTP errors don't retry.  Error
+  message includes VPN tunnel hint.
+
+### Fixed
+
+* **Pull directory timestamps** — use local timezone (`dt.astimezone()`)
+  instead of UTC, so pulled directories sort alongside local recordings.
+
 ## 0.6.6 — audio spectrometer + hybrid sync naming + TUI usability
 
 ### Added
