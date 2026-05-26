@@ -50,7 +50,6 @@ from textual.widgets import (
     Input,
     Label,
     Select,
-    Sparkline,
     Static,
 )
 
@@ -384,37 +383,10 @@ class RecordBody(Vertical):
         border: round $warning;
     }
 
-    /* ── audio level spectrometer ── */
     #level-row {
         height: 1;
         margin-bottom: 1;
-    }
-    #level-row Static {
-        width: auto;
-        height: 1;
         color: $text-muted;
-    }
-    #mic-level, #sys-level {
-        width: 12;
-        height: 1;
-    }
-    #mic-level > .sparkline--min-color {
-        color: $success 30%;
-    }
-    #mic-level > .sparkline--max-color {
-        color: $success;
-    }
-    #sys-level > .sparkline--min-color {
-        color: $success 30%;
-    }
-    #sys-level > .sparkline--max-color {
-        color: $success;
-    }
-    .level-no-signal > .sparkline--min-color {
-        color: $error 30%;
-    }
-    .level-no-signal > .sparkline--max-color {
-        color: $error;
     }
     #status-line {
         height: 1;
@@ -495,12 +467,10 @@ class RecordBody(Vertical):
             )
             yield Button("⬆ Upload", id="upload-btn")
 
-        with Horizontal(id="level-row"):
-            yield Static("🎤 ", id="mic-label")
-            yield Sparkline([0.0] * 12, id="mic-level")
-            yield Static("  🔊 ", id="sys-label")
-            yield Sparkline([0.0] * 12, id="sys-level")
-            yield Static("  [dim]― idle[/]", id="signal-indicator")
+        yield Static(
+            "[dim]🎤 ▁▁▁▁▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁▁▁▁▁  ― idle[/]",
+            id="level-row",
+        )
         yield Static(f"Status: {self.status_text}", id="status-line")
         yield Static("", id="error-line", classes="error")
         yield Static(f"v{_vezir_version()}", id="version-line")
@@ -1030,10 +1000,14 @@ class RecordBody(Vertical):
             SIGNAL_MIC_THRESHOLD,
             SIGNAL_SYS_THRESHOLD,
             SILENCE_DEBOUNCE_SECS,
+            render_level_bars,
         )
 
         self._mic_history.append(message.mic_rms)
         self._sys_history.append(message.sys_rms)
+
+        mic_bars = render_level_bars(self._mic_history)
+        sys_bars = render_level_bars(self._sys_history)
 
         has_mic = message.mic_rms > SIGNAL_MIC_THRESHOLD
         has_sys = message.sys_rms > SIGNAL_SYS_THRESHOLD
@@ -1042,7 +1016,6 @@ class RecordBody(Vertical):
         if has_mic or has_sys:
             self._silence_since = 0.0
 
-        # Determine signal status text.
         if has_mic and has_sys:
             signal = "[green]✓ signal[/]"
         elif has_mic:
@@ -1057,21 +1030,16 @@ class RecordBody(Vertical):
             else:
                 signal = "[dim]…[/]"
 
-        # Detect prolonged silence for color switch.
-        no_signal = (
-            self._silence_since > 0
-            and now - self._silence_since >= SILENCE_DEBOUNCE_SECS
-        )
+        mic_color = "green" if has_mic else ("red" if self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS else "dim")
+        sys_color = "green" if has_sys else ("red" if self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS else "dim")
 
+        text = (
+            f"[{mic_color}]🎤 {mic_bars}[/]  "
+            f"[{sys_color}]🔊 {sys_bars}[/]  "
+            f"{signal}"
+        )
         try:
-            mic_spark = self.query_one("#mic-level", Sparkline)
-            sys_spark = self.query_one("#sys-level", Sparkline)
-            mic_spark.data = list(self._mic_history)
-            sys_spark.data = list(self._sys_history)
-            # Toggle red color class on prolonged silence.
-            mic_spark.set_class(no_signal, "level-no-signal")
-            sys_spark.set_class(no_signal, "level-no-signal")
-            self.query_one("#signal-indicator", Static).update(f"  {signal}")
+            self.query_one("#level-row", Static).update(text)
         except Exception:
             pass
 
@@ -1103,14 +1071,8 @@ class RecordBody(Vertical):
         self._session = None  # release reference
         # Reset level display to idle.
         try:
-            self.query_one("#mic-level", Sparkline).data = [0.0] * 12
-            self.query_one("#sys-level", Sparkline).data = [0.0] * 12
-            mic_spark = self.query_one("#mic-level", Sparkline)
-            sys_spark = self.query_one("#sys-level", Sparkline)
-            mic_spark.remove_class("level-no-signal")
-            sys_spark.remove_class("level-no-signal")
-            self.query_one("#signal-indicator", Static).update(
-                "  [dim]― idle[/]"
+            self.query_one("#level-row", Static).update(
+                "[dim]🎤 ▁▁▁▁▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁▁▁▁▁  ― idle[/]"
             )
         except Exception:
             pass

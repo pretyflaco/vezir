@@ -346,14 +346,11 @@ def _rms_to_bar_index(rms: float) -> int:
 
 def render_level_bars(
     history: "list[float] | tuple[float, ...]",
-    *,
-    separator: str = "",
 ) -> str:
     """Convert a sequence of RMS values (0.0-1.0) to Unicode block bars.
 
     Uses a dB (logarithmic) scale so quiet-to-moderate speech is
-    clearly visible.  Returns a string of bar characters from
-    :data:`LEVEL_BARS`, joined by *separator* (default: no gap;
-    Tkinter callers pass ``" "`` for visual bar separation).
+    clearly visible.  Returns a string of ``len(history)`` characters
+    from :data:`LEVEL_BARS`.
     """
-    return separator.join(LEVEL_BARS[_rms_to_bar_index(v)] for v in history)
+    return "".join(LEVEL_BARS[_rms_to_bar_index(v)] for v in history)

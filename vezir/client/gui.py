@@ -395,9 +395,10 @@ class ScribeWindow:
         # ─── Audio level row (v0.7.0) ──
         self.level_lbl = tk.Label(
             root,
-            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁  ― idle",
+            text="🎤 ▁▁▁▁▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁▁▁▁▁  ― idle",
             fg="#999", font=("Mono", 10),
             anchor="w",
+            width=50,  # fixed width prevents window resize on text change
         )
         self.level_lbl.pack(fill="x", padx=8, pady=(0, 4))
         self._level_timer_id: str | None = None
@@ -682,10 +683,8 @@ class ScribeWindow:
         if self._level_timer_id is not None:
             self.root.after_cancel(self._level_timer_id)
             self._level_timer_id = None
-        from .audio import LEVEL_BARS
-        idle_bars = (" " + LEVEL_BARS[0]) * 12
         self.level_lbl.config(
-            text=f"🎤{idle_bars}  🔊{idle_bars}  ― idle",
+            text="🎤 ▁▁▁▁▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁▁▁▁▁  ― idle",
             fg="#999",
         )
 
@@ -738,8 +737,8 @@ class ScribeWindow:
                         signal = "…"
                         sig_color = "#999"
 
-                mic_bars = render_level_bars(self._mic_history, separator=" ")
-                sys_bars = render_level_bars(self._sys_history, separator=" ")
+                mic_bars = render_level_bars(self._mic_history)
+                sys_bars = render_level_bars(self._sys_history)
                 self.level_lbl.config(
                     text=f"🎤 {mic_bars}  🔊 {sys_bars}  {signal}",
                     fg=sig_color,

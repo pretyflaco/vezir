@@ -367,10 +367,8 @@ class ScribeWidget:
         if self._level_timer_id is not None:
             self.root.after_cancel(self._level_timer_id)
             self._level_timer_id = None
-        from .audio import LEVEL_BARS
-        idle_bars = (" " + LEVEL_BARS[0]) * 12
         self.level_lbl.configure(
-            text=f"🎤{idle_bars}  🔊{idle_bars}",
+            text="🎤 ▁▁▁▁▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁▁▁▁▁",
             fg="#999",
         )
 
@@ -415,8 +413,8 @@ class ScribeWidget:
                     sig = "…"
                     color = "#999"
 
-            mic_bars = render_level_bars(self._mic_hist, separator=" ")
-            sys_bars = render_level_bars(self._sys_hist, separator=" ")
+            mic_bars = render_level_bars(self._mic_hist)
+            sys_bars = render_level_bars(self._sys_hist)
             self.level_lbl.configure(
                 text=f"🎤 {mic_bars}  🔊 {sys_bars}  {sig}",
                 fg=color,
