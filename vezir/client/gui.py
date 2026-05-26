@@ -673,8 +673,8 @@ class ScribeWindow:
     def _start_level_polling(self):
         """Start polling audio levels from the recording chunk at ~15 FPS."""
         from collections import deque
-        self._mic_history: deque = deque([0.0] * 8, maxlen=8)
-        self._sys_history: deque = deque([0.0] * 8, maxlen=8)
+        self._mic_history: deque = deque([0.0] * 12, maxlen=12)
+        self._sys_history: deque = deque([0.0] * 12, maxlen=12)
         self._silence_since_gui: float = 0.0
         self._poll_levels()
 
@@ -682,8 +682,10 @@ class ScribeWindow:
         if self._level_timer_id is not None:
             self.root.after_cancel(self._level_timer_id)
             self._level_timer_id = None
+        from .audio import LEVEL_BARS
+        idle_bars = (" " + LEVEL_BARS[0]) * 12
         self.level_lbl.config(
-            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁  ― idle",
+            text=f"🎤{idle_bars}  🔊{idle_bars}  ― idle",
             fg="#999",
         )
 
@@ -736,8 +738,8 @@ class ScribeWindow:
                         signal = "…"
                         sig_color = "#999"
 
-                mic_bars = render_level_bars(self._mic_history)
-                sys_bars = render_level_bars(self._sys_history)
+                mic_bars = render_level_bars(self._mic_history, separator=" ")
+                sys_bars = render_level_bars(self._sys_history, separator=" ")
                 self.level_lbl.config(
                     text=f"🎤 {mic_bars}  🔊 {sys_bars}  {signal}",
                     fg=sig_color,
@@ -882,9 +884,34 @@ class ScribeWindow:
         self.status_lbl.config(text=status, fg=colour)
 
     def _open_dashboard(self):
-        # Prefer the /login hand-off URL so the browser picks up the cookie
-        # and lands on a clean URL. Falls back to the canonical dashboard
-        # URL if the server didn't provide a login URL.
+        """Open the session dashboard in the browser.
+
+        v0.7.0: mint a fresh exchange code instead of using the stale
+        one from upload time (which expires after 60s, long before the
+        user typically clicks "Open dashboard").
+        """
+        session_id = self.state.session_id
+        if not session_id:
+            return
+        # Try to mint a fresh exchange code for a seamless login.
+        if self.url and self.token:
+            try:
+                import httpx
+                base = self.url.rstrip("/")
+                r = httpx.post(
+                    f"{base}/api/exchange-code",
+                    headers={"Authorization": f"Bearer {self.token}"},
+                    params={"next": f"/s/{session_id}"},
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    fresh_url = r.json().get("login_url")
+                    if fresh_url:
+                        webbrowser.open_new_tab(fresh_url)
+                        return
+            except Exception:
+                pass  # fall through to stale URL
+        # Fallback: use the URL from upload time (may prompt for token).
         url = self.state.dashboard_login_url or self.state.dashboard_url
         if url:
             webbrowser.open_new_tab(url)

@@ -358,8 +358,8 @@ class ScribeWidget:
 
     def _start_level_polling(self) -> None:
         from collections import deque
-        self._mic_hist: deque = deque([0.0] * 8, maxlen=8)
-        self._sys_hist: deque = deque([0.0] * 8, maxlen=8)
+        self._mic_hist: deque = deque([0.0] * 12, maxlen=12)
+        self._sys_hist: deque = deque([0.0] * 12, maxlen=12)
         self._silence_since_w: float = 0.0
         self._poll_levels_widget()
 
@@ -367,8 +367,10 @@ class ScribeWidget:
         if self._level_timer_id is not None:
             self.root.after_cancel(self._level_timer_id)
             self._level_timer_id = None
+        from .audio import LEVEL_BARS
+        idle_bars = (" " + LEVEL_BARS[0]) * 12
         self.level_lbl.configure(
-            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁",
+            text=f"🎤{idle_bars}  🔊{idle_bars}",
             fg="#999",
         )
 
@@ -413,8 +415,8 @@ class ScribeWidget:
                     sig = "…"
                     color = "#999"
 
-            mic_bars = render_level_bars(self._mic_hist)
-            sys_bars = render_level_bars(self._sys_hist)
+            mic_bars = render_level_bars(self._mic_hist, separator=" ")
+            sys_bars = render_level_bars(self._sys_hist, separator=" ")
             self.level_lbl.configure(
                 text=f"🎤 {mic_bars}  🔊 {sys_bars}  {sig}",
                 fg=color,
