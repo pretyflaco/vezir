@@ -21,6 +21,12 @@ import os
 def pytest_configure(config):  # noqa: ARG001 - pytest hook signature
     """Run before any test imports the app."""
     os.environ.setdefault("VEZIR_DISABLE_RATELIMIT", "1")
+    # Prevent host production env vars from leaking into tests.
+    # VEZIR_COOKIE_SECURE=1 causes Secure cookies that httpx won't send
+    # over http://testserver; VEZIR_CADDY_ROOT_CERT_PATH causes enroll
+    # payloads to upgrade to v2 with a real CA cert.
+    for var in ("VEZIR_COOKIE_SECURE", "VEZIR_CADDY_ROOT_CERT_PATH"):
+        os.environ.pop(var, None)
 
 
 def _install_auth_issue_shim() -> None:

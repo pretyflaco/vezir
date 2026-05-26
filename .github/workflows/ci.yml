@@ -26,10 +26,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        # Pin to the same major as the dev extras pull in; ruff's defaults
-        # are what we run against locally (no [tool.ruff] block in
-        # pyproject.toml yet, so any minor 0.x bump that changes defaults
-        # would break this gate — pin tightly when that becomes painful).
+        # Pin to the same major as the dev extras pull in; ruff reads
+        # [tool.ruff] from pyproject.toml for rules and per-file ignores.
         run: python -m pip install --upgrade ruff
       - name: Run ruff
         run: ruff check .

@@ -28,18 +28,33 @@ def test_library_path_returns_none_when_extra_args_present(monkeypatch, tmp_path
 def test_library_path_returns_none_when_meet_record_missing(monkeypatch, tmp_path):
     """Simulate a deployment where millet-record is not installed."""
     import builtins
+    import sys
 
     from vezir.client import scribe
+
+    # Evict cached millet_record modules so the import inside
+    # _record_via_library() actually goes through __import__ and can
+    # be intercepted.  Without this, Python finds the already-imported
+    # module in sys.modules and skips __import__ entirely.
+    saved_modules: dict[str, object] = {}
+    for key in list(sys.modules):
+        if key.startswith("millet_record"):
+            saved_modules[key] = sys.modules.pop(key)
+
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name.startswith("meet_record"):
-            raise ImportError("simulated missing meet_record")
+        if name.startswith("millet_record"):
+            raise ImportError("simulated missing millet_record")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    result = scribe._record_via_library(tmp_path, None)
-    assert result is None
+    try:
+        result = scribe._record_via_library(tmp_path, None)
+        assert result is None
+    finally:
+        # Restore so other tests that need the real module aren't affected.
+        sys.modules.update(saved_modules)
 
 
 def test_subprocess_fallback_invokes_meet_record(monkeypatch, tmp_path):

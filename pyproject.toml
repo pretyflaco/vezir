@@ -103,7 +103,7 @@ gui = []
 # textual; the optional `serve` mode additionally needs textual-serve
 # (install separately when you want to publish the TUI over HTTP).
 tui = ["textual>=0.80"]
-dev = ["ruff", "pytest", "pytest-asyncio", "mypy"]
+dev = ["ruff", "pytest", "pytest-asyncio", "pytest-timeout", "mypy"]
 
 [tool.ruff]
 target-version = "py310"
@@ -139,3 +139,6 @@ check_untyped_defs = true
 # requiring a per-test @pytest.mark.asyncio decorator. Matches the
 # pattern Textual's own test suite uses.
 asyncio_mode = "auto"
+# Per-test timeout (seconds). Any test exceeding this is likely stuck on
+# a network call or audio device. Prevents CI from hanging indefinitely.
+timeout = 60
