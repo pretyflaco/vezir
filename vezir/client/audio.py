@@ -247,9 +247,9 @@ class AudioLevelSample:
 
 
 # Signal detection thresholds (cross-platform, same on Android).
-SIGNAL_MIC_THRESHOLD = 0.005    # ~-46 dBFS; speech is well above
+SIGNAL_MIC_THRESHOLD = 0.001    # ~-60 dBFS; any signal above noise floor
 SIGNAL_SYS_THRESHOLD = 0.001    # system audio is typically louder
-SILENCE_DEBOUNCE_SECS = 3.0     # seconds before declaring "no signal"
+SILENCE_DEBOUNCE_SECS = 10.0    # seconds before declaring "no signal"
 
 # WAV format constants for millet-record's output.
 _WAV_HEADER_BYTES = 44
@@ -321,19 +321,36 @@ def read_chunk_levels(chunk_path: "str | Path") -> AudioLevelSample:
     )
 
 
+def _rms_to_bar_index(rms: float) -> int:
+    """Map RMS (0.0-1.0) to bar index (0-8) using a dB (logarithmic) scale.
+
+    Human loudness perception is logarithmic; a linear scale makes
+    quiet-to-moderate speech invisible while clipping peaks at the
+    top.  The dB scale spreads the useful range evenly across 8 bars:
+
+        -60 dB (RMS ~0.001)  →  bar 0 (space)
+        -50 dB (RMS ~0.003)  →  bar 1 (▁)
+        -40 dB (RMS ~0.01)   →  bar 2-3 (▂▃)
+        -30 dB (RMS ~0.03)   →  bar 4 (▄)
+        -20 dB (RMS ~0.1)    →  bar 5-6 (▅▆)
+        -10 dB (RMS ~0.3)    →  bar 7 (▇)
+          0 dB (RMS  1.0)    →  bar 8 (█)
+    """
+    if rms < 1e-7:
+        return 0
+    db = 20.0 * math.log10(rms)
+    # Map -60 dB .. 0 dB to 0..8
+    index = int((db + 60.0) / 60.0 * 8.0)
+    return max(0, min(8, index))
+
+
 def render_level_bars(
     history: "list[float] | tuple[float, ...]",
-    *,
-    scale: float = 80.0,
 ) -> str:
     """Convert a sequence of RMS values (0.0-1.0) to Unicode block bars.
 
-    ``scale`` maps the RMS range to bar height.  Default 80 means an
-    RMS of 0.1 (typical speech) fills the bars to ~full height.
-
-    Returns a string of ``len(history)`` characters from :data:`LEVEL_BARS`.
+    Uses a dB (logarithmic) scale so quiet-to-moderate speech is
+    clearly visible.  Returns a string of ``len(history)`` characters
+    from :data:`LEVEL_BARS`.
     """
-    return "".join(
-        LEVEL_BARS[min(8, int(v * scale))]
-        for v in history
-    )
+    return "".join(LEVEL_BARS[_rms_to_bar_index(v)] for v in history)
