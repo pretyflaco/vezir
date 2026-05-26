@@ -539,6 +539,87 @@ def log_level() -> str:
     return os.environ.get("VEZIR_LOG_LEVEL", "INFO").upper()
 
 
+def log_format() -> str:
+    """Log output format: ``"text"`` (default) or ``"json"``.
+
+    Read from ``server.json`` → ``log_format`` key.
+    """
+    fmt = server_config().get("log_format", "text")
+    return fmt if fmt in ("text", "json") else "text"
+
+
+def log_file() -> Path | None:
+    """Log file path, or None to disable file logging.
+
+    Default: ``<data_dir>/logs/vezir.log``.  Set ``"log_file": false``
+    in ``server.json`` to disable.
+    """
+    val = server_config().get("log_file")
+    if val is False:
+        return None
+    if isinstance(val, str):
+        return Path(val)
+    return logs_dir() / "vezir.log"
+
+
+class _JsonFormatter(logging.Formatter):
+    """Minimal single-line JSON log formatter (no external deps)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        import json as _json
+        entry = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1]:
+            entry["exc"] = self.formatException(record.exc_info)
+        return _json.dumps(entry, ensure_ascii=False)
+
+
+def configure_logging() -> None:
+    """Set up Python logging for the server process.
+
+    * Console handler: always present (text or JSON per ``log_format``).
+    * File handler: ``RotatingFileHandler`` to ``<data_dir>/logs/vezir.log``
+      (10 MB, 5 backups) unless disabled in ``server.json``.
+
+    Call once at process startup (``create_app()``).
+    """
+    import logging.handlers
+
+    level = getattr(logging, log_level(), logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Remove any existing handlers (e.g., from basicConfig in tests).
+    root.handlers.clear()
+
+    # Console handler.
+    console = logging.StreamHandler()
+    console.setLevel(level)
+    if log_format() == "json":
+        console.setFormatter(_JsonFormatter())
+    else:
+        console.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        ))
+    root.addHandler(console)
+
+    # File handler (RotatingFileHandler).
+    fpath = log_file()
+    if fpath:
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(
+            str(fpath), maxBytes=10 * 1024 * 1024, backupCount=5,
+        )
+        fh.setLevel(level)
+        # File always uses JSON for machine parseability.
+        fh.setFormatter(_JsonFormatter())
+        root.addHandler(fh)
+
+
 def server_url() -> str:
     """Resolve the server URL using v0.6.1+ multi-team precedence.
 

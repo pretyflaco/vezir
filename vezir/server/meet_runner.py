@@ -251,14 +251,14 @@ def run_meet(
     """
     home = build_home_shim(job_id, team_id)
     env = _env_for_meet(home, team_id)
-    cmd = [config.meet_binary()] + args
+    cmd = [config.meet_binary(), *args]
     log.info("running: HOME=%s %s", home, " ".join(cmd))
 
     if log_path:
         config.secure_mkdir(log_path.parent)
         with log_path.open("ab") as f:
             config.secure_chmod_file(log_path)
-            f.write(f"\n--- {' '.join(cmd)}\n".encode("utf-8"))
+            f.write(f"\n--- {' '.join(cmd)}\n".encode())
             f.flush()
             proc = subprocess.run(cmd, env=env, stdout=f, stderr=f)
     else:

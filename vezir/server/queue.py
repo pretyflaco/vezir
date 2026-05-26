@@ -59,8 +59,8 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from .. import config
 
@@ -620,6 +620,7 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
     # 4. Remove the on-disk per-team dir (roster, voiceprints, sync_config).
     on_disk_removed = False
     import shutil as _shutil
+
     from .. import config as _config
     team_dir = _config.teams_dir() / team_id
     if team_dir.exists():

@@ -8,7 +8,6 @@ filtering, new-alert detection, formatting.
 """
 from __future__ import annotations
 
-
 from vezir.client.api import Session
 from vezir.client.tui.notify import (
     LabelingState,

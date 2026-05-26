@@ -37,6 +37,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
     return TestClient(create_app(), follow_redirects=False)
 
@@ -201,8 +202,8 @@ def test_cli_session_move_same_team_noop(tmp_data):
 def test_move_does_not_touch_voiceprint_dbs(tmp_data):
     """Moving a session leaves both teams' voiceprint DBs untouched
     (locked-in policy decision; documented in CLI help)."""
-    from vezir.server import queue, voiceprints
     from vezir import config
+    from vezir.server import queue, voiceprints
 
     queue.create_team("blink", "Blink")
     queue.create_team("twentyone", "Twentyone")

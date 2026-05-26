@@ -42,6 +42,7 @@ def test_meeting_type_falls_back_to_default(tmp_data, monkeypatch):
     from vezir.server import meet_runner, queue
     queue.create_team("blink", "Blink", sync_meeting_type="")
     import sqlite3
+
     from vezir import config
     with sqlite3.connect(str(config.queue_db_path())) as c:
         c.execute(
@@ -63,6 +64,7 @@ def test_meeting_type_defaults_to_meeting(tmp_data, monkeypatch):
     from vezir.server import meet_runner, queue
     queue.create_team("blink", "Blink", sync_meeting_type="")
     import sqlite3
+
     from vezir import config
     with sqlite3.connect(str(config.queue_db_path())) as c:
         c.execute(

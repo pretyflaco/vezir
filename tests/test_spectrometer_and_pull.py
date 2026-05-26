@@ -5,7 +5,6 @@ import json
 import struct
 from pathlib import Path
 
-
 # ── config.sync_slug ─────────────────────────────────────────────────────────
 
 

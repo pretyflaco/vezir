@@ -38,6 +38,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client_factory(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
 
     def _make():
@@ -253,8 +254,8 @@ def test_legacy_token_without_team_id_rejected(client_factory):
     client = client_factory()
     import json
 
-    from vezir.server import auth as _auth
     from vezir import config as _config
+    from vezir.server import auth as _auth
 
     # Insert a legacy-shape token row directly (bypassing auth.issue).
     p = _config.tokens_json_path()

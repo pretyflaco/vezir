@@ -436,7 +436,7 @@ class RecordBody(Vertical):
         self._silence_since: float = 0.0
 
     @classmethod
-    def body_widget(cls) -> "RecordBody":
+    def body_widget(cls) -> RecordBody:
         """Factory used by MainScreen's TabbedContent."""
         return cls()
 
@@ -699,7 +699,7 @@ class RecordBody(Vertical):
         # Lazy-import millet-record so a system that only wants to
         # list sessions doesn't pay for the pulseaudio / sidecar import.
         try:
-            from millet_record.capture import create_session, check_prerequisites
+            from millet_record.capture import check_prerequisites, create_session
         except ImportError as exc:
             self.error_text = (
                 f"millet-record not installed: {exc}. "
@@ -791,6 +791,7 @@ class RecordBody(Vertical):
     def _level_worker(self, session, gen: int) -> None:
         """Read audio levels from the recording chunk at ~15 FPS."""
         from textual.worker import get_current_worker
+
         from ..audio import read_chunk_levels
 
         worker = get_current_worker()
@@ -930,6 +931,7 @@ class RecordBody(Vertical):
         confident voiceprint matches (PR9 latent bug).
         """
         import time as _t
+
         from textual.worker import get_current_worker
 
         worker = get_current_worker()
@@ -1033,8 +1035,11 @@ class RecordBody(Vertical):
             else:
                 signal = "[dim]…[/]"
 
-        mic_color = "green" if has_mic else ("red" if self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS else "dim")
-        sys_color = "green" if has_sys else ("red" if self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS else "dim")
+        silence_timeout = (
+            self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS
+        )
+        mic_color = "green" if has_mic else ("red" if silence_timeout else "dim")
+        sys_color = "green" if has_sys else ("red" if silence_timeout else "dim")
 
         text = (
             f"[{mic_color}]🎤 {mic_bars}[/]  "

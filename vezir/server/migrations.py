@@ -305,7 +305,7 @@ def migrate_0_6_0() -> dict:
         # the queue connection (via queue.list_recent or similar) would
         # be enough but introduces an import cycle, so we materialize
         # the schema directly.
-        from . import queue as _queue  # noqa: WPS433 (local-by-design)
+        from . import queue as _queue
         c.executescript(_queue.SCHEMA)
         # Re-run the column-add migrations queue.py does on open.
         for ddl in (

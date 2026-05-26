@@ -19,6 +19,7 @@ def tmp_data(monkeypatch):
 def client_and_token(tmp_data):
     """Admin-tier token for /admin/enroll happy-path tests."""
     from fastapi.testclient import TestClient
+
     from vezir.server import auth
     from vezir.server.app import create_app
 
@@ -32,6 +33,7 @@ def client_and_token(tmp_data):
 def client_and_nonadmin_token(tmp_data):
     """Scribe-tier token used to verify /admin/enroll denies non-admins."""
     from fastapi.testclient import TestClient
+
     from vezir.server import auth
     from vezir.server.app import create_app
 
@@ -214,7 +216,7 @@ def test_payload_v1_when_no_ca(monkeypatch):
 
 def test_payload_v2_when_ca_provided():
     """With a CA cert, build_payload bumps to v2 and embeds the PEM."""
-    from vezir.server.enroll import build_payload, PAYLOAD_VERSION
+    from vezir.server.enroll import PAYLOAD_VERSION, build_payload
 
     ca = "-----BEGIN CERTIFICATE-----\nABCDEF\n-----END CERTIFICATE-----\n"
     payload = build_payload("https://srv.ts.net", "vzr_abc", ca_pem=ca)

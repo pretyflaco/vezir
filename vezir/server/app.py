@@ -27,10 +27,7 @@ from . import (
 
 def create_app() -> FastAPI:
     config.harden_umask()
-    logging.basicConfig(
-        level=getattr(logging, config.log_level(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    config.configure_logging()
     log = logging.getLogger("vezir")
 
     config.ensure_dirs()

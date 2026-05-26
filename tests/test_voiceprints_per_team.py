@@ -59,6 +59,7 @@ def test_migration_moves_legacy_db_into_blink(tmp_data, monkeypatch):
 
     # Trigger migrations via create_app().
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
     TestClient(create_app(), follow_redirects=False)
 
@@ -86,6 +87,7 @@ def test_migration_seeds_empty_db_when_no_legacy(tmp_data, monkeypatch):
     # No legacy file pre-seeded.
 
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
     TestClient(create_app(), follow_redirects=False)
 
@@ -103,6 +105,7 @@ def test_migration_idempotent(tmp_data, monkeypatch):
     legacy.write_text(json.dumps({"alice": {"n_sessions": 5}}))
 
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
     TestClient(create_app(), follow_redirects=False)
     # Run a second time — should NOT clobber blink's contents.
@@ -132,8 +135,8 @@ def test_ensure_db_exists_creates_per_team_file(tmp_data):
 
 
 def test_list_known_names_is_per_team(tmp_data):
-    from vezir.server import voiceprints
     from vezir import config
+    from vezir.server import voiceprints
 
     voiceprints.ensure_db_exists("blink")
     voiceprints.ensure_db_exists("twentyone")
@@ -159,8 +162,8 @@ def test_seed_from_requires_team_id(tmp_data, tmp_path):
 def test_seed_from_writes_to_team_db(tmp_data, tmp_path):
     src = tmp_path / "src.json"
     src.write_text(json.dumps({"alice": {"n_sessions": 4}}))
-    from vezir.server import voiceprints
     from vezir import config
+    from vezir.server import voiceprints
 
     stats = voiceprints.seed_from(src, "twentyone")
     assert stats["added"] == 1
@@ -174,8 +177,8 @@ def test_seed_from_writes_to_team_db(tmp_data, tmp_path):
 
 
 def test_seed_from_refuses_when_populated_without_merge(tmp_data, tmp_path):
-    from vezir.server import voiceprints
     from vezir import config
+    from vezir.server import voiceprints
 
     voiceprints.ensure_db_exists("blink")
     config.team_speaker_profiles_path("blink").write_text(
@@ -198,8 +201,8 @@ def test_seed_from_refuses_when_populated_without_merge(tmp_data, tmp_path):
 
 
 def test_build_home_shim_symlinks_per_team_voiceprints(tmp_data):
-    from vezir.server import meet_runner
     from vezir import config
+    from vezir.server import meet_runner
 
     _seed_two_teams()
 
@@ -226,8 +229,8 @@ def test_build_home_shim_requires_team_id(tmp_data):
 
 
 def test_env_for_meet_uses_per_team_profiles_path(tmp_data):
-    from vezir.server import meet_runner
     from vezir import config
+    from vezir.server import meet_runner
 
     _seed_two_teams()
     home = meet_runner.build_home_shim("job-1", "twentyone")

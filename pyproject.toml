@@ -103,7 +103,36 @@ gui = []
 # textual; the optional `serve` mode additionally needs textual-serve
 # (install separately when you want to publish the TUI over HTTP).
 tui = ["textual>=0.80"]
-dev = ["ruff", "pytest", "pytest-asyncio"]
+dev = ["ruff", "pytest", "pytest-asyncio", "mypy"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "RUF"]
+"vezir/client/tui/*.py" = ["RUF012"]
+"vezir/client/gui.py" = ["RUF012"]
+"vezir/client/scribe_widget.py" = ["RUF012"]
+"vezir/server/uploads.py" = ["B008"]
+"vezir/server/teams.py" = ["B008"]
+"vezir/server/labels.py" = ["B008"]
+"vezir/server/migrations.py" = ["RUF002", "RUF003"]
+"vezir/server/meet_runner.py" = ["E501"]
+"vezir/client/audio.py" = ["RUF003"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["vezir.config", "vezir.doctor", "vezir.client.tui.record_screen"]
+disallow_untyped_defs = true
+check_untyped_defs = true
 
 [tool.pytest.ini_options]
 # Auto-collect `async def` tests written for textual.pilot without

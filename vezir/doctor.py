@@ -344,7 +344,7 @@ def _check_tunnel_reachability(r: _Results, url: str | None) -> None:
         sock = socket.create_connection((host, port), timeout=5)
         sock.close()
         r.ok(f"TCP {host}:{port}: reachable")
-    except socket.timeout:
+    except TimeoutError:
         r.error(
             f"TCP {host}:{port}: connection timed out.  "
             "VPN tunnel may not be established.  "

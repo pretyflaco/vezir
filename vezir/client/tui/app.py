@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     # Forward-only reference: used purely as a string annotation in the
     # message handler below.  Importing it eagerly would create a
     # circular import (record_screen imports from this module too).
-    from .record_screen import SessionUploadComplete  # noqa: F401
+    from .record_screen import SessionUploadComplete
 
 log = logging.getLogger("vezir.client.tui")
 
@@ -136,7 +136,7 @@ class MainScreen(Screen):
             action()
 
     def on_tabbed_content_tab_activated(
-        self, event: "TabbedContent.TabActivated"
+        self, event: TabbedContent.TabActivated
     ) -> None:
         """Refresh the Sessions tab whenever the user switches to it.
 
@@ -159,7 +159,7 @@ class MainScreen(Screen):
         body.action_refresh()
 
     def on_session_upload_complete(
-        self, message: "SessionUploadComplete"
+        self, message: SessionUploadComplete
     ) -> None:
         """Refresh the Sessions tab + toast the user when a freshly
         uploaded session reaches terminal status on the server.

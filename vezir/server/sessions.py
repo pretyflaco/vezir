@@ -382,7 +382,7 @@ def mint_exchange_code(
     next: str | None = None,
     auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
-    github, _team, _admin = auth_triple  # team carried by bearer itself
+    _github, _team, _admin = auth_triple  # team carried by bearer itself
     """Mint a one-time, 60-second exchange code for browser hand-off.
 
     The client calls this when it needs a login URL (e.g. to print a

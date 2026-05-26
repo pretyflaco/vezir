@@ -19,6 +19,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client_and_token(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server import auth
     from vezir.server.app import create_app
 

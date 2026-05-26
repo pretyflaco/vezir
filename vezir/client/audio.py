@@ -264,7 +264,7 @@ _LEVEL_WINDOW_BYTES = int(
 LEVEL_BARS = " ▁▂▃▄▅▆▇█"
 
 
-def read_chunk_levels(chunk_path: "str | Path") -> AudioLevelSample:
+def read_chunk_levels(chunk_path: str | Path) -> AudioLevelSample:
     """Read the last ~100ms of audio from a WAV chunk and compute levels.
 
     The chunk is a standard WAV (pcm_s16le, 16kHz, stereo) written by
@@ -288,7 +288,7 @@ def read_chunk_levels(chunk_path: "str | Path") -> AudioLevelSample:
             read_from = max(_WAV_HEADER_BYTES, size - _LEVEL_WINDOW_BYTES)
             f.seek(read_from)
             raw = f.read()
-    except (OSError, IOError):
+    except OSError:
         return AudioLevelSample()
 
     # Align to stereo sample boundary (4 bytes per stereo sample).
@@ -345,7 +345,7 @@ def _rms_to_bar_index(rms: float) -> int:
 
 
 def render_level_bars(
-    history: "list[float] | tuple[float, ...]",
+    history: list[float] | tuple[float, ...],
 ) -> str:
     """Convert a sequence of RMS values (0.0-1.0) to Unicode block bars.
 

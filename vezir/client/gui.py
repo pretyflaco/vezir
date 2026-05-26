@@ -41,11 +41,10 @@ import subprocess
 import sys
 import threading
 import time
+import tkinter as tk
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-
-import tkinter as tk
 from tkinter import messagebox
 
 from .. import config
@@ -57,7 +56,7 @@ _PRESET_LABEL_TO_ID = {
 }
 
 
-def _load_logo_image() -> "tk.PhotoImage | None":
+def _load_logo_image() -> tk.PhotoImage | None:
     """Load the vezir brand-lockup PNG for the GUI header.
 
     Returns None if the asset cannot be located or Tk fails to decode it
@@ -75,7 +74,8 @@ def _load_logo_image() -> "tk.PhotoImage | None":
     editable install, and a zipapp.
     """
     try:
-        from importlib.resources import files as _pkg_files, as_file
+        from importlib.resources import as_file
+        from importlib.resources import files as _pkg_files
         resource = _pkg_files("vezir.client.assets") / "vezir-logo-88.png"
         # importlib.resources may return a MultiplexedPath / Traversable
         # that is not a plain filesystem path.  as_file() yields a real
@@ -267,7 +267,7 @@ class ScribeWindow:
         self._proc: subprocess.Popen | None = None
         self._upload_thread: threading.Thread | None = None
         self._poll_thread: threading.Thread | None = None
-        self._gui_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
+        self._gui_queue: queue.Queue[tuple[str, object]] = queue.Queue()
 
         root.title("vezir")
         root.attributes("-topmost", True)
@@ -287,7 +287,10 @@ class ScribeWindow:
             tk.Label(header, text="vezir", font=("Sans", 11, "bold")).pack(side="left")
         self.identity_lbl = tk.Label(header, text="", fg="#666", font=("Mono", 9))
         self.identity_lbl.pack(side="right")
-        tk.Button(header, text="⚙", width=2, command=self._open_settings, relief="flat").pack(side="right", padx=4)
+        settings_btn = tk.Button(
+            header, text="⚙", width=2, command=self._open_settings, relief="flat",
+        )
+        settings_btn.pack(side="right", padx=4)
 
         # ─── Title input ─────
         title_frame = tk.Frame(root)
@@ -578,7 +581,8 @@ class ScribeWindow:
 
         def _upload():
             try:
-                from .uploader import compress_wav_for_upload, upload as do_upload
+                from .uploader import compress_wav_for_upload
+                from .uploader import upload as do_upload
                 title = self.title_var.get().strip() or None
                 audio_path = wav_path
                 if audio_path.suffix.lower() == ".wav":
@@ -692,14 +696,15 @@ class ScribeWindow:
         """Read audio levels and schedule the next poll."""
         if self.state.status not in ("recording", "draining"):
             return
+        import time as _t
+
         from .audio import (
-            read_chunk_levels,
-            render_level_bars,
             SIGNAL_MIC_THRESHOLD,
             SIGNAL_SYS_THRESHOLD,
             SILENCE_DEBOUNCE_SECS,
+            read_chunk_levels,
+            render_level_bars,
         )
-        import time as _t
 
         # Find the current chunk file in the output directory.
         outdir = _default_output_dir()

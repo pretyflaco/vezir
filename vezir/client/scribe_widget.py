@@ -39,14 +39,13 @@ import queue
 import subprocess
 import sys
 import threading
+import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 
-import tkinter as tk
-
+from .. import config
 from .api import VezirClient
 from .config import load_client_prefs
-from .. import config
 
 log = logging.getLogger("vezir.client.scribe_widget")
 
@@ -295,7 +294,7 @@ class ScribeWidget:
             )
             return
         try:
-            from millet_record.capture import create_session, check_prerequisites
+            from millet_record.capture import check_prerequisites, create_session
         except ImportError as exc:
             self._set_error(
                 f"millet-record not installed: {exc}.  "
@@ -376,14 +375,15 @@ class ScribeWidget:
         if self._session is None or self.state.paused:
             self._level_timer_id = self.root.after(66, self._poll_levels_widget)
             return
+        import time as _t
+
         from .audio import (
-            read_chunk_levels,
-            render_level_bars,
             SIGNAL_MIC_THRESHOLD,
             SIGNAL_SYS_THRESHOLD,
             SILENCE_DEBOUNCE_SECS,
+            read_chunk_levels,
+            render_level_bars,
         )
-        import time as _t
 
         chunk = getattr(self._session, "_current_chunk", None)
         if chunk is not None:

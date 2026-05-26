@@ -245,7 +245,8 @@ class LabelScreen(Screen):
         # Play buttons have id "play-<speaker_id>"
         if bid and bid.startswith("play-"):
             speaker_id = bid[len("play-"):]
-            if self._player.is_playing and self._player.current_path == self._clip_paths.get(speaker_id):
+            if (self._player.is_playing
+                    and self._player.current_path == self._clip_paths.get(speaker_id)):
                 self._player.stop()
                 return
             if speaker_id in self._clip_paths:

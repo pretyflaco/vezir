@@ -21,6 +21,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client_factory(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
 
     def _make() -> TestClient:
@@ -182,6 +183,7 @@ def test_share_not_found(client_factory):
 
 def test_api_team_returns_handles(client_factory, tmp_data):
     import json
+
     from vezir.server import auth
     client = client_factory()
     tok = auth.issue("alice")  # default team_id='blink' via conftest shim

@@ -43,7 +43,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def test_c1_no_credentials(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_credential_resolution
+    from vezir.doctor import _check_credential_resolution, _Results
 
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
@@ -55,7 +55,7 @@ def test_c1_no_credentials(monkeypatch, tmp_data):
 
 
 def test_c1_env_wins(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_credential_resolution
+    from vezir.doctor import _check_credential_resolution, _Results
 
     monkeypatch.setenv("VEZIR_URL", "https://env.example")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_test123456789012345678901234567890123")
@@ -66,8 +66,8 @@ def test_c1_env_wins(monkeypatch, tmp_data):
 
 
 def test_c1_teams_json_wins_over_client(monkeypatch, tmp_data):
-    from vezir.client.config import teams_config_path, client_config_path
-    from vezir.doctor import _Results, _check_credential_resolution
+    from vezir.client.config import client_config_path, teams_config_path
+    from vezir.doctor import _check_credential_resolution, _Results
 
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
@@ -89,7 +89,7 @@ def test_c1_teams_json_wins_over_client(monkeypatch, tmp_data):
 
 def test_c1_url_disagreement_env_vs_teams(monkeypatch, tmp_data):
     from vezir.client.config import teams_config_path
-    from vezir.doctor import _Results, _check_credential_resolution
+    from vezir.doctor import _check_credential_resolution, _Results
 
     monkeypatch.setenv("VEZIR_URL", "https://env.example")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_env12345678901234567890123456789012x")
@@ -108,7 +108,7 @@ def test_c1_url_disagreement_env_vs_teams(monkeypatch, tmp_data):
 
 
 def test_c3_teams_json_missing(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_teams_json_schema
+    from vezir.doctor import _check_teams_json_schema, _Results
 
     r = _Results()
     _check_teams_json_schema(r)
@@ -118,7 +118,7 @@ def test_c3_teams_json_missing(monkeypatch, tmp_data):
 
 def test_c3_teams_json_orphaned_active(monkeypatch, tmp_data):
     from vezir.client.config import teams_config_path
-    from vezir.doctor import _Results, _check_teams_json_schema
+    from vezir.doctor import _check_teams_json_schema, _Results
 
     _write_json(teams_config_path(), {
         "teams": [{"id": "blink", "url": "u", "token": "t"}],
@@ -132,7 +132,7 @@ def test_c3_teams_json_orphaned_active(monkeypatch, tmp_data):
 
 def test_c3_teams_json_dropped_entries(monkeypatch, tmp_data):
     from vezir.client.config import teams_config_path
-    from vezir.doctor import _Results, _check_teams_json_schema
+    from vezir.doctor import _check_teams_json_schema, _Results
 
     _write_json(teams_config_path(), {
         "teams": [
@@ -150,7 +150,7 @@ def test_c3_teams_json_dropped_entries(monkeypatch, tmp_data):
 
 def test_c3_teams_json_invalid_json(monkeypatch, tmp_data):
     from vezir.client.config import teams_config_path
-    from vezir.doctor import _Results, _check_teams_json_schema
+    from vezir.doctor import _check_teams_json_schema, _Results
 
     teams_config_path().parent.mkdir(parents=True, exist_ok=True)
     teams_config_path().write_text("{invalid", encoding="utf-8")
@@ -164,7 +164,7 @@ def test_c3_teams_json_invalid_json(monkeypatch, tmp_data):
 
 
 def test_c5_valid_token(tmp_data):
-    from vezir.doctor import _Results, _check_token_format
+    from vezir.doctor import _check_token_format, _Results
 
     r = _Results()
     # 47 chars: "vzr_" (4) + 43 chars of urlsafe base64
@@ -173,7 +173,7 @@ def test_c5_valid_token(tmp_data):
 
 
 def test_c5_nvpn_invite(tmp_data):
-    from vezir.doctor import _Results, _check_token_format
+    from vezir.doctor import _check_token_format, _Results
 
     r = _Results()
     _check_token_format(r, "nvpn://invite/...")
@@ -182,7 +182,7 @@ def test_c5_nvpn_invite(tmp_data):
 
 
 def test_c5_wrong_prefix(tmp_data):
-    from vezir.doctor import _Results, _check_token_format
+    from vezir.doctor import _check_token_format, _Results
 
     r = _Results()
     _check_token_format(r, "abc_1234567890")
@@ -190,7 +190,7 @@ def test_c5_wrong_prefix(tmp_data):
 
 
 def test_c5_wrong_length(tmp_data):
-    from vezir.doctor import _Results, _check_token_format
+    from vezir.doctor import _check_token_format, _Results
 
     r = _Results()
     _check_token_format(r, "vzr_tooshort")
@@ -201,7 +201,7 @@ def test_c5_wrong_length(tmp_data):
 
 
 def test_c6_https_no_cert(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_ssl_cert
+    from vezir.doctor import _check_ssl_cert, _Results
 
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
@@ -211,7 +211,7 @@ def test_c6_https_no_cert(monkeypatch, tmp_data):
 
 
 def test_c6_http_url_no_check(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_ssl_cert
+    from vezir.doctor import _check_ssl_cert, _Results
 
     r = _Results()
     _check_ssl_cert(r, "http://localhost:8000")
@@ -219,7 +219,7 @@ def test_c6_http_url_no_check(monkeypatch, tmp_data):
 
 
 def test_c6_cert_file_exists(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_ssl_cert
+    from vezir.doctor import _check_ssl_cert, _Results
 
     cert = tmp_data / "cert.pem"
     cert.write_text("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
@@ -231,7 +231,7 @@ def test_c6_cert_file_exists(monkeypatch, tmp_data):
 
 
 def test_c6_cert_file_missing(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_ssl_cert
+    from vezir.doctor import _check_ssl_cert, _Results
 
     monkeypatch.setenv("SSL_CERT_FILE", "/tmp/nonexistent.pem")
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
@@ -245,7 +245,7 @@ def test_c6_cert_file_missing(monkeypatch, tmp_data):
 
 
 def test_c7_file_perms_ok(tmp_data):
-    from vezir.doctor import _Results, _check_file_perms
+    from vezir.doctor import _check_file_perms, _Results
 
     f = tmp_data / "private.json"
     f.write_text("{}")
@@ -256,7 +256,7 @@ def test_c7_file_perms_ok(tmp_data):
 
 
 def test_c7_file_perms_wrong(tmp_data):
-    from vezir.doctor import _Results, _check_file_perms
+    from vezir.doctor import _check_file_perms, _Results
 
     f = tmp_data / "world.json"
     f.write_text("{}")
@@ -270,7 +270,7 @@ def test_c7_file_perms_wrong(tmp_data):
 
 
 def test_c10_no_deprecated(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_deprecated_env_vars
+    from vezir.doctor import _check_deprecated_env_vars, _Results
 
     for var in ("VEZIR_MEET_BIN", "VEZIR_MEET_DEVICE"):
         monkeypatch.delenv(var, raising=False)
@@ -280,7 +280,7 @@ def test_c10_no_deprecated(monkeypatch, tmp_data):
 
 
 def test_c10_deprecated_present(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_deprecated_env_vars
+    from vezir.doctor import _check_deprecated_env_vars, _Results
 
     monkeypatch.setenv("VEZIR_MEET_BIN", "/usr/bin/millet")
     r = _Results()
@@ -293,7 +293,7 @@ def test_c10_deprecated_present(monkeypatch, tmp_data):
 
 
 def test_s1_orphaned_tokens(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_tokens_json
+    from vezir.doctor import _check_tokens_json, _Results
 
     _write_json(tmp_data / "tokens.json", {"tokens": [
         {"github": "alice", "token_hash": "abc", "team_id": "blink",
@@ -309,7 +309,7 @@ def test_s1_orphaned_tokens(monkeypatch, tmp_data):
 
 
 def test_s2_expired_tokens(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_tokens_json
+    from vezir.doctor import _check_tokens_json, _Results
 
     _write_json(tmp_data / "tokens.json", {"tokens": [
         {"github": "alice", "token_hash": "abc", "team_id": "blink",
@@ -325,7 +325,7 @@ def test_s2_expired_tokens(monkeypatch, tmp_data):
 
 
 def test_s12_clean_tokens(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_tokens_json
+    from vezir.doctor import _check_tokens_json, _Results
 
     _write_json(tmp_data / "tokens.json", {"tokens": [
         {"github": "alice", "token_hash": "abc", "team_id": "blink",
@@ -343,7 +343,8 @@ def test_s12_clean_tokens(monkeypatch, tmp_data):
 
 def test_s4_migrations_applied(monkeypatch, tmp_data):
     import sqlite3
-    from vezir.doctor import _Results, _check_migrations
+
+    from vezir.doctor import _check_migrations, _Results
 
     db_path = tmp_data / "vezir.sqlite"
     conn = sqlite3.connect(str(db_path))
@@ -370,7 +371,8 @@ def test_s4_migrations_applied(monkeypatch, tmp_data):
 
 def test_s4_migration_missing(monkeypatch, tmp_data):
     import sqlite3
-    from vezir.doctor import _Results, _check_migrations
+
+    from vezir.doctor import _check_migrations, _Results
 
     db_path = tmp_data / "vezir.sqlite"
     conn = sqlite3.connect(str(db_path))
@@ -395,7 +397,7 @@ def test_s4_migration_missing(monkeypatch, tmp_data):
 
 
 def test_s5_millet_found(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_millet_binary
+    from vezir.doctor import _check_millet_binary, _Results
 
     monkeypatch.setattr("vezir.config.meet_binary", lambda: "/usr/bin/millet")
     r = _Results()
@@ -405,7 +407,7 @@ def test_s5_millet_found(monkeypatch, tmp_data):
 
 
 def test_s5_millet_not_found(monkeypatch, tmp_data):
-    from vezir.doctor import _Results, _check_millet_binary
+    from vezir.doctor import _check_millet_binary, _Results
 
     def _raise():
         raise RuntimeError("not found")
@@ -422,7 +424,8 @@ def test_s5_millet_not_found(monkeypatch, tmp_data):
 def test_s7_stale_job_detected(monkeypatch, tmp_data):
     import sqlite3
     import time
-    from vezir.doctor import _Results, _check_stale_jobs
+
+    from vezir.doctor import _check_stale_jobs, _Results
 
     db_path = tmp_data / "vezir.sqlite"
     conn = sqlite3.connect(str(db_path))
@@ -450,7 +453,8 @@ def test_s7_stale_job_detected(monkeypatch, tmp_data):
 def test_s7_no_stale_jobs(monkeypatch, tmp_data):
     import sqlite3
     import time
-    from vezir.doctor import _Results, _check_stale_jobs
+
+    from vezir.doctor import _check_stale_jobs, _Results
 
     db_path = tmp_data / "vezir.sqlite"
     conn = sqlite3.connect(str(db_path))

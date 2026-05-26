@@ -17,7 +17,10 @@ def test_meet_binary_prefers_active_python_scripts_dir(monkeypatch, tmp_path):
     meet.chmod(0o755)
 
     monkeypatch.delenv("VEZIR_MILLET_BIN", raising=False)
-    monkeypatch.setattr(config.sysconfig, "get_path", lambda name: str(scripts_dir) if name == "scripts" else None)
+    monkeypatch.setattr(
+        config.sysconfig, "get_path",
+        lambda name: str(scripts_dir) if name == "scripts" else None,
+    )
     monkeypatch.setattr(config.shutil, "which", lambda name: None)
 
     assert config.meet_binary() == str(meet)

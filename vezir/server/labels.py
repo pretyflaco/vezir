@@ -224,8 +224,8 @@ def _apply_and_finalize(
         )
 
         try:
+            from millet.label import _detect_speaker_channels, _load_transcript
             from millet.voiceprint import update_profiles_from_confirmed_labels
-            from millet.label import _load_transcript, _detect_speaker_channels
 
             sdir = _session_dir(session_id)
             wav_path = _find_wav(sdir)
@@ -326,7 +326,7 @@ def api_label_get(
     session_id: str,
     auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
-    github, team_id, _admin = auth_triple
+    _github, team_id, _admin = auth_triple
     """Return the speaker list and team handles for native-client labeling.
 
     Response:

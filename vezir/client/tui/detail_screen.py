@@ -27,7 +27,13 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
-    Button, DataTable, Footer, Header, Label, Select, Static,
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Label,
+    Select,
+    Static,
 )
 
 from ..api import Session

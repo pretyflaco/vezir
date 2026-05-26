@@ -17,8 +17,6 @@ verify the dispatch and contract.
 from __future__ import annotations
 
 
-
-
 def test_library_path_returns_none_when_extra_args_present(monkeypatch, tmp_path):
     from vezir.client import scribe
     # Even if meet_record is importable, the presence of extras forces
@@ -29,8 +27,9 @@ def test_library_path_returns_none_when_extra_args_present(monkeypatch, tmp_path
 
 def test_library_path_returns_none_when_meet_record_missing(monkeypatch, tmp_path):
     """Simulate a deployment where millet-record is not installed."""
-    from vezir.client import scribe
     import builtins
+
+    from vezir.client import scribe
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):

@@ -119,8 +119,8 @@ def test_delete_team_refuses_when_tokens_exist(tmp_data):
 
 
 def test_delete_team_cascade_with_reassign(tmp_data):
-    from vezir.server import auth, queue
     from vezir import config
+    from vezir.server import auth, queue
 
     queue.create_team("blink", "Blink")
     queue.create_team("twentyone", "Twentyone")
@@ -254,6 +254,7 @@ def test_cli_team_delete_with_reassign(tmp_data):
 @pytest.fixture
 def client(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
     return TestClient(create_app(), follow_redirects=False)
 

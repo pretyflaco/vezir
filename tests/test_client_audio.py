@@ -5,7 +5,6 @@ doesn't require ffplay or notify-send on the test runner.
 """
 from __future__ import annotations
 
-
 import pytest
 
 

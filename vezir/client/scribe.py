@@ -180,7 +180,7 @@ def _record_via_library(
         )
         return None
     try:
-        from millet_record.capture import create_session, check_prerequisites
+        from millet_record.capture import check_prerequisites, create_session
     except ImportError as exc:
         log.debug("meet_record not importable (%s); using subprocess", exc)
         return None
@@ -237,7 +237,7 @@ def _record_via_library(
     return out
 
 
-def _pause_keystroke_loop(session, stop_event: "threading.Event") -> None:
+def _pause_keystroke_loop(session, stop_event: threading.Event) -> None:
     """Read single-character keystrokes from stdin and toggle pause.
 
     Skipped silently when stdin is not a TTY (piped, no controlling

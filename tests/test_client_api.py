@@ -13,7 +13,6 @@ Two layers:
 """
 from __future__ import annotations
 
-
 import httpx
 import pytest
 
@@ -23,7 +22,6 @@ from vezir.client.api import (
     Session,
     VezirClient,
 )
-
 
 # ─── Result-tag plumbing ─────────────────────────────────────────────────────
 
@@ -425,6 +423,7 @@ def live_server(monkeypatch):
     monkeypatch.setenv("VEZIR_DATA", tdir.name)
 
     from fastapi.testclient import TestClient
+
     from vezir.server import auth, web_sessions
     from vezir.server.app import create_app
 

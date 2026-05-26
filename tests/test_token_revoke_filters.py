@@ -27,7 +27,8 @@ def _seed_three_handles(tmp_data: Path) -> dict:
     Returns a dict mapping a friendly key to the plaintext token so each
     test can grab the one it cares about.
     """
-    from vezir.server import auth, queue as _queue
+    from vezir.server import auth
+    from vezir.server import queue as _queue
 
     # Need teams to exist before we can issue.
     _queue.create_team("blink", "Blink")

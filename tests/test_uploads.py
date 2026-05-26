@@ -20,6 +20,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client_and_token(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server import auth
     from vezir.server.app import create_app
 
@@ -135,6 +136,7 @@ def test_upload_rejects_incomplete_body_by_expected_size(client_and_token):
 
 def test_cli_upload_existing_file(monkeypatch, tmp_path):
     from click.testing import CliRunner
+
     from vezir import cli
     from vezir.client import uploader
 
@@ -179,6 +181,7 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
 
 def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
     from click.testing import CliRunner
+
     from vezir import cli
     from vezir.client import uploader
 

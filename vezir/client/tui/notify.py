@@ -49,7 +49,7 @@ class LabelingState:
     seen_needs_labeling: set[str]
 
     @classmethod
-    def new(cls) -> "LabelingState":
+    def new(cls) -> LabelingState:
         return cls(seen_needs_labeling=set())
 
 

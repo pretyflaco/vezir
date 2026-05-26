@@ -74,15 +74,15 @@ class ApiResult:
     network_error: Exception | None = None
 
     @classmethod
-    def success(cls, data: Any) -> "ApiResult":
+    def success(cls, data: Any) -> ApiResult:
         return cls(ok=data)
 
     @classmethod
-    def http(cls, code: int, message: str) -> "ApiResult":
+    def http(cls, code: int, message: str) -> ApiResult:
         return cls(http_error=(code, message))
 
     @classmethod
-    def network(cls, exc: Exception) -> "ApiResult":
+    def network(cls, exc: Exception) -> ApiResult:
         return cls(network_error=exc)
 
     def __bool__(self) -> bool:  # truthiness == success
@@ -140,7 +140,7 @@ class Session:
     artifacts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Session":
+    def from_dict(cls, d: dict) -> Session:
         # The server returns artifacts as a JSON string in /api/sessions
         # (legacy compatibility with the HTML dashboard) and as a dict in
         # /api/sessions/{id} since 0.1.12.  Normalize both.
@@ -190,7 +190,7 @@ class LabelInfo:
     audio_available: bool
 
     @classmethod
-    def from_dict(cls, d: dict) -> "LabelInfo":
+    def from_dict(cls, d: dict) -> LabelInfo:
         return cls(
             session_id=d.get("session_id", ""),
             status=d.get("status", ""),

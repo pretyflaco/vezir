@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ── /api/me ─────────────────────────────────────────────────────────────────
 
 
@@ -23,6 +22,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client_factory(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
 
     def _make():
@@ -141,7 +141,9 @@ def test_add_with_activate_overrides(tmp_home):
 
 def test_set_active_team(tmp_home):
     from vezir.client.config import (
-        add_team_credentials, load_teams_config, set_active_team,
+        add_team_credentials,
+        load_teams_config,
+        set_active_team,
     )
     add_team_credentials("blink", "https://m/", "vzr_b")
     add_team_credentials("twentyone", "https://m/", "vzr_t")
@@ -159,7 +161,9 @@ def test_set_active_team_unknown_raises(tmp_home):
 
 def test_remove_team_credentials(tmp_home):
     from vezir.client.config import (
-        add_team_credentials, load_teams_config, remove_team_credentials,
+        add_team_credentials,
+        load_teams_config,
+        remove_team_credentials,
     )
     add_team_credentials("blink", "https://m/", "vzr_b")
     add_team_credentials("twentyone", "https://m/", "vzr_t")
@@ -173,7 +177,9 @@ def test_remove_team_credentials(tmp_home):
 
 def test_remove_team_empties_active_when_last_removed(tmp_home):
     from vezir.client.config import (
-        add_team_credentials, load_teams_config, remove_team_credentials,
+        add_team_credentials,
+        load_teams_config,
+        remove_team_credentials,
     )
     add_team_credentials("blink", "https://m/", "vzr_b")
     remove_team_credentials("blink")

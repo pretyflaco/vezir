@@ -110,7 +110,7 @@ class SessionsBody(Vertical):
         self._row_index: dict[str, Session] = {}
 
     @classmethod
-    def body_widget(cls) -> "SessionsBody":
+    def body_widget(cls) -> SessionsBody:
         return cls()
 
     def compose(self) -> ComposeResult:
@@ -286,7 +286,7 @@ class SessionsBody(Vertical):
 
     @work(thread=True, exclusive=True, group="session-pull")
     def _pull_and_open(self, session_id: str) -> None:
-        from ..pull import pull_team_sessions, find_local_session_dir
+        from ..pull import find_local_session_dir, pull_team_sessions
         try:
             pull_team_sessions(self.app.api, session_id=session_id)
         except Exception:
@@ -321,7 +321,7 @@ class SessionsBody(Vertical):
 
     @work(thread=True, exclusive=True, group="session-pull")
     def _pull_and_notify(self, session_id: str) -> None:
-        from ..pull import pull_team_sessions, find_local_session_dir
+        from ..pull import find_local_session_dir, pull_team_sessions
         try:
             pull_team_sessions(self.app.api, session_id=session_id)
         except Exception:

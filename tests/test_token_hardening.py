@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ── fixtures ────────────────────────────────────────────────────────────────
 
 
@@ -32,6 +31,7 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def client_factory(tmp_data):
     from fastapi.testclient import TestClient
+
     from vezir.server.app import create_app
 
     def _make() -> TestClient:
@@ -59,8 +59,9 @@ def _tiny_wav_bytes() -> bytes:
 
 
 def test_issue_records_new_fields(tmp_data):
-    from vezir.server import auth
     import json
+
+    from vezir.server import auth
 
     auth.issue("alice", expires_in_seconds=3600, is_admin=True, label="laptop")
     rows = json.loads((tmp_data / "tokens.json").read_text())["tokens"]
@@ -117,8 +118,9 @@ def test_legacy_row_without_expires_at_still_works(tmp_data):
     safety: we must not log everyone out on first server restart after
     upgrade.
     """
-    from vezir.server import auth
     import json
+
+    from vezir.server import auth
 
     tok = auth.issue("alice")
     p = tmp_data / "tokens.json"
@@ -134,8 +136,9 @@ def test_legacy_row_without_expires_at_still_works(tmp_data):
 
 
 def test_last_used_at_updates_on_success(tmp_data):
-    from vezir.server import auth
     import json
+
+    from vezir.server import auth
 
     tok = auth.issue("alice")
     p = tmp_data / "tokens.json"
@@ -147,8 +150,9 @@ def test_last_used_at_updates_on_success(tmp_data):
 
 def test_last_used_at_is_debounced(tmp_data, monkeypatch):
     """Two consecutive lookups should not write twice."""
-    from vezir.server import auth
     import json
+
+    from vezir.server import auth
 
     tok = auth.issue("alice")
     auth.lookup(tok)

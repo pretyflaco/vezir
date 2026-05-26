@@ -7,7 +7,6 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static
 
-
 _HELP_TEXT = """\
 [b]vezir TUI -- keyboard shortcuts[/b]
 

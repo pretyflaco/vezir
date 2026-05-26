@@ -366,7 +366,7 @@ async def test_detail_screen_renders_without_crash(app, mock_server, monkeypatch
         # Worker runs in a thread (textual @work(thread=True)).  Poll the
         # rendered meta block until the loading placeholder is replaced
         # with the loaded title -- up to 2 seconds total.
-        from textual.widgets import Static, DataTable
+        from textual.widgets import DataTable, Static
         meta = app.screen.query_one("#meta", Static)
         for _ in range(20):
             await pilot.pause(0.1)
@@ -450,8 +450,9 @@ async def test_label_screen_inputs_have_visible_text_area(
         "audio_available": True,
     }
     async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Button, Input
+
         from vezir.client.tui.label_screen import LabelScreen
-        from textual.widgets import Input, Button
         await app.push_screen(LabelScreen(session_id="01LABEL2"))
         # Poll until the speaker row mounts (worker thread).
         for _ in range(20):
@@ -688,6 +689,7 @@ async def test_binary_artifact_does_not_block_event_loop(
 
     # Make the artifact endpoint return a small PDF-like blob.
     import httpx
+
     import vezir.client.api as api_mod
     orig_factory = api_mod.httpx.Client
     inner_orig = api_mod.httpx.Client
@@ -762,7 +764,7 @@ async def test_opener_failed_message_dispatches_to_handler(app, mock_server):
     PR2.  If anyone ever re-prefixes the class with `_`, this test
     fails before the next manual smoke does.
     """
-    from vezir.client.tui.artifact_screen import OpenerLaunched, OpenerFailed
+    from vezir.client.tui.artifact_screen import OpenerFailed, OpenerLaunched
     assert OpenerLaunched.handler_name == "on_opener_launched"
     assert OpenerFailed.handler_name == "on_opener_failed"
 
@@ -1107,8 +1109,9 @@ async def test_label_screen_enter_submits(app, mock_server, monkeypatch):
     monkeypatch.setattr(app.api, "submit_labels", fake_submit)
 
     async with app.run_test(size=(120, 40)) as pilot:
-        from vezir.client.tui.label_screen import LabelScreen
         from textual.widgets import Input
+
+        from vezir.client.tui.label_screen import LabelScreen
         await app.push_screen(LabelScreen(session_id="01ENTER"))
         # Wait for speaker row to mount.
         for _ in range(20):

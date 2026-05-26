@@ -69,7 +69,7 @@ def admin_create_team(
     try:
         queue.validate_team_id(body.id)
     except ValueError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(400, str(exc)) from exc
     try:
         queue.create_team(
             body.id,
@@ -79,7 +79,7 @@ def admin_create_team(
         )
     except ValueError as exc:
         # already exists
-        raise HTTPException(409, str(exc))
+        raise HTTPException(409, str(exc)) from exc
     log.info("created team %r (%s)", body.id, body.name)
     return queue.get_team(body.id)
 
@@ -131,7 +131,7 @@ def admin_update_team(
         if sync_kwargs:
             queue.update_team_sync(team_id, **sync_kwargs)
     except ValueError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(400, str(exc)) from exc
     log.info("updated team %r (fields: %s)", team_id, sorted(fields_set))
     return queue.get_team(team_id)
 
@@ -165,7 +165,7 @@ def admin_delete_team(
     except ValueError as exc:
         # 409: the team exists but the operation can't proceed without
         # explicit operator intent (jobs or tokens still scoped to it).
-        raise HTTPException(409, str(exc))
+        raise HTTPException(409, str(exc)) from exc
     log.info(
         "deleted team %r (reassigned_to=%s, jobs=%s, tokens_revoked=%s)",
         team_id,

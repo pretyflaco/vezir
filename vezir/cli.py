@@ -14,6 +14,14 @@ from . import __version__, config
 @click.version_option(__version__, prog_name="vezir")
 def main():
     """vezir — internal scribe service wrapping millet."""
+    import logging
+    # Ensure client-side loggers (vezir.client.*) have a handler so
+    # warnings/errors are visible.  Server-side code calls
+    # config.configure_logging() in create_app() instead.
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
 
 
 # ── serve ─────────────────────────────────────────────────────────────────────
@@ -78,10 +86,11 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     Any RECORD_ARGS after `--` are forwarded to `millet record`.
     Example: vezir scribe --title standup -- --virtual-sink
     """
-    from .client.scribe import run_scribe
     from .client.config import (
-        load_client_prefs, save_client_prefs,
+        load_client_prefs,
+        save_client_prefs,
     )
+    from .client.scribe import run_scribe
 
     prefs = load_client_prefs()
     if auto_label is None:
@@ -357,19 +366,19 @@ def _parse_duration(s: str) -> int:
     if s[-1] in units:
         try:
             n = int(s[:-1])
-        except ValueError:
+        except ValueError as exc:
             raise click.BadParameter(
                 f"invalid duration {s!r}; use e.g. 30d, 12h, 45m, or 'never'"
-            )
+            ) from exc
         if n < 0:
             raise click.BadParameter("duration must be non-negative")
         return n * units[s[-1]]
     try:
         n = int(s)
-    except ValueError:
+    except ValueError as exc:
         raise click.BadParameter(
             f"invalid duration {s!r}; use e.g. 30d, 12h, 45m, or 'never'"
-        )
+        ) from exc
     if n < 0:
         raise click.BadParameter("duration must be non-negative")
     return n
@@ -928,7 +937,8 @@ def team_delete(team_id, reassign_to, confirm):
     The on-disk ``teams/<id>/`` directory (roster, voiceprints,
     sync_config) is removed too.
     """
-    from .server import queue as _queue, auth as _auth
+    from .server import auth as _auth
+    from .server import queue as _queue
     if _queue.get_team(team_id) is None:
         click.echo(f"error: team {team_id!r} does not exist", err=True)
         sys.exit(2)
