@@ -33,11 +33,14 @@ this when audio_available=False).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger("vezir.client.audio")
@@ -218,3 +221,119 @@ def notify_desktop(title: str, body: str) -> bool:
     except Exception as exc:
         log.debug("notify_desktop failed: %s", exc)
     return False
+
+
+# ─── Real-time audio level metering (v0.7.0+) ────────────────────────────────
+#
+# Shared by TUI, GUI, and scribe-widget for the "spectrometer" waveform
+# display during recording.  Reads raw PCM from the in-progress WAV
+# chunk file that millet-record's ffmpeg writes with -flush_packets 1.
+#
+# Cross-platform contract: the same data format (AudioLevelSample) and
+# signal thresholds are used by vezir-android (Kotlin AudioRecord).
+
+
+@dataclass(slots=True)
+class AudioLevelSample:
+    """A single audio level measurement for both channels.
+
+    Values are 0.0-1.0 normalized.  The cross-platform contract
+    shared with vezir-android.
+    """
+    mic_rms: float = 0.0
+    sys_rms: float = 0.0
+    mic_peak: float = 0.0
+    sys_peak: float = 0.0
+
+
+# Signal detection thresholds (cross-platform, same on Android).
+SIGNAL_MIC_THRESHOLD = 0.005    # ~-46 dBFS; speech is well above
+SIGNAL_SYS_THRESHOLD = 0.001    # system audio is typically louder
+SILENCE_DEBOUNCE_SECS = 3.0     # seconds before declaring "no signal"
+
+# WAV format constants for millet-record's output.
+_WAV_HEADER_BYTES = 44
+_BYTES_PER_STEREO_SAMPLE = 4    # 2ch × 16-bit
+_SAMPLE_RATE = 16000
+_LEVEL_WINDOW_MS = 100          # read last 100ms of audio
+_LEVEL_WINDOW_BYTES = int(
+    _SAMPLE_RATE * _BYTES_PER_STEREO_SAMPLE * _LEVEL_WINDOW_MS / 1000
+)  # 6400 bytes = 1600 stereo samples = 100ms at 16kHz
+
+# Unicode block elements for waveform rendering (9 levels: silence + 8 bars).
+LEVEL_BARS = " ▁▂▃▄▅▆▇█"
+
+
+def read_chunk_levels(chunk_path: "str | Path") -> AudioLevelSample:
+    """Read the last ~100ms of audio from a WAV chunk and compute levels.
+
+    The chunk is a standard WAV (pcm_s16le, 16kHz, stereo) written by
+    millet-record's ffmpeg with ``-flush_packets 1``.  We seek to the
+    tail and parse raw PCM — no numpy needed.
+
+    Safe to call concurrently with ffmpeg writing (append-only file,
+    POSIX read semantics).  Returns a zero-level sample if the file is
+    too small or unreadable.
+
+    Cross-platform: this function works identically on Linux and macOS.
+    On Android, the equivalent computation is done on the raw
+    ``AudioRecord`` buffer in Kotlin.
+    """
+    try:
+        with open(chunk_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size < _WAV_HEADER_BYTES + _BYTES_PER_STEREO_SAMPLE:
+                return AudioLevelSample()
+            read_from = max(_WAV_HEADER_BYTES, size - _LEVEL_WINDOW_BYTES)
+            f.seek(read_from)
+            raw = f.read()
+    except (OSError, IOError):
+        return AudioLevelSample()
+
+    # Align to stereo sample boundary (4 bytes per stereo sample).
+    n_bytes = len(raw) - (len(raw) % _BYTES_PER_STEREO_SAMPLE)
+    if n_bytes < _BYTES_PER_STEREO_SAMPLE:
+        return AudioLevelSample()
+
+    n_samples = n_bytes // 2  # total int16 samples (both channels)
+    try:
+        samples = struct.unpack(f"<{n_samples}h", raw[:n_bytes])
+    except struct.error:
+        return AudioLevelSample()
+
+    # Deinterleave: even indices = mic (L), odd = system (R).
+    mic = samples[0::2]
+    sys_ = samples[1::2]
+
+    if not mic or not sys_:
+        return AudioLevelSample()
+
+    mic_sq_sum = sum(s * s for s in mic)
+    sys_sq_sum = sum(s * s for s in sys_)
+    n = len(mic)
+
+    return AudioLevelSample(
+        mic_rms=math.sqrt(mic_sq_sum / n) / 32768.0,
+        sys_rms=math.sqrt(sys_sq_sum / n) / 32768.0,
+        mic_peak=max(abs(s) for s in mic) / 32768.0,
+        sys_peak=max(abs(s) for s in sys_) / 32768.0,
+    )
+
+
+def render_level_bars(
+    history: "list[float] | tuple[float, ...]",
+    *,
+    scale: float = 80.0,
+) -> str:
+    """Convert a sequence of RMS values (0.0-1.0) to Unicode block bars.
+
+    ``scale`` maps the RMS range to bar height.  Default 80 means an
+    RMS of 0.1 (typical speech) fills the bars to ~full height.
+
+    Returns a string of ``len(history)`` characters from :data:`LEVEL_BARS`.
+    """
+    return "".join(
+        LEVEL_BARS[min(8, int(v * scale))]
+        for v in history
+    )

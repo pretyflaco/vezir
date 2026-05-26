@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -143,6 +144,16 @@ class UploadFailed(Message):
 class ServerStatus(Message):
     status: str
     extra: str = ""
+    gen: int = 0
+
+
+@dataclass
+class AudioLevel(Message):
+    """Real-time audio levels from the recording chunk (v0.7.0+)."""
+    mic_rms: float
+    sys_rms: float
+    mic_peak: float
+    sys_peak: float
     gen: int = 0
 
 
@@ -372,6 +383,11 @@ class RecordBody(Vertical):
         border: round $warning;
     }
 
+    #level-row {
+        height: 1;
+        margin-bottom: 1;
+        color: $text-muted;
+    }
     #status-line {
         height: 1;
         margin-bottom: 1;
@@ -414,6 +430,10 @@ class RecordBody(Vertical):
         # v0.7.0: session generation counter.  Incremented on each
         # _start_recording(); message handlers discard stale messages.
         self._gen: int = 0
+        # v0.7.0: audio level spectrometer state.
+        self._mic_history: deque[float] = deque([0.0] * 8, maxlen=8)
+        self._sys_history: deque[float] = deque([0.0] * 8, maxlen=8)
+        self._silence_since: float = 0.0
 
     @classmethod
     def body_widget(cls) -> "RecordBody":
@@ -447,6 +467,10 @@ class RecordBody(Vertical):
             )
             yield Button("⬆ Upload", id="upload-btn")
 
+        yield Static(
+            "[dim]🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁  ― idle[/]",
+            id="level-row",
+        )
         yield Static(f"Status: {self.status_text}", id="status-line")
         yield Static("", id="error-line", classes="error")
         yield Static(f"v{_vezir_version()}", id="version-line")
@@ -699,11 +723,15 @@ class RecordBody(Vertical):
         # v0.7.0: bump generation so stale messages from the previous
         # session's upload/poll workers are discarded.
         self._gen += 1
+        self._mic_history = deque([0.0] * 8, maxlen=8)
+        self._sys_history = deque([0.0] * 8, maxlen=8)
+        self._silence_since = 0.0
         self.error_text = ""
         self.elapsed_seconds = 0.0
         self.file_bytes = 0
         self.status_text = "starting recorder"
         self._record_worker(self._session, self._gen)
+        self._level_worker(self._session, self._gen)
 
     def _stop_recording(self) -> None:
         if self._session is None:
@@ -758,6 +786,39 @@ class RecordBody(Vertical):
             self.post_message(RecorderFailed(reason=f"stop() raised: {exc}", gen=gen))
             return
         self.post_message(RecorderFinished(audio_path=out, gen=gen))
+
+    # ── audio level spectrometer (v0.7.0+) ──
+
+    @work(thread=True, exclusive=True, group="level")
+    def _level_worker(self, session, gen: int) -> None:
+        """Read audio levels from the recording chunk at ~15 FPS."""
+        from ..audio import read_chunk_levels
+
+        while True:
+            if gen < self._gen:
+                return
+            try:
+                st = session.status()
+            except Exception:
+                return
+            if not st.is_alive and not st.paused:
+                return
+            chunk = getattr(session, "_current_chunk", None)
+            if chunk is None or st.paused:
+                time.sleep(0.066)
+                continue
+            try:
+                lvl = read_chunk_levels(chunk)
+                self.post_message(AudioLevel(
+                    mic_rms=lvl.mic_rms,
+                    sys_rms=lvl.sys_rms,
+                    mic_peak=lvl.mic_peak,
+                    sys_peak=lvl.sys_peak,
+                    gen=gen,
+                ))
+            except Exception:
+                pass
+            time.sleep(0.066)  # ~15 FPS
 
     # ── upload lifecycle ──
 
@@ -917,6 +978,56 @@ class RecordBody(Vertical):
         if message.paused != self.is_paused:
             self.is_paused = message.paused
 
+    def on_audio_level(self, message: AudioLevel) -> None:
+        if message.gen < self._gen:
+            return
+        from ..audio import (
+            SIGNAL_MIC_THRESHOLD,
+            SIGNAL_SYS_THRESHOLD,
+            SILENCE_DEBOUNCE_SECS,
+            render_level_bars,
+        )
+
+        self._mic_history.append(message.mic_rms)
+        self._sys_history.append(message.sys_rms)
+
+        mic_bars = render_level_bars(self._mic_history)
+        sys_bars = render_level_bars(self._sys_history)
+
+        has_mic = message.mic_rms > SIGNAL_MIC_THRESHOLD
+        has_sys = message.sys_rms > SIGNAL_SYS_THRESHOLD
+        now = time.time()
+
+        if has_mic or has_sys:
+            self._silence_since = 0.0
+
+        if has_mic and has_sys:
+            signal = "[green]✓ signal[/]"
+        elif has_mic:
+            signal = "[green]✓ mic[/]  [yellow]⚠ no system audio[/]"
+        elif has_sys:
+            signal = "[green]✓ system[/]  [yellow]⚠ no mic[/]"
+        else:
+            if self._silence_since == 0.0:
+                self._silence_since = now
+            if now - self._silence_since >= SILENCE_DEBOUNCE_SECS:
+                signal = "[red]✗ no signal[/]"
+            else:
+                signal = "[dim]…[/]"
+
+        mic_color = "green" if has_mic else ("red" if self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS else "dim")
+        sys_color = "green" if has_sys else ("red" if self._silence_since and now - self._silence_since >= SILENCE_DEBOUNCE_SECS else "dim")
+
+        text = (
+            f"[{mic_color}]🎤 {mic_bars}[/]  "
+            f"[{sys_color}]🔊 {sys_bars}[/]  "
+            f"{signal}"
+        )
+        try:
+            self.query_one("#level-row", Static).update(text)
+        except Exception:
+            pass
+
     def on_recorder_failed(self, message: RecorderFailed) -> None:
         if message.gen < self._gen:
             return
@@ -943,6 +1054,13 @@ class RecordBody(Vertical):
             pass  # non-fatal; use original path
         self._last_audio_path = audio_path
         self._session = None  # release reference
+        # Reset level display to idle.
+        try:
+            self.query_one("#level-row", Static).update(
+                "[dim]🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁  ― idle[/]"
+            )
+        except Exception:
+            pass
         # (Upload button no longer toggles on/off based on _last_audio_path
         # in v0.5.0+; it's always enabled and opens the Import picker.
         # Auto-upload of the just-finished recording still happens below.)

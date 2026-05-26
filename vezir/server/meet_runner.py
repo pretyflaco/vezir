@@ -400,31 +400,46 @@ def _meeting_type_for(session_id: str, base: str = "sandbox") -> str:
 def sync(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:
     """Push session to the team's configured millet sync target.
 
-    v0.6.2+: ``team_id`` is required.  The meeting-type prefix comes
-    from the team row's ``sync_meeting_type`` (set via
-    ``vezir team set-sync --meeting-type ...``), falling back to the
-    legacy ``VEZIR_SYNC_MEETING_TYPE`` env var (deprecated; removed in
-    v0.7.0) and finally to ``'sandbox'``.
+    v0.7.0 hybrid approach (Option C):
 
-    The sync remote itself is wired through the HOME shim — see
-    :func:`_resolve_team_sync_config`.  This call only constructs the
-    millet CLI invocation; the shim handles where the bits actually go.
+    1. **Try schedule-matched sync** — invoke ``millet sync`` without
+       ``--force`` and without ``--meeting-type``.  If the session time
+       matches a configured meeting schedule in the team's
+       ``sync_config.json``, millet produces a clean folder name that
+       matches the established repo convention (e.g.
+       ``2026-05-26_dev-standup-daily``).
 
-    During the sandbox phase, vezir uses --force with a per-session
-    meeting type derived from the session ULID, so each session gets a
-    unique folder under `meetings/` regardless of when it was recorded.
-    This bypasses the schedule + team-presence gating that the millet
-    CLI applies for the personal flow.
+    2. **If no schedule match** — retry with ``--force`` using a
+       title-based folder name derived from the session title (e.g.
+       ``board-meeting-160000Z-GVXGJ0``).  Falls back to the team's
+       ``sync_meeting_type`` column (default ``meeting``) for untitled
+       sessions.
 
-    Resulting layout in the sync repo:
-        meetings/{date}_{base}-{HHMMSSZ}-{id8}/
-            summary.md
-            transcript.{txt,srt,json,pdf}
+    The sync remote is wired through the HOME shim — see
+    :func:`_resolve_team_sync_config`.
     """
-    base = _meeting_type_base_for_team(team_id)
-    # Ensure millet can extract the meeting date from the session.
     ensure_session_json(session_dir, job_id)
+
+    # Step 1: try schedule-matched sync.
+    rc1 = run_meet(
+        ["sync", str(session_dir)],
+        job_id=job_id,
+        team_id=team_id,
+        log_path=log_path,
+    )
+    if rc1 == 0 and _sync_log_shows_push(log_path):
+        log.info("job %s: schedule-matched sync succeeded", job_id)
+        return 0
+
+    # Step 2: no schedule match (or failed).  Retry with title-based name.
+    title = _get_job_title(job_id)
+    base = _title_slug_for_sync(title) or _meeting_type_base_for_team(team_id)
     meeting_type = _meeting_type_for(job_id, base=base)
+    log.info(
+        "job %s: no schedule match; retrying with --force "
+        "--meeting-type %s",
+        job_id, meeting_type,
+    )
     return run_meet(
         [
             "sync",
@@ -438,33 +453,59 @@ def sync(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:
     )
 
 
-def _meeting_type_base_for_team(team_id: str) -> str:
-    """Pick the meeting-type prefix for a team.
+def _sync_log_shows_push(log_path: Path) -> bool:
+    """Return True if the last ``millet sync`` block shows files were pushed.
 
-    Precedence (v0.6.2+):
-
-    1. ``team.sync_meeting_type`` column (set via
-       ``vezir team set-sync --meeting-type ...``).
-    2. Legacy ``VEZIR_SYNC_MEETING_TYPE`` env var (deprecated;
-       kept as a back-compat fallback so existing muscle installs
-       don't need a config edit).  Removed in v0.7.0.
-    3. ``'sandbox'``.
+    Scans for positive confirmation markers ("Pushed", "Done:") after the
+    last ``millet sync`` line.  Returns False if the log contains "Skipped"
+    or no push markers are found.
     """
-    # Local import: queue.py imports config, which is fine, but
-    # importing queue from meet_runner top-level would create a cycle
-    # via app.py's import graph in some launch configurations.
+    if not log_path or not log_path.exists():
+        return False
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    # Find last sync block.
+    idx = text.rfind("millet sync")
+    tail = text[idx:] if idx >= 0 else ""
+    if not tail:
+        return False
+    # "Skipped" means no schedule match — not a push.
+    if "Skipped:" in tail:
+        return False
+    # Positive markers from millet's sync CLI output.
+    return "Pushed" in tail or "Done:" in tail
+
+
+def _get_job_title(job_id: str) -> str | None:
+    """Fetch the session title from the job queue."""
+    from . import queue as _queue
+    job = _queue.get(job_id)
+    if not job:
+        return None
+    return (job.get("title") or "").strip() or None
+
+
+def _title_slug_for_sync(title: str | None) -> str | None:
+    """Convert a session title to a sync-folder slug, or None if empty."""
+    if not title:
+        return None
+    slug = config.sync_slug(title)
+    return slug or None
+
+
+def _meeting_type_base_for_team(team_id: str) -> str:
+    """Fallback meeting-type prefix for untitled, unscheduled sessions.
+
+    Precedence:
+    1. ``team.sync_meeting_type`` column.
+    2. ``'meeting'`` (default).
+    """
     from . import queue as _queue
     team = _queue.get_team(team_id)
     if team:
         mtype = (team.get("sync_meeting_type") or "").strip()
         if mtype:
             return mtype
-    env_base = os.environ.get("VEZIR_SYNC_MEETING_TYPE", "").strip()
-    if env_base:
-        log.info(
-            "sync: falling back to VEZIR_SYNC_MEETING_TYPE=%r (deprecated; "
-            "set team.sync_meeting_type instead)",
-            env_base,
-        )
-        return env_base
-    return "sandbox"
+    return "meeting"

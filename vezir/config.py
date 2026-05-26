@@ -695,6 +695,26 @@ def recordings_dir(team_id: str | None = None) -> Path:
     return root / team_id
 
 
+def sync_slug(title: str) -> str:
+    """Convert a meeting title to a sync-repo-friendly folder slug.
+
+    Matches the established convention in sync target repos:
+    lowercase, hyphens, no special characters.
+
+    >>> sync_slug("Dev Standup")
+    'dev-standup'
+    >>> sync_slug("Board Meeting Q2")
+    'board-meeting-q2'
+    >>> sync_slug("UX Weekly")
+    'ux-weekly'
+    >>> sync_slug("  weekly sync / @team  ")
+    'weekly-sync-team'
+    """
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.strip())
+    slug = slug.strip("-").lower()
+    return slug[:60] if slug else ""
+
+
 def sanitize_title(title: str) -> str:
     """Convert a free-form meeting title into a filesystem-safe slug.
 

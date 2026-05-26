@@ -37,20 +37,17 @@ def tmp_data(monkeypatch):
 # ── meeting-type prefix precedence ──────────────────────────────────────────
 
 
-def test_meeting_type_falls_back_to_env(tmp_data, monkeypatch):
+def test_meeting_type_falls_back_to_default(tmp_data, monkeypatch):
+    """Empty sync_meeting_type falls back to 'meeting' (v0.7.0+)."""
     from vezir.server import meet_runner, queue
     queue.create_team("blink", "Blink", sync_meeting_type="")
-    # An empty string in the team row triggers the env fallback.
-    # Force a row where sync_meeting_type is None (simulating an old
-    # row before the NOT NULL default was added):
     import sqlite3
     from vezir import config
     with sqlite3.connect(str(config.queue_db_path())) as c:
         c.execute(
             "UPDATE teams SET sync_meeting_type = '' WHERE id = 'blink'"
         )
-    monkeypatch.setenv("VEZIR_SYNC_MEETING_TYPE", "from-env")
-    assert meet_runner._meeting_type_base_for_team("blink") == "from-env"
+    assert meet_runner._meeting_type_base_for_team("blink") == "meeting"
 
 
 def test_meeting_type_team_overrides_env(tmp_data, monkeypatch):
@@ -61,7 +58,8 @@ def test_meeting_type_team_overrides_env(tmp_data, monkeypatch):
     assert meet_runner._meeting_type_base_for_team("blink") == "prod"
 
 
-def test_meeting_type_defaults_to_sandbox(tmp_data, monkeypatch):
+def test_meeting_type_defaults_to_meeting(tmp_data, monkeypatch):
+    """No team row at all defaults to 'meeting' (v0.7.0+)."""
     from vezir.server import meet_runner, queue
     queue.create_team("blink", "Blink", sync_meeting_type="")
     import sqlite3
@@ -70,8 +68,7 @@ def test_meeting_type_defaults_to_sandbox(tmp_data, monkeypatch):
         c.execute(
             "UPDATE teams SET sync_meeting_type = '' WHERE id = 'blink'"
         )
-    monkeypatch.delenv("VEZIR_SYNC_MEETING_TYPE", raising=False)
-    assert meet_runner._meeting_type_base_for_team("blink") == "sandbox"
+    assert meet_runner._meeting_type_base_for_team("blink") == "meeting"
 
 
 def test_meeting_type_uses_team_row(tmp_data, monkeypatch):

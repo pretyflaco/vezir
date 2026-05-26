@@ -220,6 +220,15 @@ class ScribeWidget:
         self.timer_lbl = tk.Label(rec, text="00:00:00  0 B", font=("Mono", 11))
         self.timer_lbl.pack(side="left", padx=10)
 
+        # Audio level row (v0.7.0)
+        self.level_lbl = tk.Label(
+            r,
+            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁",
+            fg="#999", font=("Mono", 10), anchor="w",
+        )
+        self.level_lbl.pack(fill="x", padx=8, pady=(0, 4))
+        self._level_timer_id: str | None = None
+
         # Status badge
         status_frame = tk.Frame(r)
         status_frame.pack(fill="x", padx=8, pady=4)
@@ -316,10 +325,12 @@ class ScribeWidget:
         self.rec_btn.configure(text="■ Stop", bg="#f0c0c0")
         self.pause_btn.configure(state="normal", text="⏸ Pause")
         self._set_status("recording")
+        self._start_level_polling()
 
     def _stop_recording(self) -> None:
         if self._session is None:
             return
+        self._stop_level_polling()
         self._set_status("draining (flushing audio buffer)")
         try:
             out = self._session.stop()
@@ -342,6 +353,74 @@ class ScribeWidget:
             return
 
         self._kick_upload(out)
+
+    # ── audio level spectrometer (v0.7.0) ──
+
+    def _start_level_polling(self) -> None:
+        from collections import deque
+        self._mic_hist: deque = deque([0.0] * 8, maxlen=8)
+        self._sys_hist: deque = deque([0.0] * 8, maxlen=8)
+        self._silence_since_w: float = 0.0
+        self._poll_levels_widget()
+
+    def _stop_level_polling(self) -> None:
+        if self._level_timer_id is not None:
+            self.root.after_cancel(self._level_timer_id)
+            self._level_timer_id = None
+        self.level_lbl.configure(
+            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁",
+            fg="#999",
+        )
+
+    def _poll_levels_widget(self) -> None:
+        if self._session is None or self.state.paused:
+            self._level_timer_id = self.root.after(66, self._poll_levels_widget)
+            return
+        from .audio import (
+            read_chunk_levels,
+            render_level_bars,
+            SIGNAL_MIC_THRESHOLD,
+            SIGNAL_SYS_THRESHOLD,
+            SILENCE_DEBOUNCE_SECS,
+        )
+        import time as _t
+
+        chunk = getattr(self._session, "_current_chunk", None)
+        if chunk is not None:
+            lvl = read_chunk_levels(chunk)
+            self._mic_hist.append(lvl.mic_rms)
+            self._sys_hist.append(lvl.sys_rms)
+
+            has_mic = lvl.mic_rms > SIGNAL_MIC_THRESHOLD
+            has_sys = lvl.sys_rms > SIGNAL_SYS_THRESHOLD
+            now = _t.time()
+            if has_mic or has_sys:
+                self._silence_since_w = 0.0
+
+            if has_mic and has_sys:
+                sig = "✓"
+                color = "#117733"
+            elif has_mic or has_sys:
+                sig = "⚠"
+                color = "#aa6600"
+            else:
+                if self._silence_since_w == 0.0:
+                    self._silence_since_w = now
+                if now - self._silence_since_w >= SILENCE_DEBOUNCE_SECS:
+                    sig = "✗"
+                    color = "#c00"
+                else:
+                    sig = "…"
+                    color = "#999"
+
+            mic_bars = render_level_bars(self._mic_hist)
+            sys_bars = render_level_bars(self._sys_hist)
+            self.level_lbl.configure(
+                text=f"🎤 {mic_bars}  🔊 {sys_bars}  {sig}",
+                fg=color,
+            )
+
+        self._level_timer_id = self.root.after(66, self._poll_levels_widget)
 
     def _kick_upload(self, audio_path: Path) -> None:
         self._set_status("uploading")

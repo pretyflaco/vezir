@@ -392,6 +392,16 @@ class ScribeWindow:
         self.timer_lbl = tk.Label(rec_frame, text="00:00:00  0 B", font=("Mono", 11))
         self.timer_lbl.pack(side="left", padx=12)
 
+        # ─── Audio level row (v0.7.0) ──
+        self.level_lbl = tk.Label(
+            root,
+            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁  ― idle",
+            fg="#999", font=("Mono", 10),
+            anchor="w",
+        )
+        self.level_lbl.pack(fill="x", padx=8, pady=(0, 4))
+        self._level_timer_id: str | None = None
+
         # ─── Status row ──────
         status_frame = tk.Frame(root)
         status_frame.pack(fill="x", padx=8, pady=4)
@@ -504,11 +514,14 @@ class ScribeWindow:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        # v0.7.0: start audio level spectrometer.
+        self._start_level_polling()
 
     def _stop_recording(self):
         """Send Ctrl+C to millet record; spawn upload thread once it exits."""
         if not self._proc:
             return
+        self._stop_level_polling()
         self._set_status("draining")
         self.rec_btn.config(state="disabled")
 
@@ -654,6 +667,83 @@ class ScribeWindow:
 
         self._poll_thread = threading.Thread(target=_poll, daemon=True)
         self._poll_thread.start()
+
+    # ── audio level spectrometer (v0.7.0) ──
+
+    def _start_level_polling(self):
+        """Start polling audio levels from the recording chunk at ~15 FPS."""
+        from collections import deque
+        self._mic_history: deque = deque([0.0] * 8, maxlen=8)
+        self._sys_history: deque = deque([0.0] * 8, maxlen=8)
+        self._silence_since_gui: float = 0.0
+        self._poll_levels()
+
+    def _stop_level_polling(self):
+        if self._level_timer_id is not None:
+            self.root.after_cancel(self._level_timer_id)
+            self._level_timer_id = None
+        self.level_lbl.config(
+            text="🎤 ▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁  ― idle",
+            fg="#999",
+        )
+
+    def _poll_levels(self):
+        """Read audio levels and schedule the next poll."""
+        if self.state.status not in ("recording", "draining"):
+            return
+        from .audio import (
+            read_chunk_levels,
+            render_level_bars,
+            SIGNAL_MIC_THRESHOLD,
+            SIGNAL_SYS_THRESHOLD,
+            SILENCE_DEBOUNCE_SECS,
+        )
+        import time as _t
+
+        # Find the current chunk file in the output directory.
+        outdir = _default_output_dir()
+        sdir = self._find_latest_session(outdir, self.state.started_at)
+        if sdir:
+            chunks = sorted(sdir.glob("*.chunk-*.wav"))
+            if chunks:
+                lvl = read_chunk_levels(chunks[-1])
+                self._mic_history.append(lvl.mic_rms)
+                self._sys_history.append(lvl.sys_rms)
+
+                has_mic = lvl.mic_rms > SIGNAL_MIC_THRESHOLD
+                has_sys = lvl.sys_rms > SIGNAL_SYS_THRESHOLD
+                now = _t.time()
+
+                if has_mic or has_sys:
+                    self._silence_since_gui = 0.0
+
+                if has_mic and has_sys:
+                    signal = "✓ signal"
+                    sig_color = "#117733"
+                elif has_mic:
+                    signal = "✓ mic  ⚠ no system"
+                    sig_color = "#aa6600"
+                elif has_sys:
+                    signal = "✓ system  ⚠ no mic"
+                    sig_color = "#aa6600"
+                else:
+                    if self._silence_since_gui == 0.0:
+                        self._silence_since_gui = now
+                    if now - self._silence_since_gui >= SILENCE_DEBOUNCE_SECS:
+                        signal = "✗ no signal"
+                        sig_color = "#c00"
+                    else:
+                        signal = "…"
+                        sig_color = "#999"
+
+                mic_bars = render_level_bars(self._mic_history)
+                sys_bars = render_level_bars(self._sys_history)
+                self.level_lbl.config(
+                    text=f"🎤 {mic_bars}  🔊 {sys_bars}  {signal}",
+                    fg=sig_color,
+                )
+
+        self._level_timer_id = self.root.after(66, self._poll_levels)  # ~15 FPS
 
     # ── artifact download (v0.7.0) ──
 
