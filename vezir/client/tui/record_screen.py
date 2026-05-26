@@ -794,6 +794,21 @@ class RecordBody(Vertical):
         """Read audio levels from the recording chunk at ~15 FPS."""
         from ..audio import read_chunk_levels
 
+        # Wait for session.start() to be called by the parallel
+        # _record_worker.  The level worker may be scheduled first;
+        # without this spin-wait it would see is_alive=False and exit
+        # immediately (the v0.7.0 spectrometer-shows-idle bug).
+        for _ in range(50):  # up to ~3.3 seconds
+            if gen < self._gen:
+                return
+            try:
+                st = session.status()
+                if st.is_alive:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.066)
+
         while True:
             if gen < self._gen:
                 return
