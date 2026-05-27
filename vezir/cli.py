@@ -346,77 +346,36 @@ def _parse_duration(s: str) -> int:
 @token.command("issue")
 @click.option("--github", required=True, help="GitHub handle of the scribe")
 @click.option(
-    "--team", "team_id", default=None,
-    help="Team slug the token belongs to (e.g. 'blink', 'twentyone'). "
-         "Required when more than one team exists; auto-defaults to the "
-         "sole team when only one is configured.",
-)
-@click.option(
     "--expires-in", default=_DEFAULT_TOKEN_LIFETIME, show_default=True,
     help="Token lifetime (e.g. 30d, 12h, 45m, 'never'). Default 90d.",
 )
 @click.option(
     "--admin", "is_admin", is_flag=True, default=False,
-    help="Mark this token as admin-tier (required for /admin/enroll).",
+    help="Mark this token as admin-tier (gates /admin/* routes).",
 )
 @click.option(
     "--label", default=None,
     help="Free-text annotation (e.g. 'android-phone'); shown by `token list`.",
 )
-def token_issue(github, team_id, expires_in, is_admin, label):
-    """Issue a new bearer token. Prints plaintext ONCE; not recoverable."""
-    from .server import auth
-    from .server import queue as _queue
+def token_issue(github, expires_in, is_admin, label):
+    """Issue a new bearer token. Prints plaintext ONCE; not recoverable.
 
-    # v0.6.0: every token must be scoped to a team.  Auto-select when
-    # there's only one; require explicit choice when >1; refuse if zero
-    # (operator must `vezir team create` first).
-    if not team_id:
-        existing_teams = _queue.list_teams()
-        if not existing_teams:
-            click.echo(
-                "error: no teams exist on this server yet. "
-                "Run `vezir team create --id <slug> --name <Name>` first.",
-                err=True,
-            )
-            sys.exit(2)
-        if len(existing_teams) > 1:
-            slugs = ", ".join(t["id"] for t in existing_teams)
-            click.echo(
-                f"error: multiple teams exist; pass --team explicitly. "
-                f"Available: {slugs}",
-                err=True,
-            )
-            sys.exit(2)
-        team_id = existing_teams[0]["id"]
-        click.echo(f"(auto-selected sole team: {team_id})")
-    else:
-        # Validate slug shape + existence.
-        try:
-            _queue.validate_team_id(team_id)
-        except ValueError as exc:
-            click.echo(f"error: {exc}", err=True)
-            sys.exit(2)
-        if _queue.get_team(team_id) is None:
-            click.echo(
-                f"error: team {team_id!r} does not exist. "
-                f"Run `vezir team create --id {team_id} --name ...` first, "
-                "or pick an existing team with `vezir team list`.",
-                err=True,
-            )
-            sys.exit(2)
+    v0.7.0: tokens are no longer team-scoped.  The token identifies a
+    human; per-request the client sends an ``X-Team-Id`` header naming
+    which team to operate on.  The user must already be a member of
+    that team (see ``vezir team add-member``).
+    """
+    from .server import auth
 
     seconds = _parse_duration(expires_in)
     plaintext = auth.issue(
         github,
-        team_id=team_id,
         expires_in_seconds=seconds if seconds > 0 else None,
         is_admin=is_admin,
         label=label,
     )
     click.echo(f"Token issued for github={github}")
     click.echo(f"  VEZIR_TOKEN={plaintext}")
-    click.echo(f"  team:     {team_id}")
     if seconds == 0:
         click.echo("  expires:  never")
     else:
@@ -429,6 +388,13 @@ def token_issue(github, team_id, expires_in, is_admin, label):
         click.echo("  role:     admin (can reach /admin/* routes)")
     if label:
         click.echo(f"  label:    {label}")
+    click.echo()
+    click.echo(
+        "NOTE: this token has no team scope.  The user must be a "
+        "member of every team they want to operate on.  Use "
+        "`vezir team add-member --team <id> --github "
+        f"{github}` to grant access.",
+    )
     click.echo("Hand this to the scribe; it is not recoverable.")
 
 
@@ -450,20 +416,20 @@ def token_issue(github, team_id, expires_in, is_admin, label):
          "Min 4 chars.",
 )
 @click.option(
-    "--team", "team_id", default=None,
-    help="Restrict to tokens scoped to this team slug.",
-)
-@click.option(
     "--yes", "-y", "skip_confirm", is_flag=True, default=False,
     help="Skip the interactive confirmation prompt.",
 )
-def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
-    """Revoke tokens by handle / label / id / team.
+def token_revoke(github, label, token_id_prefix, skip_confirm):
+    """Revoke tokens by handle / label / id.
+
+    v0.7.0: the ``--team`` filter was removed because tokens are no
+    longer team-scoped.  To remove a human's access to a team, use
+    ``vezir team remove-member`` instead.
 
     Examples:
 
       \b
-      # Revoke every token for alice (legacy behavior):
+      # Revoke every token for alice:
       vezir token revoke --github alice
 
       \b
@@ -473,22 +439,13 @@ def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
       \b
       # Revoke a specific token by id when one handle has duplicates:
       vezir token revoke --token-id 9f3b2a1c
-
-      \b
-      # Revoke every twentyone token (e.g. team being decommissioned):
-      vezir token revoke --team twentyone
     """
     from .server import auth
 
-    if (
-        github is None
-        and label is None
-        and token_id_prefix is None
-        and team_id is None
-    ):
+    if github is None and label is None and token_id_prefix is None:
         click.echo(
             "error: at least one filter is required "
-            "(--github / --label / --token-id / --team). "
+            "(--github / --label / --token-id). "
             "Refusing to nuke the entire token store.",
             err=True,
         )
@@ -497,8 +454,6 @@ def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
     try:
         # Dry-run pass first so we can show the operator exactly what
         # would be revoked and prompt before mutating tokens.json.
-        # We achieve this by reading the store, filtering in Python,
-        # then calling the real revoke once confirmed.
         all_rows = auth.list_tokens()
     except Exception as exc:  # pragma: no cover - read failure is unusual
         click.echo(f"error: failed to read tokens.json: {exc}", err=True)
@@ -525,8 +480,6 @@ def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
         if token_id_prefix is not None:
             if not (row.get("token_id") or "").startswith(token_id_prefix):
                 return False
-        if team_id is not None and row.get("team_id") != team_id:
-            return False
         return True
 
     matched = [r for r in all_rows if _matches(r)]
@@ -539,7 +492,6 @@ def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
     for row in matched:
         click.echo(
             f"  github={row.get('github') or '?'}  "
-            f"team={row.get('team_id') or '?'}  "
             f"label={row.get('label') or '-'}  "
             f"id={row.get('token_id') or '?'}  "
             f"issued={row.get('issued_at') or '?'}"
@@ -553,21 +505,15 @@ def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
         github=github,
         label=label,
         token_id_prefix=token_id_prefix,
-        team_id=team_id,
     )
     click.echo(f"Removed {len(removed)} token(s).")
 
 
 @token.command("enroll")
 @click.option("--github", required=True, help="GitHub handle of the scribe")
-@click.option(
-    "--team", "team_id", default=None,
-    help="Team slug the token belongs to.  Required when >1 team exists.",
-)
 @click.option("--server", "server_url", default=None,
               help="Server URL the device should connect to "
-                   "(default $VEZIR_URL or computed). Used only to print "
-                   "a convenience link; the token is also printed for paste.")
+                   "(default $VEZIR_URL or computed).")
 @click.option(
     "--expires-in", default=_DEFAULT_TOKEN_LIFETIME, show_default=True,
     help="Token lifetime (e.g. 30d, 12h, 45m, 'never'). Default 90d.",
@@ -576,84 +522,48 @@ def token_revoke(github, label, token_id_prefix, team_id, skip_confirm):
     "--label", default=None,
     help="Free-text annotation (e.g. 'android-phone').",
 )
-def token_enroll(github, team_id, server_url, expires_in, label):
-    """Issue a token and print enrollment instructions for a mobile device.
+def token_enroll(github, server_url, expires_in, label):
+    """Issue a token and print a terminal QR for a mobile device to scan.
 
-    Convenience wrapper around `vezir token issue` that also prints a
-    pre-filled `/admin/enroll` URL the operator can open in their browser
-    to display a QR code for the Android app to scan.
+    v0.7.0: the HTML enrollment page was removed; this command now
+    renders the QR payload directly in the terminal using half-block
+    characters.  Tokens are no longer team-scoped -- the device sends
+    ``X-Team-Id`` per-request -- so ``--team`` is gone.  The user
+    must already be a member of every team they intend to use; if not,
+    run ``vezir team add-member`` first.
     """
     from .server import auth
-    from .server import queue as _queue
-
-    # Same team-selection rules as `vezir token issue`.
-    if not team_id:
-        existing = _queue.list_teams()
-        if not existing:
-            click.echo(
-                "error: no teams exist on this server yet. "
-                "Run `vezir team create --id <slug> --name <Name>` first.",
-                err=True,
-            )
-            sys.exit(2)
-        if len(existing) > 1:
-            slugs = ", ".join(t["id"] for t in existing)
-            click.echo(
-                f"error: multiple teams exist; pass --team explicitly. "
-                f"Available: {slugs}",
-                err=True,
-            )
-            sys.exit(2)
-        team_id = existing[0]["id"]
-    else:
-        try:
-            _queue.validate_team_id(team_id)
-        except ValueError as exc:
-            click.echo(f"error: {exc}", err=True)
-            sys.exit(2)
-        if _queue.get_team(team_id) is None:
-            click.echo(
-                f"error: team {team_id!r} does not exist.",
-                err=True,
-            )
-            sys.exit(2)
+    from .server.enroll import build_payload, render_qr_terminal
 
     seconds = _parse_duration(expires_in)
     plaintext = auth.issue(
         github,
-        team_id=team_id,
         expires_in_seconds=seconds if seconds > 0 else None,
-        is_admin=False,  # device tokens are scribe-tier; admins re-issue separately
+        is_admin=False,
         label=label,
     )
 
-    # Best-effort server URL: explicit --server, then $VEZIR_URL, falling
-    # back to config.server_url()'s default. Operators can pass --server to
-    # override the default.
+    # Best-effort server URL.  --server wins, then $VEZIR_URL, then
+    # config.server_url()'s default.
     base = (server_url or config.server_url()).rstrip("/")
-    enroll_link = f"{base}/admin/enroll"
+
+    # Build the QR payload (v1 schema; CA cert embedding happens
+    # automatically when VEZIR_CADDY_ROOT_CERT_PATH is set in env).
+    payload = build_payload(base, plaintext)
+    qr_art = render_qr_terminal(payload)
 
     click.echo(f"Token issued for github={github}")
+    click.echo(f"  server:   {base}")
+    if label:
+        click.echo(f"  label:    {label}")
+    click.echo()
+    click.echo("Scan this QR with the Vezir Android app:")
+    click.echo()
+    click.echo(qr_art)
+    click.echo()
     click.echo(f"  VEZIR_TOKEN={plaintext}")
     click.echo()
-    click.echo("To enroll an Android (or other QR-friendly) device:")
-    click.echo(
-        f"  1. Open {enroll_link} in an authenticated browser tab on the "
-        "operator's machine."
-    )
-    click.echo(
-        "  2. Paste the server URL the device should connect to and the "
-        "token above."
-    )
-    click.echo(
-        "  3. Scan the QR with the Vezir Android app, or paste the JSON "
-        "payload manually."
-    )
-    click.echo("  4. Close the tab once enrollment finishes.")
-    click.echo()
-    click.echo(
-        "Avoid putting the token in the URL bar; use the form on the page."
-    )
+    click.echo("(token also printed above for manual entry / desktop joiners)")
     click.echo("This token is not recoverable; revoke and re-issue if lost.")
 
 
@@ -661,30 +571,28 @@ def token_enroll(github, team_id, server_url, expires_in, label):
 @click.option("--dormant", "dormant_days", type=int, default=None,
               help="Only show tokens with no successful use in the last N days.")
 @click.option(
-    "--team", "team_id", default=None,
-    help="Restrict to tokens scoped to this team slug (e.g. 'blink').",
-)
-@click.option(
     "--show-id", is_flag=True, default=False,
     help="Show a per-token id column (first 12 chars of the stored hash) "
          "usable with `vezir token revoke --token-id <prefix>`.",
 )
-def token_list(dormant_days, team_id, show_id):
+def token_list(dormant_days, show_id):
     """List token entries (handles, expiry, last use; never the plaintext).
 
-    Default columns: github, team, role, label, issued, expires,
-    last_used.  With ``--show-id`` an additional ``id`` column appears
-    (a non-secret prefix of the stored hash, safe to copy-paste; this
-    is the value accepted by ``vezir token revoke --token-id``).
+    v0.7.0: the ``team`` column was removed because tokens no longer
+    carry a team scope.  To see who's on each team use
+    ``vezir team members <id>``.
+
+    Default columns: github, role, label, issued, expires, last_used.
+    With ``--show-id`` an additional ``id`` column appears (a non-secret
+    prefix of the stored hash, safe to copy-paste; this is the value
+    accepted by ``vezir token revoke --token-id``).
 
     ``expires`` of ``never`` is a legacy (pre-0.1.12) row or an explicit
     ``--expires-in never`` issue.  ``last_used`` is updated at most once
     per minute per token (debounced) and only reflects successful auth.
 
     With ``--dormant N`` only rows whose ``last_used`` is older than N
-    days (or ``never used``) appear — useful for "who should I rotate?".
-
-    With ``--team <slug>`` only tokens scoped to that team appear.
+    days (or ``never used``) appear -- useful for "who should I rotate?".
     """
     import time as _time
 
@@ -697,12 +605,6 @@ def token_list(dormant_days, team_id, show_id):
     if not rows:
         click.echo("(no tokens issued)")
         return
-
-    if team_id is not None:
-        rows = [r for r in rows if r.get("team_id") == team_id]
-        if not rows:
-            click.echo(f"(no tokens scoped to team {team_id!r})")
-            return
 
     def _age_seconds(ts: str | None) -> float | None:
         if not ts:
@@ -734,31 +636,28 @@ def token_list(dormant_days, team_id, show_id):
         return max([min_w] + [len(s) for s in items])
 
     githubs = [str(r.get("github") or "?") for r in rows]
-    teams = [str(r.get("team_id") or "-") for r in rows]
     labels = [str(r.get("label") or "-") for r in rows]
     roles = ["admin" if r.get("is_admin") else "scribe" for r in rows]
     ids = [str((r.get("token_hash") or "")[:12] or "?") for r in rows]
     g_w = _w(githubs, len("github"))
-    t_w = _w(teams, len("team"))
     l_w = _w(labels, len("label"))
     r_w = _w(roles, len("role"))
     i_w = _w(ids, len("id"))
 
     if show_id:
         click.echo(
-            f"  {'github':<{g_w}}  {'team':<{t_w}}  {'role':<{r_w}}  "
+            f"  {'github':<{g_w}}  {'role':<{r_w}}  "
             f"{'label':<{l_w}}  {'id':<{i_w}}  "
             f"{'issued':<20}  {'expires':<20}  last_used"
         )
     else:
         click.echo(
-            f"  {'github':<{g_w}}  {'team':<{t_w}}  {'role':<{r_w}}  "
+            f"  {'github':<{g_w}}  {'role':<{r_w}}  "
             f"{'label':<{l_w}}  "
             f"{'issued':<20}  {'expires':<20}  last_used"
         )
     for entry in rows:
         github = str(entry.get("github") or "?")
-        team = str(entry.get("team_id") or "-")
         role = "admin" if entry.get("is_admin") else "scribe"
         label = str(entry.get("label") or "-")
         tid = str((entry.get("token_hash") or "")[:12] or "?")
@@ -771,13 +670,13 @@ def token_list(dormant_days, team_id, show_id):
         suffix = "  (expired)" if age is not None and age > 0 else ""
         if show_id:
             click.echo(
-                f"  {github:<{g_w}}  {team:<{t_w}}  {role:<{r_w}}  "
+                f"  {github:<{g_w}}  {role:<{r_w}}  "
                 f"{label:<{l_w}}  {tid:<{i_w}}  "
                 f"{issued:<20}  {expires:<20}  {last_used}{suffix}"
             )
         else:
             click.echo(
-                f"  {github:<{g_w}}  {team:<{t_w}}  {role:<{r_w}}  "
+                f"  {github:<{g_w}}  {role:<{r_w}}  "
                 f"{label:<{l_w}}  "
                 f"{issued:<20}  {expires:<20}  {last_used}{suffix}"
             )
@@ -873,30 +772,28 @@ def team_set_name(team_id, name):
 @click.option("--id", "team_id", required=True, help="Team slug.")
 @click.option(
     "--reassign-to", "reassign_to", default=None,
-    help="If given, jobs are reassigned to this team and tokens are "
-         "revoked.  If omitted, the command refuses when the team has "
-         "any jobs or tokens still scoped to it.",
+    help="If given, jobs are reassigned to this team and memberships "
+         "are dropped.  If omitted, the command refuses when the team "
+         "has any jobs or members still attached.",
 )
 @click.option(
     "--yes", "confirm", is_flag=True, default=False,
     help="Skip the interactive confirmation prompt.",
 )
 def team_delete(team_id, reassign_to, confirm):
-    """Delete a team (v0.6.2+).
+    """Delete a team.
 
     Default policy is refuse-if-not-empty: operator must clean up
-    jobs (``vezir session move``) and tokens (``vezir token revoke``)
-    first, then re-run.  Pass ``--reassign-to <slug>`` to cascade
-    both in one shot.
+    jobs (``vezir session move``) and members (``vezir team
+    remove-member``) first, then re-run.  Pass ``--reassign-to <slug>``
+    to cascade both in one shot.
 
-    Tokens are REVOKED (not migrated) on cascade — the destination
-    team's members are probably different humans, so moving tokens
-    across would be a privilege escalation.
-
-    The on-disk ``teams/<id>/`` directory (roster, voiceprints,
-    sync_config) is removed too.
+    v0.7.0: jobs are REASSIGNED to the destination team; memberships
+    on the deleted team are DROPPED (not migrated -- the destination
+    team's members are governed by its own membership table).  The
+    on-disk ``teams/<id>/`` directory (roster, voiceprints,
+    sync_config) is removed.
     """
-    from .server import auth as _auth
     from .server import queue as _queue
     if _queue.get_team(team_id) is None:
         click.echo(f"error: team {team_id!r} does not exist", err=True)
@@ -906,15 +803,15 @@ def team_delete(team_id, reassign_to, confirm):
     job_rows = [r for r in _queue.list_recent(limit=10_000)
                 if r.get("team_id") == team_id]
     n_jobs = len(job_rows)
-    n_tokens = _auth.count_tokens_for_team(team_id)
+    n_members = len(_queue.get_team_members(team_id))
 
     click.echo(f"Deleting team {team_id!r}:")
-    click.echo(f"  jobs scoped to this team: {n_jobs}")
-    click.echo(f"  tokens scoped to this team: {n_tokens}")
+    click.echo(f"  jobs in this team:    {n_jobs}")
+    click.echo(f"  members of this team: {n_members}")
     if reassign_to:
-        click.echo(f"  on cascade: jobs -> {reassign_to!r}, tokens -> REVOKED")
+        click.echo(f"  on cascade: jobs -> {reassign_to!r}, memberships -> DROPPED")
     else:
-        click.echo("  cascade: NONE (will refuse if any jobs/tokens exist)")
+        click.echo("  cascade: NONE (will refuse if any jobs/members exist)")
 
     if not confirm:
         click.confirm("Proceed?", abort=True)
@@ -926,11 +823,14 @@ def team_delete(team_id, reassign_to, confirm):
         sys.exit(2)
 
     click.echo(f"team {team_id!r} deleted.")
-    click.echo(f"  jobs reassigned: {stats['jobs_reassigned']} "
-               f"(-> {stats['reassigned_to']})"
-               if stats['reassigned_to']
-               else "  jobs reassigned: 0")
-    click.echo(f"  tokens revoked:  {stats['tokens_revoked']}")
+    if stats['reassigned_to']:
+        click.echo(
+            f"  jobs reassigned: {stats['jobs_reassigned']} "
+            f"(-> {stats['reassigned_to']})"
+        )
+    else:
+        click.echo("  jobs reassigned: 0")
+    click.echo(f"  memberships dropped: {stats['members_dropped']}")
     click.echo(f"  on-disk dir removed: {stats['on_disk_removed']}")
 
 
@@ -963,6 +863,87 @@ def team_set_sync(team_id, sync_remote, sync_meeting_type):
     click.echo(f"team updated: id={team_id}")
     click.echo(f"  sync_remote: {row['sync_remote'] or '-'}")
     click.echo(f"  sync_meeting_type: {row['sync_meeting_type']}")
+
+
+# ── memberships (v0.7.0) ─────────────────────────────────────────────────────
+
+
+@team.command("add-member")
+@click.option("--team", "team_id", required=True, help="Team slug.")
+@click.option("--github", required=True, help="GitHub handle to add.")
+@click.option(
+    "--role", default="scribe", show_default=True,
+    type=click.Choice(["admin", "scribe"]),
+    help="Role within this team.  'admin' is per-team; the server-wide "
+         "admin bit lives on the token, not here.",
+)
+def team_add_member(team_id, github, role):
+    """Add a user to a team.
+
+    v0.7.0: replaces the implicit "user is a member of every team
+    they hold a token for".  The user can now be added without ever
+    issuing them a new token -- their existing token will work
+    against this team via ``X-Team-Id``.
+    """
+    from .server import queue as _queue
+    if _queue.get_team(team_id) is None:
+        click.echo(f"error: team {team_id!r} does not exist", err=True)
+        sys.exit(2)
+    try:
+        _queue.add_membership(github, team_id, role=role, added_by="cli")
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"member added: github={github} team={team_id} role={role}",
+    )
+
+
+@team.command("remove-member")
+@click.option("--team", "team_id", required=True, help="Team slug.")
+@click.option("--github", required=True, help="GitHub handle to remove.")
+def team_remove_member(team_id, github):
+    """Remove a user from a team.
+
+    The user's tokens are NOT affected -- they may still be a member
+    of other teams.  Use ``vezir token revoke --github <handle>`` to
+    rotate their tokens too if needed.
+    """
+    from .server import queue as _queue
+    if _queue.get_team(team_id) is None:
+        click.echo(f"error: team {team_id!r} does not exist", err=True)
+        sys.exit(2)
+    removed = _queue.remove_membership(github, team_id)
+    if not removed:
+        click.echo(
+            f"({github!r} is not a member of {team_id!r}; nothing to remove)",
+        )
+        return
+    click.echo(f"member removed: github={github} team={team_id}")
+
+
+@team.command("members")
+@click.argument("team_id")
+def team_members(team_id):
+    """List members of a team with their per-team roles."""
+    from .server import queue as _queue
+    if _queue.get_team(team_id) is None:
+        click.echo(f"error: team {team_id!r} does not exist", err=True)
+        sys.exit(2)
+    members = _queue.get_team_members(team_id)
+    if not members:
+        click.echo(f"(team {team_id!r} has no members)")
+        return
+    g_w = max([len("github")] + [len(m["github"]) for m in members])
+    r_w = max([len("role")] + [len(m["role"]) for m in members])
+    click.echo(
+        f"  {'github':<{g_w}}  {'role':<{r_w}}  added_at              by",
+    )
+    for m in members:
+        click.echo(
+            f"  {m['github']:<{g_w}}  {m['role']:<{r_w}}  "
+            f"{m.get('added_at') or '?':<20}  {m.get('added_by') or '-'}",
+        )
 
 
 # ── team config (v0.6.1: client-side multi-team credentials) ────────────────
