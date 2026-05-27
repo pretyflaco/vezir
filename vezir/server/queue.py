@@ -94,6 +94,24 @@ CREATE TABLE IF NOT EXISTS teams (
     sync_meeting_type   TEXT NOT NULL DEFAULT 'sandbox',
     created_at          TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS memberships (
+    github              TEXT NOT NULL,
+    team_id             TEXT NOT NULL REFERENCES teams(id),
+    role                TEXT NOT NULL DEFAULT 'scribe',
+    added_at            TEXT NOT NULL,
+    added_by            TEXT,
+    PRIMARY KEY (github, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS session_teams (
+    session_id          TEXT NOT NULL REFERENCES jobs(id),
+    team_id             TEXT NOT NULL REFERENCES teams(id),
+    PRIMARY KEY (session_id, team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memberships_team ON memberships(team_id);
+CREATE INDEX IF NOT EXISTS idx_session_teams_team ON session_teams(team_id);
 """
 
 
@@ -633,3 +651,127 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
         "on_disk_removed": on_disk_removed,
         "reassigned_to": reassign_to,
     }
+
+
+# ── memberships (v0.7.0) ──────────────────────────────────────────────────
+
+
+def add_membership(
+    github: str, team_id: str, role: str = "scribe", added_by: str | None = None,
+) -> None:
+    """Add or update a user's membership in a team."""
+    if role not in ("admin", "scribe"):
+        raise ValueError(f"invalid role {role!r}; must be 'admin' or 'scribe'")
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO memberships "
+            "(github, team_id, role, added_at, added_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (github, team_id, role, now, added_by),
+        )
+
+
+def remove_membership(github: str, team_id: str) -> bool:
+    """Remove a user from a team. Returns True if a row was deleted."""
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM memberships WHERE github = ? AND team_id = ?",
+            (github, team_id),
+        )
+        return c.rowcount > 0
+
+
+def get_memberships(github: str) -> list[dict]:
+    """Return all teams a user is a member of, with team name and role."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT m.team_id, m.role, t.name AS team_name "
+            "FROM memberships m JOIN teams t ON m.team_id = t.id "
+            "WHERE m.github = ? ORDER BY m.team_id",
+            (github,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_team_members(team_id: str) -> list[dict]:
+    """Return all members of a team with their roles."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT github, role, added_at, added_by "
+            "FROM memberships WHERE team_id = ? ORDER BY github",
+            (team_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def is_member(github: str, team_id: str) -> bool:
+    """Check if a user is a member of a team."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM memberships WHERE github = ? AND team_id = ?",
+            (github, team_id),
+        ).fetchone()
+        return row is not None
+
+
+def get_role(github: str, team_id: str) -> str | None:
+    """Return the user's role in a team, or None if not a member."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT role FROM memberships WHERE github = ? AND team_id = ?",
+            (github, team_id),
+        ).fetchone()
+        return row["role"] if row else None
+
+
+# ── session_teams (v0.7.0) ────────────────────────────────────────────────
+
+
+def share_session_with_team(session_id: str, team_id: str) -> None:
+    """Make a session visible to a team."""
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO session_teams (session_id, team_id) VALUES (?, ?)",
+            (session_id, team_id),
+        )
+
+
+def unshare_session_from_team(session_id: str, team_id: str) -> None:
+    """Remove a session's visibility from a team."""
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM session_teams WHERE session_id = ? AND team_id = ?",
+            (session_id, team_id),
+        )
+
+
+def get_session_teams(session_id: str) -> list[str]:
+    """Return the list of team IDs a session is shared with."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT team_id FROM session_teams WHERE session_id = ? ORDER BY team_id",
+            (session_id,),
+        ).fetchall()
+        return [r["team_id"] for r in rows]
+
+
+def can_view_session(session_id: str, viewer_team_id: str) -> bool:
+    """Check if a session is visible to a team.
+
+    A session is visible if:
+    1. The session's own team_id matches, OR
+    2. The session is in the session_teams junction table for that team.
+    """
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM jobs WHERE id = ? AND team_id = ?",
+            (session_id, viewer_team_id),
+        ).fetchone()
+        if row:
+            return True
+        row = c.execute(
+            "SELECT 1 FROM session_teams WHERE session_id = ? AND team_id = ?",
+            (session_id, viewer_team_id),
+        ).fetchone()
+        return row is not None
