@@ -464,10 +464,125 @@ def migrate_0_6_2() -> dict:
     return summary
 
 
+# ── v0.7.0: token team_id -> memberships table ─────────────────────────────
+
+
+def _backfill_memberships(conn: sqlite3.Connection) -> dict:
+    """Populate ``memberships`` from each token's ``team_id`` field.
+
+    For every (github, team_id) pair found in ``tokens.json``, insert a
+    row into the ``memberships`` table with role ``scribe`` (or
+    ``admin`` if the token row has ``is_admin=true``).  When the same
+    handle owns multiple tokens for the same team, the highest role
+    wins (admin > scribe).
+
+    The token store is then rewritten with ``team_id`` stripped from
+    every row — v0.7.0 derives team context from an ``X-Team-Id``
+    header validated against the memberships table, not from the token
+    itself.
+
+    Idempotent: if a (github, team_id) row already exists in
+    ``memberships`` it's left alone via ``INSERT OR IGNORE``.  Re-running
+    on an already-stripped tokens.json is a no-op.
+    """
+    p = config.tokens_json_path()
+    if not p.exists():
+        log.info("migration 0.7.0: no tokens.json; nothing to backfill")
+        return {"memberships_added": 0, "tokens_stripped": 0}
+
+    data = json.loads(p.read_text(encoding="utf-8"))
+    tokens = data.get("tokens", [])
+
+    # Aggregate the best role per (github, team_id) before writing.
+    best: dict[tuple[str, str], str] = {}
+    for entry in tokens:
+        gh = entry.get("github") or ""
+        team = entry.get("team_id") or ""
+        if not gh or not team:
+            continue
+        role = "admin" if entry.get("is_admin") else "scribe"
+        key = (gh, team)
+        if best.get(key) == "admin":
+            continue  # already promoted to admin; can't go higher
+        best[key] = role
+
+    added = 0
+    for (gh, team), role in best.items():
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO memberships "
+            "(github, team_id, role, added_at, added_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (gh, team, role, _now(), "migration-0.7.0"),
+        )
+        added += cur.rowcount
+    conn.commit()
+
+    # Strip team_id from every token row.
+    stripped = 0
+    new_tokens: list[dict] = []
+    for entry in tokens:
+        if "team_id" in entry:
+            entry = {k: v for k, v in entry.items() if k != "team_id"}
+            stripped += 1
+        new_tokens.append(entry)
+    if stripped:
+        config.secure_write_text(p, json.dumps({"tokens": new_tokens}, indent=2))
+
+    stats = {
+        "memberships_added": added,
+        "tokens_stripped": stripped,
+        "unique_pairs": len(best),
+    }
+    log.info("migration 0.7.0: memberships backfill stats: %s", stats)
+    return stats
+
+
+def migrate_0_7_0() -> dict:
+    """Apply the v0.7.0 memberships migration.
+
+    Steps (idempotent):
+
+    1. Materialize the v0.7.0 schema (memberships, session_teams).  The
+       queue module's ``SCHEMA_SQL`` includes ``CREATE TABLE IF NOT
+       EXISTS`` for both, so we just run ``executescript`` again.
+    2. For each token row in ``tokens.json``, ensure a corresponding
+       membership exists.  Strip ``team_id`` from every token row.
+
+    Returns a stats dict suitable for the audit log.
+    """
+    version = "0.7.0-memberships"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        c.commit()
+        mem_stats = _backfill_memberships(c)
+
+    _mark_applied(version)
+
+    summary = {"version": version, "memberships": mem_stats}
+
+    log_dir = config.logs_dir()
+    config.secure_mkdir(log_dir)
+    log_file = log_dir / f"migration-{version}.log"
+    config.secure_write_text(
+        log_file,
+        json.dumps(summary, indent=2) + "\n",
+    )
+    log.info("migration %s complete; audit at %s", version, log_file)
+
+    return summary
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
-ALL_MIGRATIONS = [migrate_0_6_0, migrate_0_6_2]
+ALL_MIGRATIONS = [migrate_0_6_0, migrate_0_6_2, migrate_0_7_0]
 
 
 def run_pending_migrations() -> list[dict]:

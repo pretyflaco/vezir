@@ -99,7 +99,7 @@ async def upload(
     sync: str | None = Form(default=None),
     personal: str | None = Form(default=None),
     audio_bytes: int | None = Form(default=None),
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     # v0.6.0: team_id is derived server-side from the bearer token;
     # clients never supply it.  This is the cornerstone of the team-

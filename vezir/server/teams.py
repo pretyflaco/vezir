@@ -136,6 +136,87 @@ def admin_update_team(
     return queue.get_team(team_id)
 
 
+# ── memberships (v0.7.0) ───────────────────────────────────────────────────
+
+
+class _AddMemberBody(BaseModel):
+    github: str
+    role: str = "scribe"  # 'admin' or 'scribe'
+
+
+@router.get("/admin/teams/{team_id}/members")
+def admin_list_members(
+    team_id: str,
+    _github: str = Depends(auth.require_admin),
+):
+    """List every member of a team with their role."""
+    if queue.get_team(team_id) is None:
+        raise HTTPException(404, f"team {team_id!r} not found")
+    return {"team_id": team_id, "members": queue.get_team_members(team_id)}
+
+
+@router.post("/admin/teams/{team_id}/members")
+def admin_add_member(
+    team_id: str,
+    body: _AddMemberBody = Body(...),
+    admin_github: str = Depends(auth.require_admin),
+):
+    """Add (or update) a user's membership in a team.
+
+    v0.7.0: replaces the implicit "membership = token has team_id"
+    model.  The user being added does not need any existing token --
+    a fresh ``vezir token issue --github <handle>`` will now work
+    against this team via ``X-Team-Id``.
+    """
+    if queue.get_team(team_id) is None:
+        raise HTTPException(404, f"team {team_id!r} not found")
+    if body.role not in ("admin", "scribe"):
+        raise HTTPException(
+            400, f"invalid role {body.role!r}; must be 'admin' or 'scribe'",
+        )
+    try:
+        queue.add_membership(
+            body.github, team_id, role=body.role, added_by=admin_github,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    log.info(
+        "added member: github=%s team=%s role=%s by=%s",
+        body.github, team_id, body.role, admin_github,
+    )
+    return {
+        "team_id": team_id,
+        "github": body.github,
+        "role": body.role,
+    }
+
+
+@router.delete("/admin/teams/{team_id}/members/{github}")
+def admin_remove_member(
+    team_id: str,
+    github: str,
+    admin_github: str = Depends(auth.require_admin),
+):
+    """Remove a user from a team.
+
+    Returns 404 if the user wasn't a member (and the team exists);
+    404 if the team doesn't exist.  Idempotent re-runs return 404 too,
+    which is fine -- the operator's intended state ("github is not in
+    team") is achieved either way.
+    """
+    if queue.get_team(team_id) is None:
+        raise HTTPException(404, f"team {team_id!r} not found")
+    if not queue.remove_membership(github, team_id):
+        raise HTTPException(
+            404, f"{github!r} is not a member of {team_id!r}",
+        )
+    log.info(
+        "removed member: github=%s team=%s by=%s",
+        github, team_id, admin_github,
+    )
+    return {"team_id": team_id, "github": github, "removed": True}
+
+
 @router.delete("/admin/teams/{team_id}")
 def admin_delete_team(
     team_id: str,

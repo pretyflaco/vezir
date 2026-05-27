@@ -1,18 +1,24 @@
-"""Bearer-token auth.
+"""Bearer-token auth + team context resolution.
 
-Tokens are stored hashed in ~/vezir-data/tokens.json:
+v0.7.0: tokens no longer carry a ``team_id``.  A token identifies a
+human (``github`` handle) and a privilege tier (``is_admin``).  The
+team scope for each request is supplied by the client via an
+``X-Team-Id`` request header and validated against the ``memberships``
+table.  This lets one human switch between every team they belong to
+without re-issuing tokens.
+
+Tokens are stored hashed in ``~/vezir-data/tokens.json``:
 
     {
       "tokens": [
         {
           "github": "kasita",
           "token_hash": "<sha256>",
-          "team_id": "blink",            # 0.6.0-0.6.x, removed in 0.7.0
           "issued_at": "...",
-          "expires_at": "..." | null,    # 0.1.12+, null = legacy no-expiry
-          "last_used_at": "..." | null,  # 0.1.12+, debounced 60s
-          "is_admin": false,             # 0.1.12+, gates /admin/* routes
-          "label": "..." | null          # 0.1.12+, free-text per-device hint
+          "expires_at": "..." | null,
+          "last_used_at": "..." | null,
+          "is_admin": false,
+          "label": "..." | null
         }
       ]
     }
@@ -20,8 +26,15 @@ Tokens are stored hashed in ~/vezir-data/tokens.json:
 The plaintext token is shown ONCE at issue time and is never persisted.
 Lookup is by SHA-256 of the presented bearer token, in constant time.
 
-v0.7.0: cookie/session auth removed.  All auth is bearer-only.
-Team context comes from X-Team-Id header + memberships table.
+Auth dependencies:
+
+* ``require_bearer`` -- ``(github,)``; for routes that don't need a
+  team context (``/api/me``, admin routes, /health).
+* ``require_team_context`` -- ``(github, team_id, is_admin)``; for
+  every team-scoped route.  Reads ``X-Team-Id`` and checks membership.
+* ``require_admin`` -- like ``require_bearer`` but also requires
+  ``is_admin=true`` on the token.  Used by ``/admin/*`` routes that
+  manage teams + memberships globally.
 """
 from __future__ import annotations
 
@@ -35,12 +48,10 @@ import time
 from fastapi import Header, HTTPException, status
 
 from .. import config
+from . import queue
 
 log = logging.getLogger("vezir.auth")
 
-# Cookie used by the browser hand-off flow (see server.login). Value is an
-# opaque in-memory session id (``vzs_...``), NOT the bearer token itself.
-# HttpOnly + SameSite=Lax. The ``secure`` flag flips on once TLS is in
 # Debounce window for `last_used_at` writes. Prevents a write storm when
 # a single client polls /api/sessions every few seconds. We still observe
 # every use; we just only persist when the previously-stored timestamp is
@@ -88,37 +99,36 @@ def _is_expired(entry: dict) -> bool:
 
 def issue(
     github: str,
-    team_id: str,
     expires_in_seconds: int | None = None,
     is_admin: bool = False,
     label: str | None = None,
 ) -> str:
-    """Generate a new token for a GitHub handle. Returns the plaintext token.
+    """Generate a new token for a GitHub handle.  Returns the plaintext token.
 
-    Plaintext is never written to disk; only the hash is persisted. Caller
-    must capture and hand the plaintext to the user.
+    v0.7.0: ``team_id`` was removed.  Team scope is supplied per-request
+    via the ``X-Team-Id`` header and validated against the memberships
+    table.  To grant a freshly-issued token access to a team, the
+    operator must also add a membership row -- see
+    ``vezir team add-member``.
+
+    Plaintext is never written to disk; only the hash is persisted.
+    Caller must capture and hand the plaintext to the user.
 
     Parameters
     ----------
     github:
         GitHub handle the token belongs to.
-    team_id:
-        Slug of the team this token is scoped to.  Added in v0.6.0.  All
-        sessions uploaded by this token, and all visibility queries this
-        token authorizes, are restricted to this team.  Required.
     expires_in_seconds:
         If given (>0), the token expires that many seconds from now.
-        ``None`` or 0 means no expiry (matches pre-0.1.12 behavior).
+        ``None`` or 0 means no expiry.
     is_admin:
-        Marks the token as admin-tier. Required by routes that use the
-        ``require_admin`` dependency (currently /admin/enroll).
+        Marks the token as admin-tier.  Admin tokens can manage teams
+        and memberships across the whole server.
     label:
-        Free-text annotation displayed by ``vezir token list``. Useful
+        Free-text annotation displayed by ``vezir token list``.  Useful
         for "android-phone" / "linux-laptop" style hints when one human
-        owns multiple tokens. Never used in auth decisions.
+        owns multiple tokens.  Never used in auth decisions.
     """
-    if not team_id:
-        raise ValueError("issue() requires team_id (added in v0.6.0)")
     data = _load_tokens()
     plaintext = "vzr_" + secrets.token_urlsafe(32)
     issued_at = _now_iso()
@@ -132,7 +142,6 @@ def issue(
         {
             "github": github,
             "token_hash": _hash(plaintext),
-            "team_id": team_id,
             "issued_at": issued_at,
             "expires_at": expires_at,
             "last_used_at": None,
@@ -145,7 +154,7 @@ def issue(
 
 
 def revoke(github: str) -> int:
-    """Remove all tokens for a given github handle. Returns count removed."""
+    """Remove all tokens for a given github handle.  Returns count removed."""
     data = _load_tokens()
     before = len(data["tokens"])
     data["tokens"] = [t for t in data["tokens"] if t["github"] != github]
@@ -157,40 +166,23 @@ def revoke_by_filter(
     github: str | None = None,
     label: str | None = None,
     token_id_prefix: str | None = None,
-    team_id: str | None = None,
 ) -> list[dict]:
     """Remove tokens matching ALL provided (non-None) filters.
+
+    v0.7.0: removed the ``team_id`` filter -- tokens are no longer
+    scoped to a team.  Use ``vezir team remove-member`` to remove
+    a human's access to a team.
 
     Returns a list of the removed entries (with ``token_hash`` truncated
     to its first 12 chars for safe logging) so callers can present a
     confirmation summary.  Refuses to delete the entire store: at least
     one filter must be non-None.  When no rows match, returns an empty
     list (does not raise).
-
-    Added in v0.6.3 to give operators per-device revocation without
-    nuking every token for a github handle.  Use ``token_id_prefix``
-    (matching against ``token_hash[:N]``) to disambiguate when one
-    handle has multiple tokens with the same label.
-
-    Parameters
-    ----------
-    github:
-        If given, only consider rows where ``github`` matches exactly.
-    label:
-        If given, only consider rows where ``label`` matches exactly.
-        ``None`` (no label) is matched by the literal string ``"-"``
-        — same convention used by ``vezir token list``.
-    token_id_prefix:
-        If given (>=4 chars), only consider rows where ``token_hash``
-        starts with this string.  This is the "token id" surfaced by
-        ``vezir token list --show-id``.
-    team_id:
-        If given, only consider rows where ``team_id`` matches exactly.
     """
-    if github is None and label is None and token_id_prefix is None and team_id is None:
+    if github is None and label is None and token_id_prefix is None:
         raise ValueError(
             "revoke_by_filter requires at least one of "
-            "github/label/token_id_prefix/team_id"
+            "github/label/token_id_prefix"
         )
     if token_id_prefix is not None and len(token_id_prefix) < 4:
         raise ValueError(
@@ -223,14 +215,10 @@ def revoke_by_filter(
             if not tid.startswith(token_id_prefix):
                 kept.append(entry)
                 continue
-        if team_id is not None and entry.get("team_id") != team_id:
-            kept.append(entry)
-            continue
         # Survived every filter -> remove.
         removed.append(
             {
                 "github": entry.get("github"),
-                "team_id": entry.get("team_id"),
                 "label": entry.get("label"),
                 "token_id": (entry.get("token_hash") or "")[:12],
                 "issued_at": entry.get("issued_at"),
@@ -242,25 +230,23 @@ def revoke_by_filter(
     return removed
 
 
-def list_tokens(team_id: str | None = None) -> list[dict]:
-    """Return all token rows, optionally filtered by team_id.
+def list_tokens() -> list[dict]:
+    """Return all token rows.
+
+    v0.7.0: no per-team filtering (tokens aren't team-scoped anymore).
+    Use ``vezir team members <slug>`` to list humans on a team.
 
     Returns a list of dicts with the persisted fields plus a derived
     ``token_id`` (first 12 chars of ``token_hash``) for display use.
-    Never returns the full ``token_hash`` — callers don't need it and
+    Never returns the full ``token_hash`` -- callers don't need it and
     leaking it would weaken the at-rest hashing.
-
-    Added in v0.6.3 to back ``vezir token list --team <slug>``.
     """
     data = _load_tokens()
     out: list[dict] = []
     for entry in data.get("tokens", []):
-        if team_id is not None and entry.get("team_id") != team_id:
-            continue
         out.append(
             {
                 "github": entry.get("github"),
-                "team_id": entry.get("team_id"),
                 "label": entry.get("label"),
                 "token_id": (entry.get("token_hash") or "")[:12],
                 "issued_at": entry.get("issued_at"),
@@ -270,40 +256,6 @@ def list_tokens(team_id: str | None = None) -> list[dict]:
             }
         )
     return out
-
-
-def count_tokens_for_team(team_id: str) -> int:
-    """Return the number of (non-expired) tokens scoped to ``team_id``.
-
-    Added in v0.6.2 to support ``vezir team delete``'s cascade policy
-    (refuse-if-not-empty unless ``--reassign-to`` is given).
-    """
-    if not team_id:
-        return 0
-    data = _load_tokens()
-    return sum(
-        1 for t in data.get("tokens", [])
-        if t.get("team_id") == team_id and not _is_expired(t)
-    )
-
-
-def revoke_all_for_team(team_id: str) -> int:
-    """Remove every token scoped to ``team_id``.  Returns count removed.
-
-    Added in v0.6.2 for ``vezir team delete --reassign-to <other>``.
-    Tokens are NOT migrated to the destination team — the destination's
-    members are probably different humans, and token rotation on team
-    deletion is the security-conscious default.
-    """
-    if not team_id:
-        return 0
-    data = _load_tokens()
-    before = len(data["tokens"])
-    data["tokens"] = [
-        t for t in data["tokens"] if t.get("team_id") != team_id
-    ]
-    _save_tokens(data)
-    return before - len(data["tokens"])
 
 
 def _maybe_touch_last_used(entry_hash: str) -> None:
@@ -370,13 +322,12 @@ def lookup(token: str) -> str | None:
     return entry.get("github")
 
 
-def lookup_full(token: str) -> tuple[str, str, bool] | None:
-    """Resolve a bearer token to ``(github, team_id, is_admin)``, or None.
+def lookup_identity(token: str) -> tuple[str, bool] | None:
+    """Resolve a bearer token to ``(github, is_admin)``, or None.
 
-    v0.6.0: the single trusted path that maps a bearer to its
-    server-side identity.  Use this in handlers that need the team
-    discriminator (which is all of them — the whole point of v0.6.0 is
-    that nothing crosses team boundaries).
+    v0.7.0: replaces ``lookup_full`` (which also returned ``team_id``).
+    Team context is now derived per-request from the ``X-Team-Id``
+    header, not from the token.
 
     Side-effect: debounced ``last_used_at`` touch on hit.
     """
@@ -386,7 +337,6 @@ def lookup_full(token: str) -> tuple[str, str, bool] | None:
     _maybe_touch_last_used(entry.get("token_hash") or "")
     return (
         entry.get("github") or "",
-        entry.get("team_id") or "",
         bool(entry.get("is_admin", False)),
     )
 
@@ -394,9 +344,7 @@ def lookup_full(token: str) -> tuple[str, str, bool] | None:
 def is_admin_token(token: str) -> bool:
     """True iff the token resolves AND the matching row has ``is_admin=true``.
 
-    Legacy rows (missing the field) are treated as non-admin. This is
-    intentional: pre-0.1.12 tokens must be re-issued with ``--admin`` to
-    keep their /admin/enroll access.
+    Legacy rows (missing the field) are treated as non-admin.
     """
     entry = _lookup_entry(token)
     if entry is None:
@@ -413,35 +361,14 @@ def _token_from_authorization(authorization: str | None) -> str | None:
     return authorization.split(None, 1)[1].strip()
 
 
-def require_bearer(authorization: str | None = Header(default=None)) -> str:
-    """FastAPI dependency: validates Authorization: Bearer <token>.
-
-    Returns the GitHub handle of the authenticated scribe.
-
-    Use for JSON / programmatic endpoints (e.g. /api/..., /upload). For
-    browser-facing routes prefer ``require_bearer_or_cookie`` so users
-    can click links from the GUI's dashboard URL.
-
-    See also ``require_bearer_full`` for routes that also need the
-    token's team_id (v0.6.0+).  This dependency still works for legacy
-    handler signatures that only need the github handle — but the auth
-    chain underneath validates team_id presence so handlers stay safe.
-    """
-    github, _team, _admin = require_bearer_full(authorization)
-    return github
-
-
-def require_bearer_full(
+def require_bearer(
     authorization: str | None = Header(default=None),
-) -> tuple[str, str, bool]:
-    """FastAPI dependency: bearer auth returning ``(github, team_id, is_admin)``.
+) -> tuple[str, bool]:
+    """FastAPI dependency: bearer auth returning ``(github, is_admin)``.
 
-    v0.6.0: the canonical bearer-only auth dependency for endpoints
-    that need to scope queries to the caller's team.  Use this for
-    every /api/sessions* and /upload route.
-
-    Raises 401 on missing/invalid token, and on tokens that lack a
-    team_id (pre-v0.6.0 tokens that didn't go through the migration).
+    Use this for routes that don't need a team context (``/api/me``,
+    ``/health``).  For team-scoped routes use
+    ``require_team_context``.
     """
     token = _token_from_authorization(authorization)
     if not token:
@@ -450,32 +377,60 @@ def require_bearer_full(
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    resolved = lookup_full(token)
+    resolved = lookup_identity(token)
     if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    github, team_id, admin = resolved
-    if not team_id:
-        # v0.6.0+: any token that survives the migration MUST have a
-        # team_id.  A missing one means either a hand-edited tokens.json
-        # or a migration bug.  Reject loudly so the operator notices,
-        # rather than silently letting cross-team leakage past the
-        # visibility filter.
-        log.warning(
-            "auth: token for %s has no team_id; rejecting "
-            "(re-issue via `vezir token issue --team <id>`)",
-            github,
+    github, admin = resolved
+    log.debug("auth: %s via header (admin=%s)", github, admin)
+    return github, admin
+
+
+def require_team_context(
+    authorization: str | None = Header(default=None),
+    x_team_id: str | None = Header(default=None),
+) -> tuple[str, str, bool]:
+    """FastAPI dependency: bearer + X-Team-Id, returns ``(github, team_id, is_admin)``.
+
+    v0.7.0: the canonical dependency for every team-scoped route.
+
+    Raises:
+      * 401 on missing/invalid bearer token.
+      * 400 on missing ``X-Team-Id`` header.
+      * 403 when the token's github handle is not a member of the
+        requested team (covers both "team doesn't exist" and "user
+        not a member" -- we don't distinguish to avoid leaking team
+        existence).
+
+    The ``is_admin`` flag in the result reflects the *token's* admin
+    bit (server-wide privilege), NOT the user's role inside the team.
+    Use ``queue.get_role(github, team_id)`` if a handler needs the
+    per-team role.
+    """
+    github, admin = require_bearer(authorization)
+    if not x_team_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "missing X-Team-Id header; client must specify which "
+                "team to operate on"
+            ),
+        )
+    team_id = x_team_id.strip()
+    if not queue.is_member(github, team_id):
+        log.info(
+            "auth: %s denied access to team %s (not a member)",
+            github, team_id,
         )
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "token has no team assignment; ask the operator to "
-                "re-issue it with `vezir token issue --team <id>`."
+                f"user {github!r} is not a member of team {team_id!r}; "
+                "ask an admin to add you with `vezir team add-member`."
             ),
-            headers={"WWW-Authenticate": "Bearer"},
         )
     log.debug(
         "auth: %s via header (team=%s admin=%s)", github, team_id, admin,
@@ -488,9 +443,9 @@ def require_admin(
 ) -> str:
     """FastAPI dependency: bearer-only, requires ``is_admin=True`` on the token.
 
-    Gates /admin/teams.  v0.7.0: cookie auth removed.
+    Gates ``/admin/*`` routes.  Returns the github handle.
     """
-    github, _team, admin = require_bearer_full(authorization)
+    github, admin = require_bearer(authorization)
     if admin:
         return github
 

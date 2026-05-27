@@ -611,31 +611,43 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
                 (reassign_to, _now(), team_id),
             )
 
-    # 2. Count and (optionally) revoke tokens.
-    #    Local import to keep queue.py independent of auth (auth depends
-    #    on tokens.json, not on queue).
-    from . import auth as _auth
-    n_tokens = _auth.count_tokens_for_team(team_id)
+    # 2. Count and (optionally) drop memberships.  v0.7.0: tokens no
+    #    longer have team_id, so "tokens scoped to this team" doesn't
+    #    exist as a concept.  Instead we count membership rows; cascade
+    #    drops them, refusal mode demands the operator first
+    #    `vezir team remove-member` each one.
+    with _conn() as c:
+        n_members = c.execute(
+            "SELECT COUNT(*) AS n FROM memberships WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()["n"]
 
-    if n_tokens and reassign_to is None:
-        # Should be unreachable because we already raised on jobs;
-        # but a team with zero jobs and N tokens still needs the same
-        # refusal.
+    if n_members and reassign_to is None:
         raise ValueError(
-            f"team {team_id!r} has {n_tokens} token(s) scoped to it; "
-            f"pass reassign_to=<slug> to cascade-revoke, or revoke them "
-            f"first via `vezir token revoke`"
+            f"team {team_id!r} has {n_members} member(s); "
+            f"pass reassign_to=<slug> to cascade-drop memberships, "
+            f"or remove them first via `vezir team remove-member`"
         )
 
-    tokens_revoked = 0
-    if n_tokens:
-        tokens_revoked = _auth.revoke_all_for_team(team_id)
+    members_dropped = 0
+    if n_members:
+        with _conn() as c:
+            cur = c.execute(
+                "DELETE FROM memberships WHERE team_id = ?", (team_id,)
+            )
+            members_dropped = cur.rowcount
 
-    # 3. Delete the team row itself.
+    # 3. Drop session_teams rows targeting this team (cross-team shares).
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM session_teams WHERE team_id = ?", (team_id,)
+        )
+
+    # 4. Delete the team row itself.
     with _conn() as c:
         c.execute("DELETE FROM teams WHERE id = ?", (team_id,))
 
-    # 4. Remove the on-disk per-team dir (roster, voiceprints, sync_config).
+    # 5. Remove the on-disk per-team dir (roster, voiceprints, sync_config).
     on_disk_removed = False
     import shutil as _shutil
 
@@ -647,7 +659,7 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
 
     return {
         "jobs_reassigned": n_jobs if reassign_to else 0,
-        "tokens_revoked": tokens_revoked,
+        "members_dropped": members_dropped,
         "on_disk_removed": on_disk_removed,
         "reassigned_to": reassign_to,
     }

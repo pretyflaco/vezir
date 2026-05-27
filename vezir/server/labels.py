@@ -112,7 +112,7 @@ def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
 def label_clip(
     session_id: str,
     speaker_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Return an audio clip for a speaker. Generates and caches on first hit."""
     _github, team_id, _admin = auth_triple
@@ -245,7 +245,7 @@ _LABELABLE_STATUSES = ("needs_labeling", "done", "error")
     "/api/team",
     dependencies=[Depends(ratelimit.limit_api)],
 )
-def api_team(auth_triple: tuple = Depends(auth.require_bearer_full)):
+def api_team(auth_triple: tuple = Depends(auth.require_team_context)):
     """Return the team handles list (for autocomplete in native clients).
 
     v0.6.0+: reads ``~/vezir-data/teams/<caller-team>/roster.json``.
@@ -265,7 +265,7 @@ def api_team(auth_triple: tuple = Depends(auth.require_bearer_full)):
 )
 def api_label_get(
     session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     _github, team_id, _admin = auth_triple
     """Return the speaker list and team handles for native-client labeling.
@@ -323,7 +323,7 @@ def api_label_get(
 def api_label_post(
     session_id: str,
     labels: dict = Body(..., example={"labels": {"REMOTE_0": "kasita"}}),
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Apply labels from a JSON body (native clients).
 

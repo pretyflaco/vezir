@@ -62,12 +62,14 @@ def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
 def api_sessions(
     limit: int = 50,
     since: str | None = None,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Return recent sessions visible to the authenticated user.
 
-    v0.6.0 visibility rule:
-      * Team scope: only sessions in the caller's team.
+    v0.7.0 visibility rule:
+      * Team scope: only sessions in the team named by ``X-Team-Id``,
+        which the caller must be a member of (validated by the auth
+        dependency).
       * Personal: all non-personal sessions in that team PLUS the
         caller's own personal sessions in that team.
       * Sessions in OTHER teams are entirely invisible.
@@ -96,7 +98,7 @@ def api_sessions(
 )
 def api_session(
     session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     _github, team_id, _admin = auth_triple
     row = queue.get(session_id)
@@ -110,7 +112,7 @@ def api_session(
 def artifact(
     session_id: str,
     name: str,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     _github, team_id, _admin = auth_triple
     # Cross-team artifact downloads must be impossible, so check the
@@ -134,7 +136,7 @@ def artifact(
 @router.post("/session/{session_id}/sync")
 def sync_now(
     session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Retroactively sync a previously local-only session to git.
 
@@ -186,7 +188,7 @@ def sync_now(
 def retry_summary(
     session_id: str,
     body: _RetrySummaryBody | None = None,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     github, team_id, _admin = auth_triple
     """Retry summary generation for a session whose summary previously failed.
@@ -246,7 +248,7 @@ def retry_summary(
 )
 def share_with_team(
     session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
+    auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Un-personal a session so it becomes visible to the whole team.
 
@@ -282,36 +284,37 @@ def share_with_team(
 
 
 @router.get("/api/me", dependencies=[Depends(ratelimit.limit_api)])
-def api_me(auth_triple: tuple = Depends(auth.require_bearer_full)):
-    """Return identity + team info for the calling token.
+def api_me(auth_pair: tuple = Depends(auth.require_bearer)):
+    """Return identity + team memberships for the calling token.
 
-    Used by:
-      * TUI title-bar display ("vezir — blink — sessions (N)").
-      * TUI ^t team-switcher after switching tokens to confirm the
-        new identity + display name.
-      * Future ``vezir whoami`` CLI (not in v0.6.1).
+    v0.7.0: the response now lists every team the user is a member of
+    (each with role + team_name) instead of a single team_id baked
+    into the token.  Clients use this to populate their team-picker
+    UI and to remember which team to send in ``X-Team-Id``.
 
     Response shape:
 
         {
           "github": "pretyflaco",
-          "team_id": "blink",
-          "team_name": "Blink",
-          "is_admin": false
+          "is_admin": false,
+          "memberships": [
+            {"team_id": "blink", "team_name": "Blink", "role": "scribe"},
+            {"team_id": "twentyone", "team_name": "Twentyone", "role": "admin"}
+          ],
+          "alternate_urls": [...]
         }
 
-    ``team_name`` is the human-friendly name from the ``teams`` table;
-    falls back to the slug if the team row is somehow missing (shouldn't
-    happen post-migration but defensive in case the row was deleted).
+    Used by:
+      * TUI title-bar display.
+      * TUI team-switcher after switching tokens to confirm identity.
+      * ``vezir doctor`` end-to-end token validation.
+      * ``vezir whoami`` CLI.
     """
-    github, team_id, is_admin = auth_triple
-    row = queue.get_team(team_id)
-    team_name = row.get("name") if row else team_id
+    github, is_admin = auth_pair
     return {
         "github": github,
-        "team_id": team_id,
-        "team_name": team_name or team_id,
         "is_admin": is_admin,
+        "memberships": queue.get_memberships(github),
         "alternate_urls": config.alternate_urls(),
     }
 
