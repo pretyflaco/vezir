@@ -3,6 +3,136 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.0 — JSON-only API, membership-based teams
+
+This release is a **breaking** simplification of the v0.6.x team
+model.  Tokens no longer carry a team scope; instead every human
+has explicit memberships in zero or more teams, and every team-
+scoped HTTP request supplies an `X-Team-Id` header.  The HTML
+dashboard, login flow, and Tkinter desktop widget are removed --
+all interaction is now via JSON API (TUI, Android, CLI).
+
+Net diff: **-3,042 lines** of HTML/Tk client code, **+812 lines**
+of memberships + auth rewrite (29 files changed total).
+
+### Breaking changes
+
+* **HTML dashboard removed.**  `/`, `/s/{id}`, `/login`, `/logout`,
+  `/admin/enroll`, static assets -- all gone.  The `vezir/web/`
+  directory and `vezir.server.login` / `vezir.server.web_sessions` /
+  `vezir.server.templating` modules deleted.  `jinja2` is no longer
+  a server dependency.  See `vezir tui` for the replacement.
+* **Tkinter `vezir gui` + `vezir scribe-widget` commands removed.**
+  ~1,500 lines of Tk-based UI deleted (`vezir/client/gui.py`,
+  `scribe_widget.py`, and the bundled logo PNGs).  Use `vezir tui`
+  (Textual-based) instead -- it has full parity except the
+  always-on-top floating record widget.
+* **Tokens no longer carry `team_id`.**  `vezir token issue` lost
+  the `--team` flag; tokens identify a human + privilege tier.  Team
+  scope per request comes from the `X-Team-Id` HTTP header,
+  validated against the new `memberships` table.  One token can
+  now operate against every team its handle is a member of -- no
+  more re-issuing per team.
+* **API: every team-scoped endpoint requires `X-Team-Id`.**  Missing
+  -> 400; non-member -> 403; the team itself not existing also
+  surfaces as 403 (we deliberately don't distinguish to avoid
+  leaking team existence).  `/api/me` and `/health` are the only
+  routes that don't.
+* **`/api/me` response shape changed.**  Was
+  `{github, team_id, team_name, is_admin}`; now
+  `{github, is_admin, memberships: [{team_id, team_name, role}, ...]}`.
+  Clients use the list to populate a team-picker.
+* **`vezir.client.config.resolve_credentials()` returns a 4-tuple.**
+  Was `(url, token, source)`; now `(url, token, team_id, source)`.
+  Callers that destructure must update.  `VEZIR_TEAM_ID` env var
+  added.
+* **CLI: `vezir token list --team` and `vezir token revoke --team`
+  removed.**  Tokens aren't team-scoped any more; use the new
+  `vezir team members <slug>` to see who's on each team.
+* **Server endpoints removed:** `POST /api/exchange-code`, `GET
+  /login`, `POST /login`, `GET /logout`, `GET /admin/enroll`,
+  `POST /admin/enroll`, `GET /` (dashboard), `GET /s/{id}` (session
+  detail HTML).  `VezirClient.exchange_code()` removed accordingly.
+
+### Added
+
+* **`memberships` table** (`github, team_id, role, added_at,
+  added_by`).  Role is `'admin'` or `'scribe'`; the server-wide
+  admin bit on the token is independent.
+* **`session_teams` table** (junction, `session_id, team_id`).
+  Reserved slot for future cross-team session sharing; not yet
+  wired into any UI.
+* **`vezir team add-member --team <id> --github <h> [--role
+  admin|scribe]`** -- grants a user access to a team.
+* **`vezir team remove-member --team <id> --github <h>`** -- revokes
+  access.  Tokens are NOT rotated; use `vezir token revoke
+  --github <h>` if you also want to rotate.
+* **`vezir team members <id>`** -- lists members + role + added_at.
+* **Admin HTTP endpoints:**
+  - `GET    /admin/teams/{team_id}/members`
+  - `POST   /admin/teams/{team_id}/members`
+  - `DELETE /admin/teams/{team_id}/members/{github}`
+* **`vezir token enroll` now renders the QR directly in the
+  terminal.**  Uses segno's half-block ANSI art; no more browser
+  hop to `/admin/enroll`.  v2 CA-cert payload still supported
+  when `VEZIR_CADDY_ROOT_CERT_PATH` is set.
+* **`X-Team-Id` HTTP header** validated by the new
+  `auth.require_team_context` FastAPI dependency on every team-
+  scoped route.  Cross-team requests return 404 (sessions, label
+  page, artifact) or 403 (auth-layer non-member).
+* **Migration 0.7.0** -- populates `memberships` from every existing
+  token's `team_id` field, then strips the field from `tokens.json`.
+  Idempotent; safe to re-run.  Audit log at
+  `~/vezir-data/logs/migration-0.7.0-memberships.log`.
+
+### Changed
+
+* `queue.delete_team` cascade now drops memberships + session_teams
+  rows instead of revoking tokens.  A human deleted from a team may
+  still hold a valid token; revoke explicitly if needed.
+* `auth.lookup_full()` -> `auth.lookup_identity()` returning
+  `(github, is_admin)`; team is no longer baked in.
+* `vezir doctor`: credentials check displays the resolved team_id;
+  `/api/me` parse updated for the memberships list; warns if the
+  configured `team_id` isn't in the user's memberships.
+* TUI title bar still shows the active team; team picker rebuilt to
+  use `/api/me`'s membership list rather than locally cached
+  `teams.json` only.
+* CLI `vezir pull` requires `VEZIR_TEAM_ID` (or a teams.json active
+  entry) -- the pull endpoint is team-scoped.
+
+### Removed
+
+* `vezir.server.login`, `vezir.server.web_sessions`,
+  `vezir.server.templating` modules.
+* `vezir.client.gui`, `vezir.client.scribe_widget` modules.
+* `vezir/web/` template + static directory; `vezir/client/assets/`
+  PNGs.
+* `auth.count_tokens_for_team`, `auth.revoke_all_for_team` --
+  memberships replace tokens as the per-team accounting surface.
+* `auth.require_bearer_or_cookie`, `auth.require_bearer_or_cookie_full`,
+  `auth._resolve_auth`, `auth.COOKIE_NAME` -- bearer-only now.
+* `auth.is_admin_in_request` (used only by the dashboard).
+* TUI `o` / "Open in browser" bindings on Sessions list and detail
+  screens.
+* `VezirClient.exchange_code()` client method.
+
+### Android client (separate repo `vezir-android`)
+
+Required follow-on work, NOT shipped with this server release:
+
+* Drop `dashboard_url` / `dashboard_login_url` from the upload
+  response model.
+* Drop the in-app webview / browser-handoff flow that used
+  `vzx_` exchange codes.
+* Add `X-Team-Id` to every request the app makes.  Pick the team
+  from `/api/me`'s membership list at first launch; persist the
+  choice; expose a switcher.
+* Update the QR-scan flow: the payload schema is unchanged but
+  there's no longer a server-side enrollment page to launch
+  alongside.  The desktop operator now uses
+  `vezir token enroll --github <h>` in a terminal.
+
 ## 0.6.9 — code quality + label screen fixes
 
 ### Added

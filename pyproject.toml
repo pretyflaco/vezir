@@ -56,14 +56,9 @@ where = ["."]
 include = ["vezir*"]
 
 [tool.setuptools.package-data]
-vezir = [
-    "web/templates/*.html",
-    "web/static/*",
-    # Pre-rendered logo PNGs for the Tkinter desktop client.  Source
-    # SVGs live in assets/logo/ outside the package; the 400/800-px
-    # variants are checked in so vezir installs need no SVG renderer.
-    "client/assets/*.png",
-]
+# v0.7.0: web templates + static assets + Tkinter logo PNGs removed
+# (HTML dashboard + Tk widget dropped).  Nothing left to bundle.
+vezir = []
 
 [tool.setuptools.dynamic]
 # Single source of truth lives at vezir/__init__.py:__version__.
@@ -78,7 +73,7 @@ server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
-    "jinja2>=3.1",
+    # v0.7.0: jinja2 dropped along with the HTML dashboard.
     # vezir 0.4.0's worker shells out to `millet transcribe --summary-preset
     # <id>` and relies on apply_labels() accepting the summary_preset kwarg.
     # Pin to >= 0.9.0 (the rename release of meetscribe-offline) so a
@@ -93,10 +88,6 @@ server = [
     # pip skips this line on Linux/Windows via the environment marker.
     "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
-# GUI scribe widget (Tkinter). Tkinter ships with Python on most distros
-# but some (Debian/Ubuntu minimal) require `apt install python3-tk`.
-# No new pip deps needed.
-gui = []
 # TUI thin client: Textual-based desktop client that matches vezir-android
 # 0.2.5 feature parity. Replaces `vezir gui` for everything except the
 # always-on-top floating record widget. `pip install vezir[tui]` pulls
@@ -115,8 +106,6 @@ select = ["E", "F", "W", "I", "B", "UP", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B", "RUF"]
 "vezir/client/tui/*.py" = ["RUF012"]
-"vezir/client/gui.py" = ["RUF012"]
-"vezir/client/scribe_widget.py" = ["RUF012"]
 "vezir/server/uploads.py" = ["B008"]
 "vezir/server/teams.py" = ["B008"]
 "vezir/server/labels.py" = ["B008"]
