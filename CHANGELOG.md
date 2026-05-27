@@ -3,6 +3,34 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.6.9 — code quality + label screen fixes
+
+### Added
+
+* **Ruff linting** — `[tool.ruff]` config with 7 rule groups (E, F, W, I,
+  B, UP, RUF).  42 import-sorting auto-fixes, 15 manual fixes across 46
+  files.  Per-file ignores for Textual/FastAPI/tkinter patterns.
+* **mypy type checking** — strict mode on 3 well-annotated files
+  (`config.py`, `doctor.py`, `record_screen.py`).
+* **Structured logging** — `configure_logging()` with JSON file handler
+  (`~/vezir-data/logs/vezir.log`, 10 MB rotation, 5 backups).  Console
+  format configurable via `server.json` `log_format` key.
+* **Client-side logging** — `basicConfig(level=WARNING)` in CLI entry
+  point so `vezir.client.*` loggers surface warnings/errors.
+
+### Fixed
+
+* **TUI label prefill** — resolved speaker names (from auto-labeling)
+  are now prefilled in the input widgets.  Only unresolved placeholders
+  (YOU, REMOTE\_N, SPEAKER\_N) start empty.
+* **Label submit timeout** — voiceprint update (pyannote model load +
+  embedding inference) moved to background thread; HTTP response returns
+  in ~2s instead of 30-60s.  Client read timeout increased to 120s.
+* **CI green** — all 411 tests pass across py3.10/3.11/3.12.  Fixed
+  env var leakage (VEZIR\_COOKIE\_SECURE, VEZIR\_CADDY\_ROOT\_CERT\_PATH)
+  and sys.modules caching in scribe library path test.  Added
+  pytest-timeout (60s default).
+
 ## 0.6.8 — alternate server URLs for client failover
 
 ### Added
