@@ -16,6 +16,7 @@ Layout:
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,11 @@ from ..api import LabelInfo
 from ..audio import AudioPlayer, FfplayNotFound, ffplay_available
 
 log = logging.getLogger("vezir.client.tui.label")
+
+# Speaker IDs matching this regex are unresolved placeholders from the
+# transcription engine.  Anything else has been resolved by auto-labeling
+# and should be prefilled in the input widget.
+_UNRESOLVED_RE = re.compile(r"^(YOU|REMOTE(_\d+)?|SPEAKER_\d+)$")
 
 
 @dataclass
@@ -316,12 +322,16 @@ class LabelScreen(Screen):
                 disabled=not play_available,
             )
             row.mount(play_btn)
+            # Prefill already-resolved speakers (auto-labeling renames
+            # the speaker id from e.g. "REMOTE_1" to "Pedro").  Only
+            # unresolved placeholders (YOU, REMOTE_N, SPEAKER_N) start
+            # with an empty input.
+            resolved = not _UNRESOLVED_RE.match(sid)
             inp = Input(
-                placeholder="github handle",
+                value=sid if resolved else "",
+                placeholder=sid if not resolved else "name",
                 id=f"input-{sid}",
                 classes="name-input",
-                # Textual's Input supports a `suggester` API for
-                # autocomplete; wire team handles in.
             )
             try:
                 from textual.suggester import SuggestFromList

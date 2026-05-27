@@ -308,11 +308,12 @@ class VezirClient:
         path: str,
         *,
         json: dict | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> ApiResult:
         url = f"{self.base_url}{path}"
         try:
             with httpx.Client(
-                timeout=self._timeout, verify=self._verify,
+                timeout=timeout or self._timeout, verify=self._verify,
             ) as c:
                 r = c.post(
                     url,
@@ -421,6 +422,13 @@ class VezirClient:
             return result
         return ApiResult.success(LabelInfo.from_dict(result.ok))
 
+    # Label submission timeout: longer than the default 30s read timeout
+    # because apply_labels() relabels the transcript synchronously before
+    # returning.  The expensive voiceprint update runs in a background
+    # thread (v0.6.9+), but the transcript rewrite can still take a few
+    # seconds for long sessions.
+    _LABEL_TIMEOUT = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=5.0)
+
     def submit_labels(
         self,
         session_id: str,
@@ -429,6 +437,7 @@ class VezirClient:
         return self._post(
             f"/api/label/{quote(session_id, safe='')}",
             json={"labels": dict(labels)},
+            timeout=self._LABEL_TIMEOUT,
         )
 
     def get_team(self) -> ApiResult:

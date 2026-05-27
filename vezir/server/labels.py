@@ -223,6 +223,19 @@ def _apply_and_finalize(
             progress_callback=_progress,
         )
 
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # Voiceprint update + sync run in a background thread so the HTTP
+    # response returns quickly (~2s for apply_labels).  The voiceprint
+    # update loads a neural network model and runs speaker-embedding
+    # inference, which can take 30-60s on CPU — well beyond the client's
+    # read timeout.
+    def _bg_finalize() -> None:
         try:
             from millet.label import _detect_speaker_channels, _load_transcript
             from millet.voiceprint import update_profiles_from_confirmed_labels
@@ -251,17 +264,10 @@ def _apply_and_finalize(
             log.exception(
                 "could not update team %s voiceprint DB", team_id,
             )
-
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        worker.finalize_after_labeling(session_id)
 
     threading.Thread(
-        target=worker.finalize_after_labeling,
-        args=(session_id,),
+        target=_bg_finalize,
         name=f"finalize-{session_id}",
         daemon=True,
     ).start()
