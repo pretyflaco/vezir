@@ -1,20 +1,19 @@
 """FastAPI application factory.
 
-Composes all routers, mounts static files, starts the background worker.
+Composes all routers and starts the background worker.
+
+v0.7.0: HTML dashboard, login flow, and static assets removed.
+All interaction is via JSON API (TUI, Android, CLI).
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, config
 from . import (
-    enroll,
     labels,
-    login,
     migrations,
     queue,
     sessions,
@@ -31,14 +30,7 @@ def create_app() -> FastAPI:
     log = logging.getLogger("vezir")
 
     config.ensure_dirs()
-    # v0.6.0: run schema + data migrations BEFORE anything touches the
-    # queue or roster files.  Migrations are idempotent and write an
-    # audit log per run.
     migrations.run_pending_migrations()
-    # v0.6.2: voiceprint DBs are per-team.  Ensure every team has its
-    # own DB file so the per-job HOME shim's symlink target always
-    # resolves (millet treats a missing profile file as a hard error
-    # when MEET_PROFILES_PATH is set).
     for _t in queue.list_teams():
         voiceprints.ensure_db_exists(_t["id"])
 
@@ -56,16 +48,10 @@ def create_app() -> FastAPI:
             "data_dir": str(config.data_dir()),
         }
 
-    app.include_router(login.router)
     app.include_router(uploads.router)
     app.include_router(sessions.router)
     app.include_router(labels.router)
-    app.include_router(enroll.router)
     app.include_router(teams.router)
-
-    static_dir = Path(__file__).resolve().parent.parent / "web" / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.on_event("startup")
     def _startup():

@@ -7,7 +7,7 @@ Tokens are stored hashed in ~/vezir-data/tokens.json:
         {
           "github": "kasita",
           "token_hash": "<sha256>",
-          "team_id": "blink",            # 0.6.0+, team this token belongs to
+          "team_id": "blink",            # 0.6.0-0.6.x, removed in 0.7.0
           "issued_at": "...",
           "expires_at": "..." | null,    # 0.1.12+, null = legacy no-expiry
           "last_used_at": "..." | null,  # 0.1.12+, debounced 60s
@@ -20,14 +20,8 @@ Tokens are stored hashed in ~/vezir-data/tokens.json:
 The plaintext token is shown ONCE at issue time and is never persisted.
 Lookup is by SHA-256 of the presented bearer token, in constant time.
 
-Cookies
--------
-Pre-0.1.12, the ``vezir_session`` cookie carried the plaintext bearer
-token. From 0.1.12 onward, the cookie carries an opaque, in-memory
-session id (see ``web_sessions``) instead. The /login flow uses
-short-lived exchange codes (``?code=vzx_...``) to swap a bearer for a
-session, so the bearer never appears in URLs, browser history, or
-reverse-proxy access logs.
+v0.7.0: cookie/session auth removed.  All auth is bearer-only.
+Team context comes from X-Team-Id header + memberships table.
 """
 from __future__ import annotations
 
@@ -38,19 +32,15 @@ import logging
 import secrets
 import time
 
-from fastapi import Cookie, Header, HTTPException, status
+from fastapi import Header, HTTPException, status
 
 from .. import config
-from . import web_sessions
 
 log = logging.getLogger("vezir.auth")
 
 # Cookie used by the browser hand-off flow (see server.login). Value is an
 # opaque in-memory session id (``vzs_...``), NOT the bearer token itself.
 # HttpOnly + SameSite=Lax. The ``secure`` flag flips on once TLS is in
-# front (set VEZIR_COOKIE_SECURE=1 when running behind Caddy).
-COOKIE_NAME = "vezir_session"
-
 # Debounce window for `last_used_at` writes. Prevents a write storm when
 # a single client polls /api/sessions every few seconds. We still observe
 # every use; we just only persist when the previously-stored timestamp is
@@ -493,167 +483,14 @@ def require_bearer_full(
     return github, team_id, admin
 
 
-def require_bearer_or_cookie(
-    authorization: str | None = Header(default=None),
-    vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> str:
-    """FastAPI dependency: accept either Authorization: Bearer or session cookie.
-
-    Used for browser-facing routes (dashboard, session detail, label page,
-    artifact downloads).
-
-    Cookie semantics changed in 0.1.12:
-      * Before: cookie value was the plaintext bearer token (``vzr_...``).
-      * Now:    cookie value is an opaque session id (``vzs_...``) backed
-        by ``web_sessions``. The /login flow swaps a short-lived
-        exchange code (``?code=vzx_...``) for a session.
-
-    For backward compatibility (e.g. cookies persisted in browsers from a
-    pre-0.1.12 install), a cookie value starting with ``vzr_`` is still
-    accepted as a bearer token until next major release.
-
-    Returns the GitHub handle of the authenticated scribe.
-
-    See also ``require_bearer_or_cookie_full`` for the 3-tuple variant.
-    """
-    github, _team, _admin = _resolve_auth(authorization, vezir_session)
-    return github
-
-
-def require_bearer_or_cookie_full(
-    authorization: str | None = Header(default=None),
-    vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> tuple[str, str, bool]:
-    """FastAPI dependency: bearer-or-cookie auth returning ``(github, team_id, is_admin)``.
-
-    v0.6.0: use this on browser-facing routes that also need the team
-    discriminator (dashboard, session detail, artifact download, etc.).
-    """
-    return _resolve_auth(authorization, vezir_session)
-
-
-def _resolve_auth(
-    authorization: str | None,
-    vezir_session: str | None,
-) -> tuple[str, str, bool]:
-    """Shared auth resolution returning ``(github, team_id, is_admin)``.
-
-    The ``is_admin`` and ``team_id`` flags reflect the *specific token*
-    or *specific session* used for this request — not "any token for
-    the same github handle".  This prevents a scribe-tier token from
-    inheriting admin access just because the same person also holds an
-    admin-tier token, and prevents a token issued to team A from being
-    silently treated as a token for team B if the same handle is in
-    both teams.
-
-    Raises 401 if no valid credential is found, or if the credential
-    resolves to a token without a team_id (must be re-issued per
-    v0.6.0).
-    """
-    # 1. Prefer the explicit Authorization header (programmatic clients).
-    token = _token_from_authorization(authorization)
-    if token:
-        resolved = lookup_full(token)
-        if not resolved:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="invalid token",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        github, team_id, admin = resolved
-        if not team_id:
-            log.warning(
-                "auth: token for %s has no team_id; rejecting", github,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=(
-                    "token has no team assignment; ask the operator to "
-                    "re-issue it with `vezir token issue --team <id>`."
-                ),
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        log.debug(
-            "auth: %s via header (team=%s admin=%s)",
-            github, team_id, admin,
-        )
-        return github, team_id, admin
-
-    # 2. Fall back to the session cookie.
-    cookie_value = (vezir_session or "").strip()
-    if cookie_value:
-        result = web_sessions.lookup_session(cookie_value)
-        if result is not None:
-            github, team_id, admin = result
-            if not team_id:
-                # A pre-0.6.0 cookie was minted before team_id was
-                # captured.  Force re-login rather than silently
-                # leaking cross-team.
-                log.info(
-                    "auth: pre-0.6.0 cookie for %s (no team_id); "
-                    "forcing re-login",
-                    github,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=(
-                        "session predates team isolation (v0.6.0); "
-                        "please /logout and sign in again."
-                    ),
-                )
-            log.debug(
-                "auth: %s via session cookie (team=%s admin=%s)",
-                github, team_id, admin,
-            )
-            return github, team_id, admin
-        # Pre-0.1.12 cookies stored the plaintext bearer. Accept once.
-        if cookie_value.startswith("vzr_"):
-            resolved = lookup_full(cookie_value)
-            if resolved:
-                github, team_id, admin = resolved
-                if not team_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail=(
-                            "legacy bearer-in-cookie has no team_id; "
-                            "ask operator to re-issue your token."
-                        ),
-                    )
-                log.info(
-                    "auth: %s via legacy bearer-in-cookie (team=%s)",
-                    github, team_id,
-                )
-                return github, team_id, admin
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=(
-            "not signed in. Visit /login and paste your token, "
-            "or use the URL from `vezir scribe` / `vezir upload` "
-            "output which signs you in automatically."
-        ),
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
 def require_admin(
     authorization: str | None = Header(default=None),
-    vezir_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> str:
-    """FastAPI dependency: same surface as ``require_bearer_or_cookie`` but
-    additionally checks that the *specific token used for this request*
-    has ``is_admin=true``.
+    """FastAPI dependency: bearer-only, requires ``is_admin=True`` on the token.
 
-    This is a per-token check, not per-handle. A scribe-tier token does
-    NOT inherit admin access even if the same github handle also owns an
-    admin-tier token. The admin flag is captured at session-creation time
-    for cookie-based auth (see ``web_sessions.open_session``).
-
-    Currently gates /admin/enroll and /admin/teams.  Legacy tokens (no
-    ``is_admin`` field) are rejected — operators must re-issue with
-    ``--admin`` to keep enrollment access.
+    Gates /admin/teams.  v0.7.0: cookie auth removed.
     """
-    github, _team, admin = _resolve_auth(authorization, vezir_session)
+    github, _team, admin = require_bearer_full(authorization)
     if admin:
         return github
 

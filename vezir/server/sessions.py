@@ -1,27 +1,22 @@
-"""Session metadata + dashboard endpoints.
+"""Session metadata + API endpoints.
 
-GET  /                       → HTML dashboard (recent sessions)
-GET  /s/<session-id>         → HTML session detail page
 GET  /api/sessions           → JSON list (for clients)
 GET  /api/sessions/<id>      → JSON session detail
 GET  /artifact/<id>/<name>   → download a generated artifact
 POST /session/<id>/sync      → retroactive sync of a local-only session
-POST /api/exchange-code      → mint a short-lived login code for browser hand-off
 """
 from __future__ import annotations
 
 import json
 import logging
 import threading
-from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .. import config
-from . import auth, queue, ratelimit, web_sessions, worker
-from .templating import templates
+from . import auth, queue, ratelimit, worker
 
 log = logging.getLogger("vezir.sessions")
 router = APIRouter()
@@ -61,44 +56,6 @@ def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
     """
     if row.get("team_id") != viewer_team_id:
         raise HTTPException(404, "session not found")
-
-
-@router.get("/", response_class=HTMLResponse)
-def dashboard(
-    request: Request,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
-):
-    github, team_id, _admin = auth_triple
-    rows = [
-        _decorate(r)
-        for r in queue.list_recent(
-            limit=50, viewer_github=github, viewer_team_id=team_id,
-        )
-    ]
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {"request": request, "rows": rows, "me": github, "team_id": team_id},
-    )
-
-
-@router.get("/s/{session_id}", response_class=HTMLResponse)
-def session_detail(
-    request: Request,
-    session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
-):
-    github, team_id, _admin = auth_triple
-    row = queue.get(session_id)
-    if not row:
-        raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
-    return templates.TemplateResponse(
-        request,
-        "session.html",
-        {"request": request, "row": _decorate(row), "me": github,
-         "team_id": team_id},
-    )
 
 
 @router.get("/api/sessions", dependencies=[Depends(ratelimit.limit_api)])
@@ -153,7 +110,7 @@ def api_session(
 def artifact(
     session_id: str,
     name: str,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     _github, team_id, _admin = auth_triple
     # Cross-team artifact downloads must be impossible, so check the
@@ -177,21 +134,17 @@ def artifact(
 @router.post("/session/{session_id}/sync")
 def sync_now(
     session_id: str,
-    request: Request,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     """Retroactively sync a previously local-only session to git.
 
     Flow: the user uploaded a meeting with `sync=false` (or via an older
     workflow that never reached the sync step), the session sits at
     `done` with no git push, and the user now wants to publish it.
-    Clicking "Sync now" in the dashboard hits this endpoint, which:
 
       1. Sets the queue row's `sync_enabled = 1`
       2. Runs `millet sync` via the existing worker.finalize_after_labeling
          flow (in a background thread, like the labeling submit handler)
-      3. Redirects the browser back to /s/<id> where the page polls
-         the status until it transitions through `syncing` -> `done`
 
     Refuses if the session is in a status that doesn't admit retroactive
     sync (e.g. `error`, `transcribing`, `needs_labeling`).  Re-syncing a
@@ -210,12 +163,9 @@ def sync_now(
             "wait for transcription/labeling to complete first",
         )
 
-    # Flip the per-job flag so the worker's gates allow sync this round.
     queue.set_sync_enabled(session_id, True)
     log.info("session=%s retroactive sync requested by %s", session_id, github)
 
-    # Hand off to the same finalize path the labeling submit uses.  Runs
-    # in a background thread so the HTTP response returns immediately.
     threading.Thread(
         target=worker.finalize_after_labeling,
         args=(session_id,),
@@ -223,10 +173,6 @@ def sync_now(
         daemon=True,
     ).start()
 
-    # Browser POSTs from the dashboard form land here; redirect back to
-    # the session page so the user sees the status transition.
-    if "text/html" in (request.headers.get("accept") or ""):
-        return RedirectResponse(url=f"/s/{session_id}", status_code=303)
     return {"session_id": session_id, "queued": True}
 
 
@@ -369,33 +315,3 @@ def api_me(auth_triple: tuple = Depends(auth.require_bearer_full)):
         "alternate_urls": config.alternate_urls(),
     }
 
-
-# ── exchange-code minting ───────────────────────────────────────────────────
-
-
-@router.post(
-    "/api/exchange-code",
-    dependencies=[Depends(ratelimit.limit_api)],
-)
-def mint_exchange_code(
-    request: Request,
-    next: str | None = None,
-    auth_triple: tuple = Depends(auth.require_bearer_full),
-):
-    _github, _team, _admin = auth_triple  # team carried by bearer itself
-    """Mint a one-time, 60-second exchange code for browser hand-off.
-
-    The client calls this when it needs a login URL (e.g. to print a
-    "Label speakers" link in the terminal). The returned ``login_url``
-    contains ``?code=vzx_...`` — the bearer never enters the URL.
-
-    Query parameter ``next`` is the page the browser should land on
-    after consuming the code (e.g. ``/label/<session_id>``).
-    """
-    auth_header = request.headers.get("authorization", "")
-    bearer = auth_header.split(None, 1)[1].strip() if " " in auth_header else ""
-    code = web_sessions.mint_exchange_code(bearer)
-    base = str(request.base_url).rstrip("/")
-    safe_next = quote(next or "/", safe="")
-    login_url = f"{base}/login?code={quote(code, safe='')}&next={safe_next}"
-    return {"login_url": login_url}

@@ -261,47 +261,6 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
         poll_status(server_url, token, result["session_id"], timeout=float(wait_timeout))
 
 
-# ── gui ───────────────────────────────────────────────────────────────────────
-
-@main.command()
-def gui():
-    """Launch the scribe GUI widget (always-on-top, Tkinter)."""
-    try:
-        from .client.gui import launch
-    except ImportError as exc:
-        click.echo(
-            f"vezir gui requires Tkinter, which is not available: {exc}\n"
-            "On Debian/Ubuntu: sudo apt install python3-tk",
-            err=True,
-        )
-        sys.exit(1)
-    sys.exit(launch())
-
-
-@main.command("scribe-widget")
-def scribe_widget():
-    """Launch the compact always-on-top recording widget (Tkinter).
-
-    The hybrid v0.3 affordance: this small floating window handles the
-    *recording* flow (with pause/resume via the millet-record
-    library) and an 'Open TUI' button that launches `vezir tui` in a
-    new terminal for sessions / labeling / artifacts.
-
-    For full functionality without Tkinter, use `vezir tui`.
-    """
-    try:
-        from .client.scribe_widget import launch
-    except ImportError as exc:
-        click.echo(
-            f"vezir scribe-widget requires Tkinter: {exc}\n"
-            "On Debian/Ubuntu: sudo apt install python3-tk\n"
-            "Or use `vezir tui` (terminal-only, no Tk).",
-            err=True,
-        )
-        sys.exit(1)
-    sys.exit(launch())
-
-
 # ── tui ───────────────────────────────────────────────────────────────────────
 
 @main.command()

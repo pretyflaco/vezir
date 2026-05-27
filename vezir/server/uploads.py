@@ -5,11 +5,7 @@ POST /upload
         audio: the .wav/.ogg file produced by `millet record` or `vezir upload`
         title: optional meeting title
 
-    Returns: { "session_id": "<ulid>", "dashboard_url": "..." }
-
-The uploaded WAV is stored at sessions/<id>/<id>.wav (single-channel or
-dual-channel; millet handles both). A new job is enqueued for the
-worker to process.
+    Returns: { "session_id": "<ulid>", "bytes": <n> }
 """
 from __future__ import annotations
 
@@ -20,7 +16,7 @@ import ulid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from .. import config
-from . import auth, queue, ratelimit, web_sessions
+from . import auth, queue, ratelimit
 
 log = logging.getLogger("vezir.uploads")
 
@@ -179,35 +175,7 @@ async def upload(
         personal=is_personal,
     )
 
-    base = str(request.base_url).rstrip("/")
-    # `dashboard_url` is the canonical session detail path; clients with a
-    # bearer-token-aware HTTP client can fetch it directly.
-    # `dashboard_login_url` is the same destination wrapped through /login
-    # so a browser opened to it picks up a session cookie before being
-    # redirected.
-    #
-    # 0.1.12: this URL now embeds a one-time, 60-second exchange code
-    # instead of the plaintext bearer token. The code resolves to the
-    # uploader's bearer on /login consume (single-use) and is then
-    # swapped for an opaque session id stored in the cookie. The bearer
-    # never enters the URL, browser history, or Caddy access log.
-    from urllib.parse import quote
-    auth_token = request.headers.get("authorization", "")
-    if auth_token.lower().startswith("bearer "):
-        plaintext = auth_token.split(None, 1)[1].strip()
-        code = web_sessions.mint_exchange_code(plaintext)
-        login_url = (
-            f"{base}/login?code={quote(code, safe='')}"
-            f"&next=%2Fs%2F{session_id}"
-        )
-    else:
-        # No bearer header (shouldn't happen given require_bearer above,
-        # but stay defensive): emit a code-free URL that lands on the
-        # paste-token form.
-        login_url = f"{base}/login?next=%2Fs%2F{session_id}"
     return {
         "session_id": session_id,
         "bytes": bytes_written,
-        "dashboard_url": f"{base}/s/{session_id}",
-        "dashboard_login_url": login_url,
     }

@@ -1,15 +1,13 @@
-"""Speaker labeling endpoints: web UI (HTML) and native-client API (JSON).
-
-HTML routes (browser / web dashboard):
-  GET  /label/<session-id>                      → HTML labeling page
-  GET  /label/<session-id>/clip/<speaker-id>    → audio clip (WAV)
-  POST /label/<session-id>                      → apply label_map, regenerate
+"""Speaker labeling endpoints: JSON API and audio clips.
 
 JSON API routes (Android / programmatic clients):
+  GET  /api/team                                → team handles list
   GET  /api/label/<session-id>                  → JSON speaker list + team
   POST /api/label/<session-id>                  → apply labels from JSON body
 
-The labeling page is shown when a session's status is `needs_labeling`.
+Audio clip route:
+  GET  /label/<session-id>/clip/<speaker-id>    → audio clip (WAV)
+
 On submit, vezir invokes millet's apply_labels() directly to relabel
 the transcript and regenerate artifacts (txt, srt, json, summary, pdf),
 then transitions the job to `syncing` → `done`.
@@ -23,12 +21,11 @@ import shutil
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from .. import config
 from . import auth, meet_runner, queue, ratelimit, worker
-from .templating import templates
 
 log = logging.getLogger("vezir.labels")
 router = APIRouter()
@@ -108,38 +105,6 @@ def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
         raise HTTPException(404, "session not found")
 
 
-@router.get("/label/{session_id}", response_class=HTMLResponse)
-def label_page(
-    request: Request,
-    session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
-):
-    github, team_id, _admin = auth_triple
-    row = queue.get(session_id)
-    if not row:
-        raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
-    if row["status"] not in ("needs_labeling", "done", "error"):
-        return templates.TemplateResponse(
-            request,
-            "label_pending.html",
-            {"request": request, "row": row, "me": github},
-        )
-
-    speakers = _get_speakers(session_id)
-    return templates.TemplateResponse(
-        request,
-        "label.html",
-        {
-            "request": request,
-            "row": row,
-            "me": github,
-            "speakers": speakers,
-            "team": _team_handles(team_id),
-        },
-    )
-
-
 @router.get(
     "/label/{session_id}/clip/{speaker_id}",
     dependencies=[Depends(ratelimit.limit_api)],
@@ -147,7 +112,7 @@ def label_page(
 def label_clip(
     session_id: str,
     speaker_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
+    auth_triple: tuple = Depends(auth.require_bearer_full),
 ):
     """Return an audio clip for a speaker. Generates and caches on first hit."""
     _github, team_id, _admin = auth_triple
@@ -289,36 +254,6 @@ def api_team(auth_triple: tuple = Depends(auth.require_bearer_full)):
     """
     _github, team_id, _admin = auth_triple
     return {"team": _team_handles(team_id)}
-
-
-@router.post("/label/{session_id}")
-async def submit_labels(
-    request: Request,
-    session_id: str,
-    auth_triple: tuple = Depends(auth.require_bearer_or_cookie_full),
-):
-    """Apply user-assigned labels and trigger sync (HTML form POST)."""
-    github, team_id, _admin = auth_triple
-    row = queue.get(session_id)
-    if not row:
-        raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
-
-    form = await request.form()
-    label_map: dict[str, str] = {}
-    for key, value in form.items():
-        if not key.startswith("label_"):
-            continue
-        if not isinstance(value, str):
-            continue
-        name = value.strip()
-        if not name:
-            continue
-        speaker_id = key[len("label_"):]
-        label_map[speaker_id] = name
-
-    _apply_and_finalize(session_id, label_map, github, team_id)
-    return RedirectResponse(url=f"/s/{session_id}", status_code=303)
 
 
 # ── JSON API (native clients) ───────────────────────────────────────────────
