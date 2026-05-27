@@ -1,9 +1,12 @@
-"""Tests for v0.6.3 ergonomic token-revocation surface.
+"""Tests for the ergonomic token-revocation surface.
 
-Cover both the helper layer (``auth.revoke_by_filter``,
+Covers both the helper layer (``auth.revoke_by_filter``,
 ``auth.list_tokens``) and the CLI surface (``vezir token revoke``,
-``vezir token list --team``).  The CLI tests use ``click.testing`` so
-we don't need a full subprocess shell.
+``vezir token list``).
+
+v0.7.0: tokens are no longer team-scoped, so the ``--team`` filter
+on ``token revoke`` / ``token list`` was removed.  The remaining
+filters (github, label, token-id) still apply.
 """
 from __future__ import annotations
 
@@ -22,39 +25,36 @@ def tmp_data(monkeypatch):
 
 
 def _seed_three_handles(tmp_data: Path) -> dict:
-    """Seed a small fixture: 3 handles across 2 teams with varied labels.
+    """Seed a small fixture: 4 tokens across 3 handles with varied labels.
 
     Returns a dict mapping a friendly key to the plaintext token so each
     test can grab the one it cares about.
+
+    v0.7.0: team_id is no longer a token field.  We still create the
+    teams for backward compat with other tests that may run before this
+    one and to give the conftest shim something to point to.
     """
     from vezir.server import auth
     from vezir.server import queue as _queue
 
-    # Need teams to exist before we can issue.
-    _queue.create_team("blink", "Blink")
-    _queue.create_team("twentyone", "Twentyone")
+    if _queue.get_team("blink") is None:
+        _queue.create_team("blink", "Blink")
+    if _queue.get_team("twentyone") is None:
+        _queue.create_team("twentyone", "Twentyone")
 
     raw = auth._issue_raw if hasattr(auth, "_issue_raw") else auth.issue
     out: dict[str, str] = {}
-    out["alice_phone"] = raw(
-        "alice", team_id="blink", label="android-phone",
-    )
-    out["alice_laptop"] = raw(
-        "alice", team_id="blink", label="linux-laptop",
-    )
-    out["bob_phone"] = raw(
-        "bob", team_id="twentyone", label="android-phone",
-    )
-    out["carol_unlabeled"] = raw(
-        "carol", team_id="blink",  # no label
-    )
+    out["alice_phone"] = raw("alice", label="android-phone")
+    out["alice_laptop"] = raw("alice", label="linux-laptop")
+    out["bob_phone"] = raw("bob", label="android-phone")
+    out["carol_unlabeled"] = raw("carol")  # no label
     return out
 
 
 # ── auth.list_tokens ────────────────────────────────────────────────────────
 
 
-def test_list_tokens_returns_all_by_default(tmp_data):
+def test_list_tokens_returns_all(tmp_data):
     from vezir.server import auth
 
     _seed_three_handles(tmp_data)
@@ -68,25 +68,9 @@ def test_list_tokens_returns_all_by_default(tmp_data):
     for r in rows:
         assert "token_id" in r
         assert len(r["token_id"]) == 12
-
-
-def test_list_tokens_filters_by_team(tmp_data):
-    from vezir.server import auth
-
-    _seed_three_handles(tmp_data)
-    blink = auth.list_tokens(team_id="blink")
-    twentyone = auth.list_tokens(team_id="twentyone")
-    assert len(blink) == 3
-    assert len(twentyone) == 1
-    assert {r["github"] for r in blink} == {"alice", "carol"}
-    assert {r["github"] for r in twentyone} == {"bob"}
-
-
-def test_list_tokens_unknown_team_returns_empty(tmp_data):
-    from vezir.server import auth
-
-    _seed_three_handles(tmp_data)
-    assert auth.list_tokens(team_id="nonesuch") == []
+    # v0.7.0: team_id no longer in the listed shape.
+    for r in rows:
+        assert "team_id" not in r
 
 
 # ── auth.revoke_by_filter ───────────────────────────────────────────────────
@@ -153,32 +137,16 @@ def test_revoke_by_filter_label_dash_matches_label_less_rows(tmp_data):
     assert removed[0]["github"] == "carol"
 
 
-def test_revoke_by_filter_team_filter(tmp_data):
-    from vezir.server import auth
-
-    _seed_three_handles(tmp_data)
-    removed = auth.revoke_by_filter(team_id="twentyone")
-    assert len(removed) == 1
-    assert removed[0]["github"] == "bob"
-    # Blink rows untouched.
-    assert len(auth.list_tokens(team_id="blink")) == 3
-
-
 def test_revoke_by_filter_token_id_prefix_matches_single_row(tmp_data):
     from vezir.server import auth
 
     _seed_three_handles(tmp_data)
     rows = auth.list_tokens()
-    # Pick the first row's id prefix.
     target_id = rows[0]["token_id"]
     target_github = rows[0]["github"]
     removed = auth.revoke_by_filter(token_id_prefix=target_id)
     assert len(removed) == 1
-    # And it was actually the one we asked for.
     assert removed[0]["github"] == target_github
-    # token_hashes are 64-char sha256 hex; collisions on the first 12
-    # chars are astronomical, so a 12-char prefix should match exactly
-    # one row.
 
 
 def test_revoke_by_filter_no_match_returns_empty_and_writes_nothing(tmp_data):
@@ -218,7 +186,6 @@ def test_cli_revoke_github_with_yes_skips_prompt(tmp_data):
     assert result.exit_code == 0, result.output
     assert "Would revoke 2 token(s)" in result.output
     assert "Removed 2 token(s)" in result.output
-    # Confirm side effect.
     assert {r["github"] for r in auth.list_tokens()} == {"bob", "carol"}
 
 
@@ -232,7 +199,6 @@ def test_cli_revoke_github_plus_label_only_one(tmp_data):
     )
     assert result.exit_code == 0, result.output
     assert "Would revoke 1 token(s)" in result.output
-    # Alice still has her laptop.
     alice_left = [r for r in auth.list_tokens() if r["github"] == "alice"]
     assert len(alice_left) == 1
     assert alice_left[0]["label"] == "linux-laptop"
@@ -242,14 +208,12 @@ def test_cli_revoke_abort_on_no_confirm(tmp_data):
     from vezir.server import auth
 
     _seed_three_handles(tmp_data)
-    # Click confirm reads from stdin; "n\n" declines.
     result = _invoke(
         ["token", "revoke", "--github", "alice"],
         input_text="n\n",
     )
     assert result.exit_code == 1
     assert "Aborted" in result.output
-    # No mutation.
     assert len(auth.list_tokens()) == 4
 
 
@@ -267,49 +231,23 @@ def test_cli_revoke_short_token_id_rejected(tmp_data):
     assert "at least 4" in result.output
 
 
-def test_cli_revoke_team_filter(tmp_data):
-    from vezir.server import auth
-
-    _seed_three_handles(tmp_data)
-    result = _invoke(["token", "revoke", "--team", "twentyone", "--yes"])
-    assert result.exit_code == 0, result.output
-    assert "Removed 1 token(s)" in result.output
-    assert auth.list_tokens(team_id="twentyone") == []
-    assert len(auth.list_tokens(team_id="blink")) == 3
-
-
 # ── CLI: vezir token list ───────────────────────────────────────────────────
 
 
-def test_cli_list_includes_team_column_by_default(tmp_data):
+def test_cli_list_includes_github_label_role(tmp_data):
     _seed_three_handles(tmp_data)
     result = _invoke(["token", "list"])
     assert result.exit_code == 0, result.output
-    # Header includes 'team'.
-    assert "team" in result.output.splitlines()[0]
-    # All four rows present.
+    header = result.output.splitlines()[0]
+    assert "github" in header
+    assert "role" in header
+    assert "label" in header
+    # v0.7.0: no team column.
+    assert "team" not in header
+    # All three handles present.
     assert "alice" in result.output
     assert "bob" in result.output
     assert "carol" in result.output
-    assert "blink" in result.output
-    assert "twentyone" in result.output
-
-
-def test_cli_list_team_filter(tmp_data):
-    _seed_three_handles(tmp_data)
-    result = _invoke(["token", "list", "--team", "twentyone"])
-    assert result.exit_code == 0, result.output
-    # Only bob's row shows.
-    assert "bob" in result.output
-    assert "alice" not in result.output
-    assert "carol" not in result.output
-
-
-def test_cli_list_unknown_team_clean_message(tmp_data):
-    _seed_three_handles(tmp_data)
-    result = _invoke(["token", "list", "--team", "ghost"])
-    assert result.exit_code == 0
-    assert "no tokens scoped to team 'ghost'" in result.output
 
 
 def test_cli_list_show_id_adds_column(tmp_data):
@@ -318,6 +256,5 @@ def test_cli_list_show_id_adds_column(tmp_data):
     assert result.exit_code == 0, result.output
     header = result.output.splitlines()[0]
     assert " id " in header or header.rstrip().endswith("id")
-    # The id values are 12 hex chars; check at least one such pattern.
     import re
     assert re.search(r"\b[0-9a-f]{12}\b", result.output)

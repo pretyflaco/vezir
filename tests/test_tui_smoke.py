@@ -983,100 +983,10 @@ async def test_discover_clipboard_cmd_caches_result(app, mock_server, monkeypatc
     )
 
 
-# ─── PR10 regression guards: open-in-browser ──────────────────────────────────
-
-
-async def test_detail_screen_o_opens_dashboard_url(app, mock_server, monkeypatch):
-    """PR10: pressing `o` on DetailScreen opens
-    ``{server_url}/s/{session_id}`` in the user's default browser.
-    """
-    from vezir.client.tui.detail_screen import DetailScreen
-
-    opened: list[tuple[str, int]] = []
-    import webbrowser
-    monkeypatch.setattr(
-        webbrowser, "open",
-        lambda url, new=0: opened.append((url, new)) or True,
-    )
-
-    screen = DetailScreen(session_id="01KSBROWSE")
-    # Avoid notify side effects (would need a mounted screen).
-    monkeypatch.setattr(screen, "notify", lambda *a, **k: None)
-    # Bind a fake app so action_open_in_browser can read server_url.
-    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
-    app.server_url = "http://test"
-
-    screen.action_open_in_browser()
-    assert opened == [("http://test/s/01KSBROWSE", 2)], (
-        f"expected 1 browser open with /s/01KSBROWSE, got {opened}"
-    )
-
-
-async def test_detail_open_in_browser_handles_no_server_url(
-    app, mock_server, monkeypatch
-):
-    """If server_url is missing, action must notify (not crash)."""
-    from vezir.client.tui.detail_screen import DetailScreen
-
-    opened: list = []
-    import webbrowser
-    monkeypatch.setattr(
-        webbrowser, "open",
-        lambda url, new=0: opened.append(url) or True,
-    )
-    notified: list[tuple[str, str]] = []
-
-    screen = DetailScreen(session_id="01NOPE")
-    monkeypatch.setattr(
-        screen, "notify",
-        lambda msg, *, severity="information", **kw:
-            notified.append((str(msg), severity)),
-    )
-    monkeypatch.setattr(type(screen), "app", property(lambda self: app))
-    app.server_url = ""
-
-    screen.action_open_in_browser()
-    assert opened == [], (
-        f"webbrowser.open should not be called with empty server_url; "
-        f"got {opened}"
-    )
-    assert any("server URL" in msg.lower() or "no server" in msg.lower()
-               for msg, _ in notified), (
-        f"expected an error notification; got {notified}"
-    )
-
-
-async def test_sessions_body_o_opens_selected_in_browser(
-    app, mock_server, monkeypatch
-):
-    """PR10: pressing `o` on the Sessions list opens the cursor row's
-    session in the web dashboard.
-    """
-    mock_server["sessions"] = [
-        {"id": "01ROW0", "status": "done", "title": "row 0", "github": "alice"},
-        {"id": "01ROW1", "status": "done", "title": "row 1", "github": "bob"},
-    ]
-    opened: list[tuple[str, int]] = []
-    import webbrowser
-    monkeypatch.setattr(
-        webbrowser, "open",
-        lambda url, new=0: opened.append((url, new)) or True,
-    )
-    app.server_url = "http://test"
-
-    async with app.run_test() as pilot:
-        await pilot.press("ctrl+s")
-        await pilot.pause(0.5)
-
-        from textual.widgets import TabbedContent
-        tabs = app.screen.query_one(TabbedContent)
-        from vezir.client.tui.sessions_screen import SessionsBody
-        sess_body = tabs.active_pane.query_one(SessionsBody)
-        monkeypatch.setattr(sess_body, "notify", lambda *a, **k: None)
-        sess_body.action_open_selected_in_browser()
-        assert opened == [("http://test/s/01ROW0", 2)], (
-            f"expected /s/01ROW0 open, got {opened}"
-        )
+# PR10 (open-in-browser) tests removed in v0.7.0 along with the
+# dashboard.  See test_detail_screen.py / test_sessions_screen.py
+# (no replacements yet; folder-open + copy-id bindings are still
+# covered by the broader smoke tests in this file).
 
 
 # ─── PR11 regression guard: LabelScreen enter-to-submit ──────────────────────

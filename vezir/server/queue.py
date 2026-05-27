@@ -687,11 +687,11 @@ def add_membership(
 def remove_membership(github: str, team_id: str) -> bool:
     """Remove a user from a team. Returns True if a row was deleted."""
     with _conn() as c:
-        c.execute(
+        cur = c.execute(
             "DELETE FROM memberships WHERE github = ? AND team_id = ?",
             (github, team_id),
         )
-        return c.rowcount > 0
+        return cur.rowcount > 0
 
 
 def get_memberships(github: str) -> list[dict]:

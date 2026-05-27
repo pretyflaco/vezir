@@ -13,8 +13,6 @@ import pytest
 def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
-        from vezir.server import web_sessions
-        web_sessions._reset_for_tests()
         yield Path(d)
 
 
@@ -30,8 +28,11 @@ def client_factory(tmp_data):
     return _make
 
 
-def _bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def _bearer(token: str, team: str = "blink") -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Team-Id": team,
+    }
 
 
 def _tiny_wav() -> bytes:

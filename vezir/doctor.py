@@ -114,7 +114,7 @@ def _check_credential_resolution(
                 "to let teams.json take effect."
             )
 
-    return url, token
+    return url, token, team_id
 
 
 def _check_env_shadow(r: _Results) -> None:

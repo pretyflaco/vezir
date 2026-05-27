@@ -16,8 +16,6 @@ import pytest
 def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
-        from vezir.server import web_sessions
-        web_sessions._reset_for_tests()
         yield Path(d)
 
 
@@ -33,8 +31,11 @@ def client_and_token(tmp_data):
     return TestClient(app, follow_redirects=False), token
 
 
-def _bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def _bearer(token: str, team: str = "blink") -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Team-Id": team,
+    }
 
 
 def _seed_session(tmp_data, session_id: str, status: str = "needs_labeling"):

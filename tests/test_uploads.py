@@ -30,7 +30,13 @@ def client_and_token(tmp_data):
 
 
 def _bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+    # v0.7.0: every team-scoped endpoint (incl. /upload) needs X-Team-Id.
+    # The conftest shim adds 'alice' to 'blink' on issue() so this
+    # combination always validates.
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Team-Id": "blink",
+    }
 
 
 def _wav_bytes() -> bytes:

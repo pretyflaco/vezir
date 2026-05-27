@@ -1,9 +1,14 @@
-"""Tests for 0.1.12 token-model hardening and login-URL hardening:
+"""Token model + rate-limit tests.
 
-* Patch 1   — expires_at / last_used_at / is_admin / label, hmac compare.
-* Patch 1b  — require_admin gates /admin/enroll.
-* Patch 2   — exchange codes, opaque session cookies, legacy ?token=
-              deprecation path.
+Covers what remains of v0.1.12 token hardening after v0.7.0:
+
+* Token model: expires_at, last_used_at, is_admin, label, hmac compare.
+* require_admin gating on /admin/* routes (now /admin/teams).
+* Rate limiting on /upload and /api/sessions.
+
+v0.7.0 removals: cookie sessions, exchange codes, the HTML
+/admin/enroll page, and the /login flow are gone.  Tests targeting
+those surfaces were dropped wholesale.
 """
 from __future__ import annotations
 
@@ -22,9 +27,6 @@ import pytest
 def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
-        # Make sure the in-memory session store starts fresh per test.
-        from vezir.server import web_sessions
-        web_sessions._reset_for_tests()
         yield Path(d)
 
 
@@ -45,6 +47,13 @@ def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _team_headers(token: str, team: str = "blink") -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Team-Id": team,
+    }
+
+
 def _tiny_wav_bytes() -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -55,7 +64,7 @@ def _tiny_wav_bytes() -> bytes:
     return buf.getvalue()
 
 
-# ── Patch 1: token model ────────────────────────────────────────────────────
+# ── token model ──────────────────────────────────────────────────────────────
 
 
 def test_issue_records_new_fields(tmp_data):
@@ -75,6 +84,8 @@ def test_issue_records_new_fields(tmp_data):
     # plaintext is never persisted
     assert "token" not in row
     assert "plaintext" not in row
+    # v0.7.0: team_id no longer baked into the token
+    assert "team_id" not in row
 
 
 def test_lookup_uses_constant_time_compare(monkeypatch, tmp_data):
@@ -98,7 +109,6 @@ def test_lookup_uses_constant_time_compare(monkeypatch, tmp_data):
 def test_expired_token_is_rejected(tmp_data):
     from vezir.server import auth
 
-    # Issue and then manually backdate expiry to one minute ago.
     tok = auth.issue("alice", expires_in_seconds=10)
     import json
     p = tmp_data / "tokens.json"
@@ -114,9 +124,7 @@ def test_expired_token_is_rejected(tmp_data):
 
 def test_legacy_row_without_expires_at_still_works(tmp_data):
     """A token row from pre-0.1.12 (no expires_at field) is treated as
-    'no expiry' rather than 'instantly expired'. Required for upgrade
-    safety: we must not log everyone out on first server restart after
-    upgrade.
+    'no expiry'.  Required for upgrade safety.
     """
     import json
 
@@ -125,7 +133,6 @@ def test_legacy_row_without_expires_at_still_works(tmp_data):
     tok = auth.issue("alice")
     p = tmp_data / "tokens.json"
     data = json.loads(p.read_text())
-    # Strip 0.1.12 fields entirely, mimicking an old DB.
     del data["tokens"][0]["expires_at"]
     del data["tokens"][0]["last_used_at"]
     del data["tokens"][0]["is_admin"]
@@ -158,7 +165,6 @@ def test_last_used_at_is_debounced(tmp_data, monkeypatch):
     auth.lookup(tok)
     p = tmp_data / "tokens.json"
     first = json.loads(p.read_text())["tokens"][0]["last_used_at"]
-    # Second lookup well within the debounce window (60s).
     auth.lookup(tok)
     second = json.loads(p.read_text())["tokens"][0]["last_used_at"]
     assert first == second  # not touched again
@@ -173,264 +179,84 @@ def test_is_admin_token_distinguishes_roles(tmp_data):
     assert auth.is_admin_token("vzr_bogus") is False
 
 
-# ── Patch 1b: require_admin ─────────────────────────────────────────────────
+# ── require_admin gating (now /admin/teams) ──────────────────────────────────
 
 
-def test_admin_enroll_denies_non_admin_token(client_factory):
+def test_admin_teams_denies_non_admin_token(client_factory):
     from vezir.server import auth
     client = client_factory()
     scribe = auth.issue("bob", is_admin=False)
-    resp = client.get("/admin/enroll", headers=_bearer(scribe))
+    resp = client.get("/admin/teams", headers=_bearer(scribe))
     assert resp.status_code == 403
     assert "admin" in resp.text.lower()
 
 
-def test_admin_enroll_allows_admin_token(client_factory):
+def test_admin_teams_allows_admin_token(client_factory):
     from vezir.server import auth
     client = client_factory()
     admin = auth.issue("alice", is_admin=True)
-    resp = client.get("/admin/enroll", headers=_bearer(admin))
+    resp = client.get("/admin/teams", headers=_bearer(admin))
     assert resp.status_code == 200
 
 
-def test_admin_enroll_rejects_missing_credentials(client_factory):
+def test_admin_teams_rejects_missing_credentials(client_factory):
     client = client_factory()
-    resp = client.get("/admin/enroll")
+    resp = client.get("/admin/teams")
     assert resp.status_code == 401
 
 
 def test_admin_check_is_per_token_not_per_handle(client_factory):
     """A scribe-tier token must NOT inherit admin access from a separate
-    admin-tier token issued to the same github handle. This was a bug
-    in the initial 0.1.12 release where require_admin scanned all tokens
-    for the handle rather than checking the specific token presented.
+    admin-tier token issued to the same github handle.
     """
     from vezir.server import auth
     client = client_factory()
     _admin_tok = auth.issue("alice", is_admin=True)
     scribe_tok = auth.issue("alice", is_admin=False)
-    # Scribe token for alice must get 403, even though alice also has an admin token.
-    resp = client.get("/admin/enroll", headers=_bearer(scribe_tok))
+    resp = client.get("/admin/teams", headers=_bearer(scribe_tok))
     assert resp.status_code == 403
 
 
-def test_admin_check_per_token_via_session_cookie(client_factory):
-    """Same per-token check must hold when auth comes through a session
-    cookie rather than a direct bearer header. The is_admin flag is
-    captured at session creation time (/login).
-    """
-    from vezir.server import auth, web_sessions
+# ── X-Team-Id header enforcement ─────────────────────────────────────────────
+
+
+def test_api_sessions_requires_x_team_id_header(client_factory):
+    """v0.7.0: team-scoped endpoints require the X-Team-Id header."""
+    from vezir.server import auth
     client = client_factory()
-    _admin_tok = auth.issue("alice", is_admin=True)
-    scribe_tok = auth.issue("alice", is_admin=False)
-    # Log in with the scribe token via exchange code → opaque session.
-    code = web_sessions.mint_exchange_code(scribe_tok)
-    client.get(f"/login?code={code}&next=/")
-    # Cookie is set; try /admin/enroll.
-    resp = client.get("/admin/enroll")
+    tok = auth.issue("alice")
+    resp = client.get("/api/sessions", headers=_bearer(tok))
+    assert resp.status_code == 400
+    assert "X-Team-Id" in resp.text
+
+
+def test_api_sessions_rejects_non_member(client_factory):
+    """A token whose handle is not in the requested team's memberships
+    gets 403, NOT 200-with-empty list.  This is the v0.7.0 cross-team
+    access control."""
+    from vezir.server import auth
+    client = client_factory()
+    tok = auth.issue("alice")  # the conftest shim memberships alice into 'blink'
+    resp = client.get(
+        "/api/sessions",
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "X-Team-Id": "nonexistent-team",
+        },
+    )
     assert resp.status_code == 403
 
 
-# ── Patch 2: exchange codes ─────────────────────────────────────────────────
-
-
-def test_exchange_code_round_trip(tmp_data):
-    from vezir.server import auth, web_sessions
-
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-    assert code.startswith("vzx_")
-    consumed = web_sessions.consume_exchange_code(code)
-    assert consumed == tok
-    # single use
-    assert web_sessions.consume_exchange_code(code) is None
-
-
-def test_exchange_code_expires(monkeypatch, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-    # Fast-forward: monkeypatch time inside web_sessions.
-    real_now = web_sessions._now
-    monkeypatch.setattr(web_sessions, "_now", lambda: real_now() + 120.0)
-    assert web_sessions.consume_exchange_code(code) is None
-
-
-def test_login_with_code_sets_opaque_cookie(client_factory, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-
-    resp = client.get(f"/login?code={code}&next=/s/abc")
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/s/abc"
-    sc = resp.headers.get("set-cookie", "")
-    # Cookie value must be an opaque session id, NOT the bearer token.
-    assert "vezir_session=" in sc
-    assert tok not in sc
-    assert "vezir_session=vzs_" in sc
-
-
-def test_login_with_expired_code_returns_401(client_factory, monkeypatch, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-    real_now = web_sessions._now
-    monkeypatch.setattr(web_sessions, "_now", lambda: real_now() + 120.0)
-    resp = client.get(f"/login?code={code}&next=/")
-    assert resp.status_code == 401
-
-
-def test_login_with_code_for_revoked_token_returns_401(client_factory, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-    auth.revoke("alice")
-    resp = client.get(f"/login?code={code}&next=/")
-    assert resp.status_code == 401
-
-
-def test_legacy_token_login_still_works_with_deprecation_header(client_factory, tmp_data):
-    """One-release back-compat: ?token= must still sign the user in, but
-    must add a Deprecation header so we can flag clients that need to be
-    upgraded.
-    """
-    from vezir.server import auth
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    resp = client.get(f"/login?token={tok}&next=/")
-    assert resp.status_code == 303
-    assert resp.headers.get("Deprecation") == "true"
-    assert "Warning" in resp.headers
-    # And it should still issue an opaque session cookie, not echo the bearer.
-    sc = resp.headers.get("set-cookie", "")
-    assert tok not in sc
-    assert "vezir_session=vzs_" in sc
-
-
-def test_logout_invalidates_session(client_factory, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-
-    r1 = client.get(f"/login?code={code}&next=/")
-    set_cookie = r1.headers["set-cookie"]
-    # Pull out the opaque sid value for direct inspection.
-    sid = None
-    for part in set_cookie.split(";"):
-        if part.strip().startswith("vezir_session="):
-            sid = part.strip().split("=", 1)[1]
-    assert sid is not None
-    result = web_sessions.lookup_session(sid)
-    assert result is not None
-    assert result[0] == "alice"
-
-    client.cookies.set("vezir_session", sid)
-    r2 = client.get("/logout")
-    assert r2.status_code == 303
-    # Session is now invalid.
-    assert web_sessions.lookup_session(sid) is None
-
-
-def test_upload_response_uses_code_not_token(client_factory, tmp_data):
+def test_api_sessions_accepts_member(client_factory):
     from vezir.server import auth
     client = client_factory()
-    tok = auth.issue("alice")
-    wav = _tiny_wav_bytes()
-
-    resp = client.post(
-        "/upload",
-        headers=_bearer(tok),
-        files={"audio": ("foo.wav", wav, "audio/wav")},
-    )
+    tok = auth.issue("alice")  # auto-memberships into 'blink'
+    resp = client.get("/api/sessions", headers=_team_headers(tok))
     assert resp.status_code == 200
-    body = resp.json()
-    assert "dashboard_login_url" in body
-    url = body["dashboard_login_url"]
-    # Bearer must not appear; an exchange code must.
-    assert tok not in url
-    assert "code=vzx_" in url
+    assert "sessions" in resp.json()
 
 
-def test_dashboard_with_opaque_session_cookie(client_factory, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-    client.get(f"/login?code={code}&next=/")
-    resp = client.get("/")
-    assert resp.status_code == 200
-
-
-def test_api_still_requires_bearer_not_session_cookie(client_factory, tmp_data):
-    from vezir.server import auth, web_sessions
-
-    client = client_factory()
-    tok = auth.issue("alice")
-    code = web_sessions.mint_exchange_code(tok)
-    client.get(f"/login?code={code}&next=/")
-    # Cookie alone must NOT grant /api/* access (programmatic surface).
-    resp = client.get("/api/sessions")
-    assert resp.status_code == 401
-    # Bearer still works.
-    resp2 = client.get("/api/sessions", headers=_bearer(tok))
-    assert resp2.status_code == 200
-
-
-# ── POST /api/exchange-code ─────────────────────────────────────────────────
-
-
-def test_exchange_code_endpoint_returns_code_url(client_factory):
-    from vezir.server import auth
-    client = client_factory()
-    tok = auth.issue("alice")
-    resp = client.post(
-        "/api/exchange-code?next=/label/abc123",
-        headers=_bearer(tok),
-    )
-    assert resp.status_code == 200
-    url = resp.json()["login_url"]
-    assert "code=vzx_" in url
-    assert tok not in url
-    assert "%2Flabel%2Fabc123" in url
-
-
-def test_exchange_code_endpoint_rejects_missing_bearer(client_factory):
-    client = client_factory()
-    resp = client.post("/api/exchange-code?next=/")
-    assert resp.status_code == 401
-
-
-def test_exchange_code_endpoint_code_is_consumable(client_factory):
-    """The code returned by /api/exchange-code must actually work at /login."""
-    from vezir.server import auth
-    client = client_factory()
-    tok = auth.issue("alice")
-    resp = client.post(
-        "/api/exchange-code?next=/s/test",
-        headers=_bearer(tok),
-    )
-    login_url = resp.json()["login_url"]
-    # Extract the relative path (TestClient needs relative URLs).
-    from urllib.parse import urlparse
-    path_and_query = urlparse(login_url)._replace(scheme="", netloc="").geturl()
-    r2 = client.get(path_and_query)
-    assert r2.status_code == 303
-    assert r2.headers["location"] == "/s/test"
-
-
-# ── Patch 3: rate limiting ──────────────────────────────────────────────────
+# ── rate limiting ────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -441,20 +267,6 @@ def ratelimit_enabled(monkeypatch):
     ratelimit._reset_for_tests()
     yield
     ratelimit._reset_for_tests()
-
-
-def test_login_rate_limit_blocks_burst(client_factory, ratelimit_enabled):
-    """20 login attempts/min cap. Burst of 30 should produce some 429s."""
-    client = client_factory()
-    saw_429 = False
-    for i in range(30):
-        resp = client.post("/login", data={"token": "vzr_bogus", "next": "/"})
-        if resp.status_code == 429:
-            saw_429 = True
-            assert "Retry-After" in resp.headers
-            assert int(resp.headers["Retry-After"]) >= 1
-            break
-    assert saw_429, "rate limiter never tripped within 30 attempts"
 
 
 def test_upload_rate_limit_per_token(client_factory, ratelimit_enabled, tmp_data):
@@ -473,7 +285,7 @@ def test_upload_rate_limit_per_token(client_factory, ratelimit_enabled, tmp_data
     for _ in range(12):
         resp = client.post(
             "/upload",
-            headers=_bearer(tok_a),
+            headers=_team_headers(tok_a),
             files={"audio": ("x.wav", wav, "audio/wav")},
         )
         if resp.status_code == 429:
@@ -481,10 +293,12 @@ def test_upload_rate_limit_per_token(client_factory, ratelimit_enabled, tmp_data
             break
     assert saw_429
 
-    # Bob still has a fresh bucket.
+    # Bob still has a fresh bucket.  bob also needs membership in blink.
+    from vezir.server import queue
+    queue.add_membership("bob", "blink", role="scribe")
     resp = client.post(
         "/upload",
-        headers=_bearer(tok_b),
+        headers=_team_headers(tok_b),
         files={"audio": ("y.wav", wav, "audio/wav")},
     )
     assert resp.status_code == 200, resp.text
@@ -492,11 +306,12 @@ def test_upload_rate_limit_per_token(client_factory, ratelimit_enabled, tmp_data
 
 def test_ratelimit_disabled_by_env(client_factory, monkeypatch):
     """With VEZIR_DISABLE_RATELIMIT=1 (set by conftest) the limiter is a no-op."""
-    from vezir.server import ratelimit
+    from vezir.server import auth, ratelimit
     ratelimit._reset_for_tests()
 
     client = client_factory()
-    # 200 login attempts, no 429 ever.
+    tok = auth.issue("alice")
+    # Many requests, no 429 ever.
     for _ in range(60):
-        resp = client.post("/login", data={"token": "vzr_bogus", "next": "/"})
+        resp = client.get("/api/sessions", headers=_team_headers(tok))
         assert resp.status_code != 429

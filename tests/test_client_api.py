@@ -194,16 +194,15 @@ def test_label_info_from_dict():
 # ─── VezirClient against MockTransport ───────────────────────────────────────
 
 
-def _client_with_transport(handler) -> VezirClient:
+def _client_with_transport(handler, team_id: str | None = "blink") -> VezirClient:
     """Wire a MockTransport into a VezirClient by monkeypatching httpx.Client.
 
-    httpx.Client(transport=...) is the supported route, but our client
-    constructs httpx.Client() inline per call.  Easiest way to stub
-    without contorting production code is to swap httpx.Client for a
-    lambda that injects the transport.
+    ``team_id`` defaults to ``"blink"`` so existing tests get a sensible
+    ``X-Team-Id`` header without code changes.  Pass ``None`` to test
+    the no-team flow (e.g. /api/me discovery).
     """
     transport = httpx.MockTransport(handler)
-    client = VezirClient("https://test", "vzr_token")
+    client = VezirClient("https://test", "vzr_token", team_id=team_id)
     # Monkeypatch the httpx.Client reference the client uses.
     import vezir.client.api as api_mod
     orig = api_mod.httpx.Client
@@ -386,19 +385,34 @@ def test_download_clip(mocked_client):
     assert client.download_clip("01X", "REMOTE_0").unwrap() == b"RIFFwavedata"
 
 
-def test_exchange_code_posts_with_next_param(mocked_client):
+def test_x_team_id_header_is_sent(mocked_client):
+    """v0.7.0: every team-scoped request sends the X-Team-Id header."""
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["next"] = request.url.params.get("next")
-        return httpx.Response(200, json={"login_url": "https://test/login?code=vzx_x"})
+        seen["team"] = request.headers.get("X-Team-Id")
+        return httpx.Response(200, json={"sessions": []})
 
-    client = mocked_client(handler)
-    result = client.exchange_code("/label/01X")
-    assert result.unwrap()["login_url"].endswith("code=vzx_x")
-    assert seen["path"] == "/api/exchange-code"
-    assert seen["next"] == "/label/01X"
+    client = mocked_client(handler, team_id="blink")
+    client.get_sessions()
+    assert seen["team"] == "blink"
+
+
+def test_x_team_id_header_omitted_when_unset(mocked_client):
+    """When the client was built without a team_id, no header is sent
+    (e.g. for /api/me discovery flow before the user has picked one).
+    """
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["team"] = request.headers.get("X-Team-Id")
+        return httpx.Response(200, json={
+            "github": "alice", "is_admin": False, "memberships": [],
+        })
+
+    client = mocked_client(handler, team_id=None)
+    client.get_me()
+    assert seen["team"] is None
 
 
 def test_network_error_returned_not_raised(mocked_client):
@@ -424,10 +438,9 @@ def live_server(monkeypatch):
 
     from fastapi.testclient import TestClient
 
-    from vezir.server import auth, web_sessions
+    from vezir.server import auth
     from vezir.server.app import create_app
 
-    web_sessions._reset_for_tests()
     token = auth.issue("alice")
     app = create_app()
     test_client = TestClient(app)
@@ -447,7 +460,9 @@ def live_server(monkeypatch):
 
     api_mod.httpx.Client = factory
     try:
-        yield VezirClient("http://testserver", token)
+        # v0.7.0: team_id must be set for team-scoped endpoints to
+        # work; conftest's auth.issue shim adds 'alice' to 'blink'.
+        yield VezirClient("http://testserver", token, team_id="blink")
     finally:
         api_mod.httpx.Client = orig
         tdir.cleanup()

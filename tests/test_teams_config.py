@@ -14,8 +14,6 @@ import pytest
 def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
-        from vezir.server import web_sessions
-        web_sessions._reset_for_tests()
         yield Path(d)
 
 
@@ -34,37 +32,47 @@ def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_api_me_returns_team_for_blink_token(client_factory):
-    from vezir.server import auth
+def test_api_me_returns_memberships(client_factory):
+    """v0.7.0: /api/me returns identity + a list of every team the
+    user is a member of (with role + team_name)."""
+    from vezir.server import auth, queue
     client = client_factory()
-    tok = auth._issue_raw("alice", team_id="blink")
+    tok = auth.issue("alice", team_id="blink")  # shim adds blink membership
+    queue.add_membership("alice", "twentyone", role="admin")
     r = client.get("/api/me", headers=_bearer(tok))
     assert r.status_code == 200
     body = r.json()
     assert body["github"] == "alice"
-    assert body["team_id"] == "blink"
-    assert body["team_name"] == "Blink"
     assert body["is_admin"] is False
-
-
-def test_api_me_returns_team_for_twentyone_token(client_factory):
-    from vezir.server import auth
-    client = client_factory()
-    tok = auth._issue_raw("bm", team_id="twentyone")
-    r = client.get("/api/me", headers=_bearer(tok))
-    assert r.status_code == 200
-    body = r.json()
-    assert body["team_id"] == "twentyone"
-    assert body["team_name"] == "Twentyone"
+    by_team = {m["team_id"]: m for m in body["memberships"]}
+    assert "blink" in by_team
+    assert "twentyone" in by_team
+    assert by_team["twentyone"]["role"] == "admin"
+    assert by_team["blink"]["team_name"] == "Blink"
 
 
 def test_api_me_returns_admin_flag(client_factory):
     from vezir.server import auth
     client = client_factory()
-    tok = auth._issue_raw("alice", team_id="blink", is_admin=True)
+    tok = auth.issue("alice", is_admin=True)
     r = client.get("/api/me", headers=_bearer(tok))
     assert r.status_code == 200
     assert r.json()["is_admin"] is True
+
+
+def test_api_me_empty_memberships(client_factory):
+    """A token whose handle has no memberships still gets a 200 with
+    an empty memberships list (so the client can display 'no teams').
+    """
+    from vezir.server import auth
+    client = client_factory()
+    # Use the raw issue path so the shim doesn't auto-membership.
+    tok = auth._issue_raw("orphan")
+    r = client.get("/api/me", headers=_bearer(tok))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["github"] == "orphan"
+    assert body["memberships"] == []
 
 
 def test_api_me_rejects_no_bearer(client_factory):
@@ -215,10 +223,23 @@ def test_resolve_credentials_env_wins(tmp_home, monkeypatch):
     add_team_credentials("blink", "https://teamsjson/", "vzr_fromteamsjson")
     monkeypatch.setenv("VEZIR_URL", "https://envwins/")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_envwins")
-    url, token, source = resolve_credentials()
+    monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
+    url, token, team_id, source = resolve_credentials()
     assert source == "env"
     assert url == "https://envwins/"
     assert token == "vzr_envwins"
+    assert team_id is None  # not set in env -> None
+
+
+def test_resolve_credentials_env_team_id_supported(tmp_home, monkeypatch):
+    """v0.7.0: VEZIR_TEAM_ID supplies the team scope for env-creds mode."""
+    from vezir.client.config import resolve_credentials
+    monkeypatch.setenv("VEZIR_URL", "https://m/")
+    monkeypatch.setenv("VEZIR_TOKEN", "vzr_x")
+    monkeypatch.setenv("VEZIR_TEAM_ID", "blink")
+    url, token, team_id, source = resolve_credentials()
+    assert source == "env"
+    assert team_id == "blink"
 
 
 def test_resolve_credentials_teams_json_when_no_env(tmp_home, monkeypatch):
@@ -226,30 +247,37 @@ def test_resolve_credentials_teams_json_when_no_env(tmp_home, monkeypatch):
     add_team_credentials("blink", "https://teams/", "vzr_teams")
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
-    url, token, source = resolve_credentials()
+    monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
+    url, token, team_id, source = resolve_credentials()
     assert source == "teams:blink"
     assert url == "https://teams/"
     assert token == "vzr_teams"
+    assert team_id == "blink"
 
 
 def test_resolve_credentials_client_json_when_no_env_no_teams(tmp_home, monkeypatch):
     from vezir.client.config import resolve_credentials, save_client_prefs
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
+    monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
     save_client_prefs({"url": "https://client/", "token": "vzr_client"})
-    url, token, source = resolve_credentials()
+    url, token, team_id, source = resolve_credentials()
     assert source == "client"
     assert url == "https://client/"
     assert token == "vzr_client"
+    # client.json doesn't store team_id by default.
+    assert team_id is None
 
 
 def test_resolve_credentials_returns_nones_when_nothing_set(tmp_home, monkeypatch):
     from vezir.client.config import resolve_credentials
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
-    url, token, source = resolve_credentials()
+    monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
+    url, token, team_id, source = resolve_credentials()
     assert url is None
     assert token is None
+    assert team_id is None
     assert source is None
 
 
@@ -259,9 +287,10 @@ def test_resolve_credentials_env_partial_falls_through(tmp_home, monkeypatch):
     add_team_credentials("blink", "https://teams/", "vzr_teams")
     monkeypatch.setenv("VEZIR_URL", "https://only-url/")
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
-    url, token, source = resolve_credentials()
+    url, token, team_id, source = resolve_credentials()
     assert source == "teams:blink"
     assert url == "https://teams/"
+    assert team_id == "blink"
 
 
 # ── teams.json file format defensive parsing ────────────────────────────────

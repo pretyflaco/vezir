@@ -1,20 +1,25 @@
-"""v0.6.0 multi-team isolation tests.
+"""v0.7.0 multi-team isolation tests.
 
-These tests are the CENTRAL security property of v0.6.0.  They prove
-that:
+These tests are the CENTRAL security property of the multi-team model.
+They prove:
 
-* A token issued for team A cannot see team B's sessions via any API.
-* A token issued for team A cannot fetch team B's artifacts, label
-  pages, label clips, sync-now, share, or retry-summary.
-* The visibility filter in queue.list_recent strictly partitions
-  sessions by team_id.
-* Cross-team requests return 404 (not 403) to avoid leaking
-  session existence.
-* A token without team_id (legacy / hand-edited) is rejected at auth
-  time with 401, not allowed to fall through to the visibility filter.
+* A token whose handle is not a member of team B cannot see team B's
+  sessions via any API.
+* Cross-team requests return 404 (not 403) where the test was set up
+  with a valid X-Team-Id of a team the user IS in but is asking about
+  someone else's session; missing/invalid X-Team-Id returns 400 / 403
+  respectively at the auth layer.
+* queue.list_recent's visibility filter strictly partitions sessions
+  by team_id; the auth dependency is the only gate that determines
+  which team_id a request sees.
 
-These tests bypass the auth.issue shim by using the underlying
-``auth._issue_raw`` directly so the team_id is explicit per token.
+v0.7.0 changes from v0.6.x:
+
+* Tokens are no longer team-scoped.  The auth shim in conftest adds
+  a membership row whenever a test issues a token, so the same human
+  can be a member of multiple teams.
+* The legacy "token without team_id" test was deleted; v0.7.0 tokens
+  don't have team_id at all.
 """
 from __future__ import annotations
 
@@ -30,8 +35,6 @@ import pytest
 def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
-        from vezir.server import web_sessions
-        web_sessions._reset_for_tests()
         yield Path(d)
 
 
@@ -47,8 +50,11 @@ def client_factory(tmp_data):
     return _make
 
 
-def _bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def _headers(token: str, team: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Team-Id": team,
+    }
 
 
 def _tiny_wav() -> bytes:
@@ -61,10 +67,15 @@ def _tiny_wav() -> bytes:
     return buf.getvalue()
 
 
-def _issue_raw(github, team_id, **kwargs):
-    """Bypass the conftest shim; explicit team_id per token."""
+def _issue_for(github: str, team: str) -> str:
+    """Issue a token and add a membership for ``github`` in ``team``.
+
+    Wraps the shimmed auth.issue but pins the team_id so the membership
+    lands in the team we care about (instead of the shim's default
+    'blink').
+    """
     from vezir.server import auth
-    return auth._issue_raw(github, team_id=team_id, **kwargs)
+    return auth.issue(github, team_id=team)
 
 
 # ── Migration seeded both teams; verify they exist ──────────────────────────
@@ -81,17 +92,17 @@ def test_migration_seeds_blink_and_twentyone(client_factory):
     assert teams["twentyone"]["name"] == "Twentyone"
 
 
-# ── Upload routes the session to the uploader's team ───────────────────────
+# ── Upload routes the session to the X-Team-Id team ───────────────────────
 
 
-def test_upload_routes_to_blink_when_token_is_blink(client_factory):
+def test_upload_routes_to_team_from_header(client_factory):
     client = client_factory()
     from vezir.server import queue
-    tok = _issue_raw("alice", team_id="blink")
+    tok = _issue_for("alice", "blink")
 
     resp = client.post(
         "/upload",
-        headers=_bearer(tok),
+        headers=_headers(tok, "blink"),
         files={"audio": ("x.wav", _tiny_wav(), "audio/wav")},
     )
     assert resp.status_code == 200
@@ -100,14 +111,14 @@ def test_upload_routes_to_blink_when_token_is_blink(client_factory):
     assert row["team_id"] == "blink"
 
 
-def test_upload_routes_to_twentyone_when_token_is_twentyone(client_factory):
+def test_upload_routes_to_twentyone_when_header_says_so(client_factory):
     client = client_factory()
     from vezir.server import queue
-    tok = _issue_raw("alice", team_id="twentyone")
+    tok = _issue_for("alice", "twentyone")
 
     resp = client.post(
         "/upload",
-        headers=_bearer(tok),
+        headers=_headers(tok, "twentyone"),
         files={"audio": ("x.wav", _tiny_wav(), "audio/wav")},
     )
     assert resp.status_code == 200
@@ -123,22 +134,24 @@ def test_api_sessions_shows_only_own_team(client_factory):
     client = client_factory()
     from vezir.server import queue
 
-    blink_tok = _issue_raw("alice", team_id="blink")
-    twentyone_tok = _issue_raw("alice", team_id="twentyone")
+    # alice is a member of both teams (one token covers both via
+    # X-Team-Id).
+    tok = _issue_for("alice", "blink")
+    _ = _issue_for("alice", "twentyone")  # adds another membership
 
     # Seed: one job per team.
-    queue.enqueue("01BLINK1", "alice", "blink-meeting", team_id="blink")
-    queue.enqueue("01TWENT1", "alice", "twentyone-meeting", team_id="twentyone")
+    queue.enqueue("01BLINK1", "alice", team_id="blink", title="blink-meeting")
+    queue.enqueue("01TWENT1", "alice", team_id="twentyone", title="twentyone-meeting")
 
-    # Blink token sees only the blink session.
-    r1 = client.get("/api/sessions", headers=_bearer(blink_tok))
+    # X-Team-Id: blink -> only blink session.
+    r1 = client.get("/api/sessions", headers=_headers(tok, "blink"))
     assert r1.status_code == 200
     blink_ids = {s["id"] for s in r1.json()["sessions"]}
     assert "01BLINK1" in blink_ids
     assert "01TWENT1" not in blink_ids
 
-    # Twentyone token sees only the twentyone session.
-    r2 = client.get("/api/sessions", headers=_bearer(twentyone_tok))
+    # X-Team-Id: twentyone -> only twentyone session.
+    r2 = client.get("/api/sessions", headers=_headers(tok, "twentyone"))
     assert r2.status_code == 200
     twentyone_ids = {s["id"] for s in r2.json()["sessions"]}
     assert "01TWENT1" in twentyone_ids
@@ -147,67 +160,84 @@ def test_api_sessions_shows_only_own_team(client_factory):
 
 def test_api_sessions_personal_still_works_within_team(client_factory):
     """Personal sessions are visible to their owner within the team;
-    other team members see only the non-personal ones; other-team
-    members see nothing."""
+    other team members see only the non-personal ones; non-members
+    see nothing."""
     client = client_factory()
     from vezir.server import queue
 
-    alice_blink = _issue_raw("alice", team_id="blink")
-    bob_blink = _issue_raw("bob", team_id="blink")
-    carol_twentyone = _issue_raw("carol", team_id="twentyone")
+    alice_tok = _issue_for("alice", "blink")
+    bob_tok = _issue_for("bob", "blink")
+    carol_tok = _issue_for("carol", "twentyone")
 
-    queue.enqueue("01APRIV", "alice", "alice priv", personal=True, team_id="blink")
-    queue.enqueue("01ATEAM", "alice", "alice team", personal=False, team_id="blink")
+    queue.enqueue(
+        "01APRIV", "alice", team_id="blink",
+        title="alice priv", personal=True,
+    )
+    queue.enqueue(
+        "01ATEAM", "alice", team_id="blink",
+        title="alice team", personal=False,
+    )
 
-    # Alice (blink) sees both her personal + team sessions.
+    # Alice sees both her personal + team sessions.
     ids_alice = {
         s["id"]
-        for s in client.get("/api/sessions", headers=_bearer(alice_blink)).json()["sessions"]
+        for s in client.get(
+            "/api/sessions", headers=_headers(alice_tok, "blink"),
+        ).json()["sessions"]
     }
     assert ids_alice == {"01APRIV", "01ATEAM"}
 
     # Bob (blink) sees only the team session.
     ids_bob = {
         s["id"]
-        for s in client.get("/api/sessions", headers=_bearer(bob_blink)).json()["sessions"]
+        for s in client.get(
+            "/api/sessions", headers=_headers(bob_tok, "blink"),
+        ).json()["sessions"]
     }
     assert ids_bob == {"01ATEAM"}
 
-    # Carol (twentyone) sees neither.
-    ids_carol = {
-        s["id"]
-        for s in client.get("/api/sessions", headers=_bearer(carol_twentyone)).json()["sessions"]
-    }
-    assert "01APRIV" not in ids_carol
-    assert "01ATEAM" not in ids_carol
+    # Carol (twentyone) is not a member of blink -> 403.
+    r_carol = client.get(
+        "/api/sessions", headers=_headers(carol_tok, "blink"),
+    )
+    assert r_carol.status_code == 403
 
 
 # ── Cross-team session-detail / artifact access returns 404 ────────────────
 
 
 def test_api_session_detail_cross_team_returns_404(client_factory):
+    """If the caller is a member of team B but the session lives in
+    team A, the request looks like 'session not found' to the caller.
+    """
     client = client_factory()
     from vezir.server import queue
 
-    blink_tok = _issue_raw("alice", team_id="blink")
-    twentyone_tok = _issue_raw("alice", team_id="twentyone")
+    tok = _issue_for("alice", "blink")
+    _ = _issue_for("alice", "twentyone")
 
-    queue.enqueue("01BLINKX", "alice", "blink", team_id="blink")
+    queue.enqueue("01BLINKX", "alice", team_id="blink", title="blink")
 
-    # blink owner sees it
-    r1 = client.get("/api/sessions/01BLINKX", headers=_bearer(blink_tok))
+    # blink scope sees it
+    r1 = client.get("/api/sessions/01BLINKX", headers=_headers(tok, "blink"))
     assert r1.status_code == 200
 
-    # twentyone token cannot see it — 404 (not 403, to avoid leaking existence)
-    r2 = client.get("/api/sessions/01BLINKX", headers=_bearer(twentyone_tok))
+    # twentyone scope: same human, but session is in a different team
+    # -> 404 (not 403, to avoid leaking existence)
+    r2 = client.get(
+        "/api/sessions/01BLINKX", headers=_headers(tok, "twentyone"),
+    )
     assert r2.status_code == 404
 
 
 def test_api_session_detail_unknown_session_404(client_factory):
     """Unknown session id returns 404 regardless of team."""
     client = client_factory()
-    tok = _issue_raw("alice", team_id="blink")
-    r = client.get("/api/sessions/01NOPE0000000000000000000", headers=_bearer(tok))
+    tok = _issue_for("alice", "blink")
+    r = client.get(
+        "/api/sessions/01NOPE0000000000000000000",
+        headers=_headers(tok, "blink"),
+    )
     assert r.status_code == 404
 
 
@@ -215,17 +245,20 @@ def test_api_session_detail_unknown_session_404(client_factory):
 
 
 def test_share_cross_team_returns_404(client_factory):
-    """A twentyone token cannot share a blink-owned personal session."""
+    """A twentyone-scoped request cannot share a blink-owned personal session."""
     client = client_factory()
     from vezir.server import queue
-    queue.enqueue("01PRIV2", "alice", "blink priv", personal=True, team_id="blink")
+    queue.enqueue(
+        "01PRIV2", "alice", team_id="blink",
+        title="blink priv", personal=True,
+    )
 
-    twentyone_tok = _issue_raw("alice", team_id="twentyone")
+    tok = _issue_for("alice", "twentyone")
     r = client.post(
         "/api/sessions/01PRIV2/share",
-        headers=_bearer(twentyone_tok),
+        headers=_headers(tok, "twentyone"),
     )
-    assert r.status_code == 404  # not visible -> 404
+    assert r.status_code == 404
 
 
 # ── Cross-team retry-summary is rejected ────────────────────────────────────
@@ -234,51 +267,41 @@ def test_share_cross_team_returns_404(client_factory):
 def test_retry_summary_cross_team_returns_404(client_factory):
     client = client_factory()
     from vezir.server import queue
-    queue.enqueue("01DONE", "alice", "blink done", team_id="blink")
-    # Force into done+summary_error state for the retry endpoint
+    queue.enqueue("01DONE", "alice", team_id="blink", title="blink done")
     queue.update_status("01DONE", "done", summary_error="LLM hiccup")
 
-    twentyone_tok = _issue_raw("alice", team_id="twentyone")
+    tok = _issue_for("alice", "twentyone")
     r = client.post(
         "/api/sessions/01DONE/retry-summary",
-        headers=_bearer(twentyone_tok),
+        headers=_headers(tok, "twentyone"),
     )
     assert r.status_code == 404
 
 
-# ── Tokens without team_id are rejected ────────────────────────────────────
+# ── Non-member requests are 403 ─────────────────────────────────────────────
 
 
-def test_legacy_token_without_team_id_rejected(client_factory):
-    """A hand-edited tokens.json entry missing team_id must 401."""
+def test_non_member_request_is_403(client_factory):
+    """A token whose handle is not in the requested team's memberships
+    is rejected at the auth layer with 403, before any visibility check.
+    """
     client = client_factory()
-    import json
+    tok = _issue_for("alice", "blink")
+    # alice is NOT in twentyone here (we only added blink membership)
+    r = client.get("/api/sessions", headers=_headers(tok, "twentyone"))
+    assert r.status_code == 403
 
-    from vezir import config as _config
-    from vezir.server import auth as _auth
 
-    # Insert a legacy-shape token row directly (bypassing auth.issue).
-    p = _config.tokens_json_path()
-    data = json.loads(p.read_text()) if p.exists() else {"tokens": []}
-    data["tokens"].append({
-        "github": "legacy",
-        "token_hash": _auth._hash("vzr_legacy_no_team"),
-        "issued_at": "2026-05-24T00:00:00Z",
-        "expires_at": None,
-        "last_used_at": None,
-        "is_admin": False,
-        "label": "legacy",
-        # NOTE: no team_id
-    })
-    _config.secure_write_text(p, json.dumps(data, indent=2))
-
+def test_missing_x_team_id_is_400(client_factory):
+    """v0.7.0: team-scoped endpoints require the X-Team-Id header."""
+    client = client_factory()
+    tok = _issue_for("alice", "blink")
     r = client.get(
         "/api/sessions",
-        headers={"Authorization": "Bearer vzr_legacy_no_team"},
+        headers={"Authorization": f"Bearer {tok}"},
     )
-    assert r.status_code == 401
-    detail = r.json()["detail"]
-    assert "team" in detail.lower()
+    assert r.status_code == 400
+    assert "X-Team-Id" in r.text
 
 
 # ── queue.list_recent guard rails ───────────────────────────────────────────
@@ -286,7 +309,7 @@ def test_legacy_token_without_team_id_rejected(client_factory):
 
 def test_list_recent_rejects_viewer_github_without_team(client_factory):
     """The library function refuses the legacy 1-arg shape."""
-    client_factory()  # ensure schema + teams seeded
+    client_factory()
     from vezir.server import queue
 
     with pytest.raises(ValueError, match="viewer_team_id"):
@@ -309,7 +332,6 @@ def test_enqueue_requires_team_id(client_factory):
     from vezir.server import queue
 
     with pytest.raises(TypeError):
-        # team_id is keyword-only, so this fails with TypeError (missing arg)
         queue.enqueue("01X", "alice", "title")  # type: ignore[call-arg]
 
 

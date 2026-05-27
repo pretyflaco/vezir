@@ -29,8 +29,6 @@ from click.testing import CliRunner
 def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
-        from vezir.server import web_sessions
-        web_sessions._reset_for_tests()
         yield Path(d)
 
 
@@ -42,8 +40,11 @@ def client(tmp_data):
     return TestClient(create_app(), follow_redirects=False)
 
 
-def _bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def _bearer(token: str, team: str = "blink") -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Team-Id": team,
+    }
 
 
 def _tiny_wav() -> bytes:
@@ -57,8 +58,18 @@ def _tiny_wav() -> bytes:
 
 
 def _issue_raw(github, team_id, **kwargs):
-    from vezir.server import auth
-    return auth._issue_raw(github, team_id=team_id, **kwargs)
+    """Issue a token AND add a membership for ``github`` in ``team_id``.
+
+    v0.7.0: tokens are no longer team-scoped, but the test still wants
+    a token whose handle is a member of the named team so X-Team-Id
+    based requests validate.
+    """
+    from vezir.server import auth, queue
+    if queue.get_team(team_id) is None:
+        queue.create_team(team_id, team_id.capitalize())
+    role = "admin" if kwargs.get("is_admin") else "scribe"
+    queue.add_membership(github, team_id, role=role, added_by="test")
+    return auth._issue_raw(github, **kwargs)
 
 
 # ── queue.set_job_team (C1) ─────────────────────────────────────────────────
@@ -100,39 +111,48 @@ def test_set_job_team_backfill_mode_skips_existence_check(tmp_data):
 
 
 def test_moved_session_invisible_to_old_team(client):
-    """blink uploads, then session moves to twentyone — blink can no
-    longer see it; twentyone can."""
+    """blink uploads, then session moves to twentyone -- blink scope
+    can no longer see it; twentyone scope can.
+    """
     from vezir.server import queue
 
     blink_tok = _issue_raw("alice", team_id="blink")
     t21_tok = _issue_raw("bob", team_id="twentyone")
 
-    # Upload as blink.
+    # Upload as blink (X-Team-Id: blink).
     resp = client.post(
         "/upload",
-        headers=_bearer(blink_tok),
+        headers=_bearer(blink_tok, team="blink"),
         files={"audio": ("x.wav", _tiny_wav(), "audio/wav")},
     )
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
     assert queue.get(sid)["team_id"] == "blink"
 
-    # blink can see it.
-    r1 = client.get(f"/api/sessions/{sid}", headers=_bearer(blink_tok))
+    # blink scope can see it.
+    r1 = client.get(
+        f"/api/sessions/{sid}", headers=_bearer(blink_tok, team="blink"),
+    )
     assert r1.status_code == 200
-    # twentyone cannot.
-    r2 = client.get(f"/api/sessions/{sid}", headers=_bearer(t21_tok))
+    # twentyone scope cannot.
+    r2 = client.get(
+        f"/api/sessions/{sid}", headers=_bearer(t21_tok, team="twentyone"),
+    )
     assert r2.status_code == 404
 
     # Move it.
     queue.set_job_team(sid, "twentyone")
 
     # Visibility flips.
-    r3 = client.get(f"/api/sessions/{sid}", headers=_bearer(blink_tok))
+    r3 = client.get(
+        f"/api/sessions/{sid}", headers=_bearer(blink_tok, team="blink"),
+    )
     assert r3.status_code == 404, (
         "blink should NOT see a session that has been moved to twentyone"
     )
-    r4 = client.get(f"/api/sessions/{sid}", headers=_bearer(t21_tok))
+    r4 = client.get(
+        f"/api/sessions/{sid}", headers=_bearer(t21_tok, team="twentyone"),
+    )
     assert r4.status_code == 200
 
 

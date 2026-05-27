@@ -48,7 +48,7 @@ def test_c1_no_credentials(monkeypatch, tmp_data):
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     r = _Results()
-    url, token = _check_credential_resolution(r)
+    url, token, _team = _check_credential_resolution(r)
     assert url is None
     assert token is None
     assert any(sev == "ERROR" for sev, _ in r.rows)
@@ -60,7 +60,7 @@ def test_c1_env_wins(monkeypatch, tmp_data):
     monkeypatch.setenv("VEZIR_URL", "https://env.example")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_test123456789012345678901234567890123")
     r = _Results()
-    url, token = _check_credential_resolution(r)
+    url, token, _team = _check_credential_resolution(r)
     assert url == "https://env.example"
     assert any("source=env" in msg for _, msg in r.rows)
 
@@ -81,7 +81,7 @@ def test_c1_teams_json_wins_over_client(monkeypatch, tmp_data):
         "token": "vzr_client1234567890123456789012345678901",
     })
     r = _Results()
-    url, token = _check_credential_resolution(r)
+    url, token, _team = _check_credential_resolution(r)
     assert url == "https://teams.example"
     # Should warn about coexistence.
     assert any("client.json also has url" in msg for _, msg in r.rows)
@@ -292,19 +292,19 @@ def test_c10_deprecated_present(monkeypatch, tmp_data):
 # ── S1 + S2: tokens.json ──────────────────────────────────────────────────
 
 
-def test_s1_orphaned_tokens(monkeypatch, tmp_data):
+def test_s1_stale_team_id_field(monkeypatch, tmp_data):
+    """v0.7.0: a leftover team_id field in tokens.json is warn-level."""
     from vezir.doctor import _check_tokens_json, _Results
 
     _write_json(tmp_data / "tokens.json", {"tokens": [
-        {"github": "alice", "token_hash": "abc", "team_id": "blink",
+        {"github": "alice", "token_hash": "abc",
+         "team_id": "blink",  # stale v0.6.x field
          "issued_at": "2025-01-01T00:00:00Z"},
-        {"github": "bob", "token_hash": "def",
-         "issued_at": "2025-01-01T00:00:00Z"},  # no team_id!
     ]})
     monkeypatch.setenv("VEZIR_DATA", str(tmp_data))
     r = _Results()
     _check_tokens_json(r)
-    assert any(sev == "ERROR" and "missing team_id" in msg
+    assert any(sev == "WARN" and "team_id" in msg
                for sev, msg in r.rows)
 
 
@@ -312,7 +312,7 @@ def test_s2_expired_tokens(monkeypatch, tmp_data):
     from vezir.doctor import _check_tokens_json, _Results
 
     _write_json(tmp_data / "tokens.json", {"tokens": [
-        {"github": "alice", "token_hash": "abc", "team_id": "blink",
+        {"github": "alice", "token_hash": "abc",
          "issued_at": "2020-01-01T00:00:00Z",
          "expires_at": "2020-06-01T00:00:00Z",
          "label": "old-phone"},
@@ -325,10 +325,11 @@ def test_s2_expired_tokens(monkeypatch, tmp_data):
 
 
 def test_s12_clean_tokens(monkeypatch, tmp_data):
+    """v0.7.0: a row without team_id is the new clean shape."""
     from vezir.doctor import _check_tokens_json, _Results
 
     _write_json(tmp_data / "tokens.json", {"tokens": [
-        {"github": "alice", "token_hash": "abc", "team_id": "blink",
+        {"github": "alice", "token_hash": "abc",
          "issued_at": "2025-01-01T00:00:00Z",
          "expires_at": "2099-01-01T00:00:00Z"},
     ]})
@@ -502,7 +503,7 @@ def test_run_doctor_all_clean_no_server(monkeypatch, tmp_data, capsys):
     )
     monkeypatch.setattr(
         "vezir.doctor._check_server_connectivity",
-        lambda r, u, t: r.ok(f"server {u}: mocked ok"),
+        lambda r, u, t, team_id=None: r.ok(f"server {u}: mocked ok"),
     )
     code = run_doctor()
     captured = capsys.readouterr().out
