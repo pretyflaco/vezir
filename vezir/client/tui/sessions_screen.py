@@ -81,10 +81,6 @@ class SessionsBody(Vertical):
         # double-dispatch: DetailScreen gets pushed twice, leading
         # to a stuck UI state.  Smoked on muscle 2026-05-23.
         Binding("c", "copy_selected_id", "Copy id"),
-        # PR10: open the cursor row's session in the web dashboard.
-        # Symmetric with DetailScreen's `o` so the user can jump to
-        # browser without first opening the session in TUI.
-        Binding("o", "open_selected_in_browser", "Open in browser"),
         Binding("f", "open_selected_folder", "Open folder"),
         Binding("d", "copy_selected_path", "Copy path"),
     ]
@@ -170,46 +166,6 @@ class SessionsBody(Vertical):
             severity="information",
             timeout=4,
         )
-
-    def action_open_selected_in_browser(self) -> None:
-        """Open the cursor-row's session in the web dashboard.
-
-        PR10: paired with DetailScreen.action_open_in_browser so the
-        user can jump to the dashboard from either screen.
-        """
-        if self._table is None:
-            return
-        try:
-            row_key = self._table.coordinate_to_cell_key(
-                self._table.cursor_coordinate,
-            ).row_key
-        except Exception:
-            return
-        session = self._row_index.get(str(row_key.value)) if row_key.value else None
-        if session is None:
-            self.app.bell()
-            return
-        import webbrowser
-        base = (self.app.server_url or "").rstrip("/")
-        if not base:
-            self.notify("No server URL configured.", severity="error")
-            return
-        url = f"{base}/s/{session.id}"
-        try:
-            opened = webbrowser.open(url, new=2)
-        except Exception as exc:
-            self.notify(f"Could not open browser: {exc}", severity="error")
-            return
-        if opened:
-            self.notify(
-                f"Opening {url}", severity="information", timeout=4,
-            )
-        else:
-            self.notify(
-                f"No browser available.  URL: {url}",
-                severity="warning",
-                timeout=8,
-            )
 
     def _cursor_session(self) -> Session | None:
         """Return the Session under the cursor, or None."""

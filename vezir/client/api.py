@@ -41,7 +41,7 @@ Endpoint coverage (server: vezir 0.1.17):
 * GET  /api/team
 * GET  /label/{id}/clip/{speaker_id}       (binary audio/wav)
 * GET  /artifact/{id}/{name}               (binary artifact bytes)
-* POST /api/exchange-code                  (mint vzx_ login URL)
+* GET  /api/me                             (identity + memberships)
 * GET  /health
 """
 from __future__ import annotations
@@ -229,11 +229,17 @@ class VezirClient:
         server_url: str,
         token: str,
         *,
+        team_id: str | None = None,
         timeout: httpx.Timeout | None = None,
         verify: bool | str | None = None,
     ):
         self.base_url = server_url.rstrip("/")
         self.token = token
+        # v0.7.0: every team-scoped request carries an X-Team-Id header.
+        # Routes that don't need a team scope (/health, /api/me) ignore
+        # it.  ``team_id`` may be None for clients that only call
+        # /api/me to discover memberships before picking one.
+        self.team_id = team_id
         self._timeout = timeout or _DEFAULT_TIMEOUT
         # httpx's default verify=True uses certifi.where() -- the bundled
         # public CA list -- which does NOT include our internal Caddy CA.
@@ -272,7 +278,10 @@ class VezirClient:
     # ── plumbing ──
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
+        h = {"Authorization": f"Bearer {self.token}"}
+        if self.team_id:
+            h["X-Team-Id"] = self.team_id
+        return h
 
     def _get(self, path: str, *, timeout: httpx.Timeout | None = None) -> ApiResult:
         url = f"{self.base_url}{path}"
@@ -474,29 +483,6 @@ class VezirClient:
         dest.write_bytes(result.ok)
         return ApiResult.success(dest)
 
-    # ── login plumbing ──
-
-    def exchange_code(self, next_path: str = "/") -> ApiResult:
-        """Mint a vzx_ exchange code + /login URL for browser handoffs."""
-        url = f"{self.base_url}/api/exchange-code"
-        try:
-            with httpx.Client(
-                timeout=self._timeout, verify=self._verify,
-            ) as c:
-                r = c.post(
-                    url,
-                    headers=self._headers(),
-                    params={"next": next_path},
-                )
-        except httpx.HTTPError as exc:
-            return ApiResult.network(exc)
-        if r.status_code != 200:
-            return ApiResult.http(r.status_code, r.text[:200])
-        try:
-            return ApiResult.success(r.json())
-        except Exception as exc:
-            return ApiResult.network(exc)
-
     # ── health ──
 
     def health(self) -> ApiResult:
@@ -504,10 +490,21 @@ class VezirClient:
         return self._get("/health")
 
     def get_me(self) -> ApiResult:
-        """GET /api/me — returns ``{github, team_id, team_name, is_admin}``.
+        """GET /api/me -- returns identity + every team membership.
 
-        Added in server v0.6.1.  Returns an error ApiResult on older
-        servers (404) or auth failures (401/403).  Used by ``vezir doctor``
-        to validate the active token end-to-end.
+        v0.7.0 shape:
+
+            {
+              "github": "alice",
+              "is_admin": false,
+              "memberships": [
+                {"team_id": "blink", "team_name": "Blink", "role": "scribe"},
+                ...
+              ],
+              "alternate_urls": [...]
+            }
+
+        Used by ``vezir doctor`` to validate the active token end-to-end
+        and by the TUI to populate the team-picker.
         """
         return self._get("/api/me")

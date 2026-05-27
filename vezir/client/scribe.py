@@ -30,7 +30,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 from .. import config
 from . import uploader
@@ -351,30 +350,6 @@ def _record_via_subprocess(
     return audio_files[0]
 
 
-def _login_url(server_url: str, token: str, next_path: str) -> str:
-    """Get a /login?code=vzx_...&next=... URL via the server exchange-code API.
-
-    Falls back to a code-free /login?next=... URL (user pastes token
-    manually) if the server is unreachable or running pre-0.1.12.
-    """
-    import httpx
-
-    base = server_url.rstrip("/")
-    try:
-        r = httpx.post(
-            f"{base}/api/exchange-code",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"next": next_path},
-            timeout=5,
-        )
-        if r.status_code == 200:
-            return r.json().get("login_url") or f"{base}/login?next={quote(next_path)}"
-    except Exception:
-        pass
-    # Fallback: code-free URL. User lands on the paste-token form.
-    return f"{base}/login?next={quote(next_path)}"
-
-
 def poll_status(
     server_url: str,
     token: str,
@@ -410,25 +385,27 @@ def poll_status(
                 last_status = status
                 if status == "needs_labeling" and not labeling_prompted:
                     labeling_prompted = True
-                    label_url = _login_url(
-                        server_url, token, f"/label/{session_id}",
-                    )
                     print(flush=True)
                     print(
                         "------------------------------------------------------------",
                         flush=True,
                     )
                     print(
-                        f"  Label speakers to finish: {label_url}",
+                        f"  Session {session_id} needs speaker labeling.",
+                        flush=True,
+                    )
+                    print(
+                        "  Open `vezir tui` -> Sessions -> press 'l' on this row,",
+                        flush=True,
+                    )
+                    print(
+                        "  or use the Vezir Android app to apply labels.",
                         flush=True,
                     )
                     print(
                         "------------------------------------------------------------",
                         flush=True,
                     )
-                    if open_labeling:
-                        import webbrowser
-                        webbrowser.open_new_tab(label_url)
                     print("vezir: waiting for labeling ...", flush=True)
                 elif status == "error":
                     err = data.get("error", "unknown error")
@@ -567,8 +544,13 @@ def run_scribe(
         raise
     print(flush=True)
     print(f"vezir: uploaded as session {result['session_id']}", flush=True)
-    track_url = result.get("dashboard_login_url") or result["dashboard_url"]
-    print(f"vezir: track at {track_url}", flush=True)
+    # v0.7.0: no dashboard URL.  Print a TUI hint instead so users
+    # know how to track the session.
+    print(
+        "vezir: track with `vezir tui` (Sessions tab) or "
+        f"`vezir sessions {result['session_id']}`",
+        flush=True,
+    )
 
     if wait:
         print("vezir: waiting for processing ...", flush=True)

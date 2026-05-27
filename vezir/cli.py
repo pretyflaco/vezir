@@ -250,10 +250,6 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
     click.echo(f"vezir: uploaded as session {result['session_id']}")
     if "bytes" in result:
         click.echo(f"vezir: bytes uploaded: {result['bytes']:,}")
-    if result.get("dashboard_url"):
-        click.echo(f"vezir: dashboard: {result['dashboard_url']}")
-    if result.get("dashboard_login_url"):
-        click.echo(f"vezir: open in browser: {result['dashboard_login_url']}")
 
     if wait:
         from .client.scribe import poll_status
@@ -1323,6 +1319,7 @@ def pull_cmd(server_url, token, limit, since, session_id, output_dir):
 
     server_url = server_url or config.server_url()
     token = token or config.client_token()
+    team_id = config.client_team_id()
     if not token:
         click.echo(
             "vezir pull: error: no token configured. "
@@ -1330,9 +1327,16 @@ def pull_cmd(server_url, token, limit, since, session_id, output_dir):
             err=True,
         )
         sys.exit(1)
+    if not team_id:
+        click.echo(
+            "vezir pull: error: no team_id configured. "
+            "Set VEZIR_TEAM_ID or run `vezir team config use <id>`.",
+            err=True,
+        )
+        sys.exit(1)
     config.validate_token_format(token)
 
-    api = VezirClient(server_url, token)
+    api = VezirClient(server_url, token, team_id=team_id)
     out = Path(output_dir) if output_dir else None
 
     try:

@@ -60,19 +60,27 @@ class _Results:
 # ── client-side checks ─────────────────────────────────────────────────────
 
 
-def _check_credential_resolution(r: _Results) -> tuple[str | None, str | None]:
+def _check_credential_resolution(
+    r: _Results,
+) -> tuple[str | None, str | None, str | None]:
     """C1 + C4: credential chain summary + coexistence warning.
 
-    Returns ``(url, token)`` for use by downstream checks.
+    Returns ``(url, token, team_id)`` for use by downstream checks.
+    ``team_id`` may be ``None`` if no team is configured locally; that
+    is fine for /health checks but blocks team-scoped probes.
     """
-    url, token, source = client_config.resolve_credentials()
+    url, token, team_id, source = client_config.resolve_credentials()
 
     if not url and not token:
         r.error("no credentials configured (env / teams.json / client.json)")
-        return None, None
+        return None, None, None
 
     masked = (token[:8] + "***") if token and len(token) > 8 else "(none)"
-    r.ok(f"credentials: source={source}  url={url}  token={masked}")
+    team_str = team_id or "(none -- /api/me only)"
+    r.ok(
+        f"credentials: source={source}  url={url}  "
+        f"token={masked}  team={team_str}"
+    )
 
     # C4: coexistence warning — if teams.json won, and client.json ALSO
     # has url+token, the operator might be confused about which one is
@@ -376,7 +384,10 @@ def _check_nvpn(r: _Results) -> None:
 
 
 def _check_server_connectivity(
-    r: _Results, url: str | None, token: str | None,
+    r: _Results,
+    url: str | None,
+    token: str | None,
+    team_id: str | None = None,
 ) -> None:
     """C8 + C9: server reachability and token auth."""
     if not url:
@@ -392,7 +403,7 @@ def _check_server_connectivity(
 
     try:
         from .client.api import VezirClient
-        client = VezirClient(url, token or "", verify=None)
+        client = VezirClient(url, token or "", team_id=team_id, verify=None)
         result = client.health()
     except Exception as exc:
         # Catch SSL errors, connection errors, etc.
@@ -444,9 +455,22 @@ def _check_server_connectivity(
 
     me_data = me_result.ok or {}
     github = me_data.get("github", "?")
-    team = me_data.get("team_id", "?")
     role = "admin" if me_data.get("is_admin") else "scribe"
-    r.ok(f"token accepted: github={github}  team={team}  role={role}")
+    mems = me_data.get("memberships") or []
+    if mems:
+        team_summary = ", ".join(
+            f"{m.get('team_id', '?')}({m.get('role', '?')})" for m in mems
+        )
+    else:
+        team_summary = "(no team memberships)"
+    r.ok(
+        f"token accepted: github={github}  role={role}  teams=[{team_summary}]"
+    )
+    if team_id and not any(m.get("team_id") == team_id for m in mems):
+        r.error(
+            f"configured team_id={team_id!r} is not in this token's "
+            "memberships; team-scoped requests will return 403."
+        )
 
 
 def _check_deprecated_env_vars(r: _Results) -> None:
@@ -468,7 +492,13 @@ def _is_server_local() -> bool:
 
 
 def _check_tokens_json(r: _Results) -> None:
-    """S1 + S2: orphaned team_id and expired tokens."""
+    """S1 + S2: stale team_id fields and expired tokens.
+
+    v0.7.0: tokens no longer carry a team_id.  The migration strips
+    the field, but a hand-edited tokens.json could still have stale
+    rows.  Flag (warn) so the operator notices, then runs the
+    migration or revokes manually.
+    """
     p = config.tokens_json_path()
     if not p.exists():
         r.ok("tokens.json: not present (no tokens issued)")
@@ -485,20 +515,19 @@ def _check_tokens_json(r: _Results) -> None:
         r.ok("tokens.json: empty")
         return
 
-    # S1: tokens without team_id
-    orphaned = [
-        t for t in rows
-        if not t.get("team_id")
-    ]
-    if orphaned:
+    # S1: tokens with a stale team_id field (v0.6.x leftover).  The
+    # field is unused in v0.7.0; presence indicates the migration
+    # didn't run or someone hand-edited.
+    stale = [t for t in rows if "team_id" in t]
+    if stale:
         names = ", ".join(
-            f"{t.get('github', '?')} (issued {t.get('issued_at', '?')})"
-            for t in orphaned
+            f"{t.get('github', '?')}"
+            for t in stale
         )
-        r.error(
-            f"{len(orphaned)} token(s) missing team_id: {names}.  "
-            "These will be rejected with 401.  "
-            "Fix: revoke and re-issue with `vezir token issue --team <id>`."
+        r.warn(
+            f"{len(stale)} token(s) carry a legacy team_id field: {names}.  "
+            "Field is ignored in v0.7.0; rerun the server to trigger the "
+            "migration, or edit tokens.json to remove it."
         )
 
     # S2: expired tokens still in the file
@@ -529,7 +558,7 @@ def _check_tokens_json(r: _Results) -> None:
             "`vezir token revoke --github <handle> --label <label>`."
         )
     else:
-        n_active = len(rows) - len(orphaned)
+        n_active = len(rows) - len(stale)
         r.ok(f"tokens.json: {n_active} active token(s)")
 
 
@@ -730,7 +759,7 @@ def run_doctor() -> int:
 
     # ── client checks ──
     print("Client:")
-    url, token = _check_credential_resolution(r)
+    url, token, team_id = _check_credential_resolution(r)
     _check_env_shadow(r)
     _check_teams_json_schema(r)
     _check_token_format(r, token)
@@ -739,7 +768,7 @@ def run_doctor() -> int:
     _check_deprecated_env_vars(r)
     _check_nvpn(r)
     _check_tunnel_reachability(r, url)
-    _check_server_connectivity(r, url, token)
+    _check_server_connectivity(r, url, token, team_id)
     r.print_all()
 
     # ── server checks (only if local data exists) ──

@@ -137,37 +137,42 @@ def active_team_credentials() -> tuple[str | None, str | None, str | None]:
     return None, None, None
 
 
-def resolve_credentials() -> tuple[str | None, str | None, str | None]:
-    """Return ``(url, token, source)`` using v0.6.1 precedence.
+def resolve_credentials() -> tuple[
+    str | None, str | None, str | None, str | None,
+]:
+    """Return ``(url, token, team_id, source)`` using precedence rules.
+
+    v0.7.0: adds ``team_id`` to the tuple.  Every team-scoped HTTP
+    request sends an ``X-Team-Id`` header naming this team.  ``None``
+    is returned when no team has been configured -- the caller can
+    still hit /api/me to discover memberships and prompt the user.
 
     Precedence (highest first):
       1. ``VEZIR_URL`` + ``VEZIR_TOKEN`` env vars (BOTH must be set).
+         Optional ``VEZIR_TEAM_ID`` supplies the team scope.
          Source label: ``"env"``.
       2. teams.json active entry.  Source label: ``"teams:<id>"``.
-      3. client.json ``url`` + ``token`` keys.  Source label: ``"client"``.
-      4. Nothing.  Returns ``(None, None, None)``.
-
-    Env vars stay top-priority so ad-hoc "VEZIR_TOKEN=xxx vezir ..."
-    overrides still work for debugging.  Below env, teams.json wins
-    because a user who set up multi-team config explicitly chose to
-    use it; client.json is the single-team legacy path.
+      3. client.json ``url`` + ``token`` keys.  Source label:
+         ``"client"``.  No team_id available from this source.
+      4. Nothing.  Returns ``(None, None, None, None)``.
     """
     env_url = os.environ.get("VEZIR_URL")
     env_token = os.environ.get("VEZIR_TOKEN")
+    env_team = os.environ.get("VEZIR_TEAM_ID") or None
     if env_url and env_token:
-        return env_url, env_token, "env"
+        return env_url, env_token, env_team, "env"
 
     team_id, url, token = active_team_credentials()
     if url and token:
-        return url, token, f"teams:{team_id}"
+        return url, token, team_id, f"teams:{team_id}"
 
     prefs = load_client_prefs()
     p_url = prefs.get("url")
     p_token = prefs.get("token")
     if p_url and p_token:
-        return p_url, p_token, "client"
+        return p_url, p_token, prefs.get("team_id"), "client"
 
-    return None, None, None
+    return None, None, None, None
 
 
 def set_active_team(team_id: str) -> dict:

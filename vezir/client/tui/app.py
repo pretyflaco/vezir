@@ -56,21 +56,21 @@ if TYPE_CHECKING:
 log = logging.getLogger("vezir.client.tui")
 
 
-def _resolve_credentials() -> tuple[str, str | None, str]:
-    """Resolve server URL + token: env > teams.json > client.json > defaults.
+def _resolve_credentials() -> tuple[str, str | None, str | None, str]:
+    """Resolve server URL + token + team_id: env > teams.json > client.json > defaults.
 
-    Returns ``(url, token, source)`` where ``source`` is one of
-    ``"env"``, ``"teams:<id>"``, ``"client"``, or ``"default"``.
+    Returns ``(url, token, team_id, source)`` where ``source`` is one
+    of ``"env"``, ``"teams:<id>"``, ``"client"``, or ``"default"``.
     Wraps :func:`vezir.client.config.resolve_credentials` with a
     ``localhost`` fallback so the TUI can still mount on a fresh
-    machine with no config (will get 401 on the first API call but
-    won't crash).
+    machine with no config (will get 401/400 on the first API call
+    but won't crash).
     """
-    url, token, source = resolve_credentials()
+    url, token, team_id, source = resolve_credentials()
     if not url:
         url = "http://localhost:8000"
         source = source or "default"
-    return url, token, source
+    return url, token, team_id, source
 
 
 # ─── MainScreen: tabbed root holding the two top-level views ────────────────
@@ -245,23 +245,28 @@ class VezirTuiApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.server_url, self.token, self.cred_source = _resolve_credentials()
-        # active_team_id tracks the team slug currently selected from
-        # teams.json (if any).  Used by action_switch_team to cycle
-        # to the next entry without re-resolving precedence.
-        self.active_team_id: str | None = None
-        if self.cred_source.startswith("teams:"):
+        (
+            self.server_url,
+            self.token,
+            self.active_team_id,
+            self.cred_source,
+        ) = _resolve_credentials()
+        # active_team_id may already be set from VEZIR_TEAM_ID or
+        # teams.json; fall back to parsing the source string for the
+        # legacy "teams:<id>" pattern.
+        if not self.active_team_id and self.cred_source.startswith("teams:"):
             self.active_team_id = self.cred_source.split(":", 1)[1]
-        # team_label is the human display name (from /api/me).  Filled
-        # in by _refresh_identity() shortly after mount.  Default
-        # placeholder reads "?" so the title bar shows something while
-        # the network round-trip is in flight.
+        # team_label is the human display name (resolved via /api/me's
+        # memberships list).  Filled in by _refresh_identity() shortly
+        # after mount.  Default "?" shows up in the title bar until the
+        # network round-trip completes.
         self.team_label: str = "?"
         if not self.token:
             log.warning("VEZIR_TOKEN is not set; TUI will run in degraded mode")
         self.api = VezirClient(
             self.server_url,
             self.token or "vzr_unset",  # placeholder; server will 401
+            team_id=self.active_team_id,
         )
 
     def on_mount(self) -> None:
@@ -296,12 +301,34 @@ class VezirTuiApp(App):
             )
             if r.status_code == 200:
                 data = r.json()
-                self.team_label = data.get("team_name") or data.get("team_id") or "?"
-                # Keep active_team_id in sync with the server's view if
-                # we connected via env vars (where we didn't know the
-                # team id at startup).
-                if not self.active_team_id:
-                    self.active_team_id = data.get("team_id")
+                # v0.7.0: /api/me now returns a memberships list.
+                # Pick the entry matching our active_team_id; if none
+                # set, fall back to the first membership (and remember
+                # it so X-Team-Id starts working).
+                mems = data.get("memberships") or []
+                matched = None
+                if self.active_team_id:
+                    matched = next(
+                        (m for m in mems
+                         if m.get("team_id") == self.active_team_id),
+                        None,
+                    )
+                if matched is None and mems:
+                    matched = mems[0]
+                    self.active_team_id = matched.get("team_id")
+                    # Re-bind the client with the discovered team_id
+                    # so subsequent requests carry X-Team-Id.
+                    self.api = VezirClient(
+                        self.server_url,
+                        self.token or "vzr_unset",
+                        team_id=self.active_team_id,
+                    )
+                if matched:
+                    self.team_label = (
+                        matched.get("team_name")
+                        or matched.get("team_id")
+                        or "?"
+                    )
             else:
                 log.info(
                     "GET /api/me returned %s; leaving team label as '?'",
@@ -401,7 +428,11 @@ class VezirTuiApp(App):
         self.active_team_id = new_id
         self.cred_source = f"teams:{new_id}"
         self.team_label = "?"  # cleared until /api/me round-trips
-        self.api = VezirClient(self.server_url, self.token or "vzr_unset")
+        self.api = VezirClient(
+            self.server_url,
+            self.token or "vzr_unset",
+            team_id=self.active_team_id,
+        )
         self._refresh_identity()
 
         # Force the Sessions tab to reload against the new server.

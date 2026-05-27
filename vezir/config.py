@@ -639,7 +639,7 @@ def server_url() -> str:
         return env
     try:
         from .client.config import resolve_credentials as _rc
-        url, _tok, _src = _rc()
+        url, _tok, _team, _src = _rc()
         if url:
             return url
     except Exception:
@@ -659,9 +659,29 @@ def client_token() -> str | None:
         return env
     try:
         from .client.config import resolve_credentials as _rc
-        _url, tok, _src = _rc()
+        _url, tok, _team, _src = _rc()
         if tok:
             return tok
+    except Exception:
+        pass
+    return None
+
+
+def client_team_id() -> str | None:
+    """Resolve the active team_id using v0.7.0 multi-team precedence.
+
+    Returns ``None`` when no team has been configured locally.  Callers
+    that need to make a team-scoped HTTP request must surface this as
+    a setup error or fall back to /api/me to discover memberships.
+    """
+    env = os.environ.get("VEZIR_TEAM_ID")
+    if env:
+        return env
+    try:
+        from .client.config import resolve_credentials as _rc
+        _url, _tok, team, _src = _rc()
+        if team:
+            return team
     except Exception:
         pass
     return None

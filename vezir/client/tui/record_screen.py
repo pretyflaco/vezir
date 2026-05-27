@@ -129,7 +129,6 @@ class UploadProgress(Message):
 @dataclass
 class UploadFinished(Message):
     session_id: str
-    dashboard_url: str | None
     gen: int = 0
 
 
@@ -915,8 +914,6 @@ class RecordBody(Vertical):
 
         self.post_message(UploadFinished(
             session_id=result.get("session_id", ""),
-            dashboard_url=result.get("dashboard_url")
-                          or result.get("dashboard_login_url"),
             gen=gen,
         ))
 
