@@ -61,8 +61,12 @@ def test_migration_moves_legacy_db_into_blink(tmp_data, monkeypatch):
     from vezir.server.app import create_app
     TestClient(create_app(), follow_redirects=False)
 
-    blink_db = config.team_speaker_profiles_path("blink")
-    twentyone_db = config.team_speaker_profiles_path("twentyone")
+    # v0.7.4: per-team dirs keyed by uuid; resolve from slug.
+    from vezir.server import queue
+    blink_db = config.team_speaker_profiles_path(queue.get_team("blink")["id"])
+    twentyone_db = config.team_speaker_profiles_path(
+        queue.get_team("twentyone")["id"]
+    )
 
     # Blink got the legacy content (renamed in place).
     assert blink_db.exists(), "blink per-team voiceprint DB not created"
@@ -89,8 +93,11 @@ def test_migration_seeds_empty_db_when_no_legacy(tmp_data, monkeypatch):
     from vezir.server.app import create_app
     TestClient(create_app(), follow_redirects=False)
 
-    blink_db = config.team_speaker_profiles_path("blink")
-    twentyone_db = config.team_speaker_profiles_path("twentyone")
+    from vezir.server import queue
+    blink_db = config.team_speaker_profiles_path(queue.get_team("blink")["id"])
+    twentyone_db = config.team_speaker_profiles_path(
+        queue.get_team("twentyone")["id"]
+    )
     assert blink_db.exists() and json.loads(blink_db.read_text(encoding="utf-8")) == {}
     assert twentyone_db.exists() and json.loads(twentyone_db.read_text(encoding="utf-8")) == {}
 
@@ -109,7 +116,8 @@ def test_migration_idempotent(tmp_data, monkeypatch):
     # Run a second time — should NOT clobber blink's contents.
     TestClient(create_app(), follow_redirects=False)
 
-    blink_db = config.team_speaker_profiles_path("blink")
+    from vezir.server import queue
+    blink_db = config.team_speaker_profiles_path(queue.get_team("blink")["id"])
     data = json.loads(blink_db.read_text(encoding="utf-8"))
     assert data == {"alice": {"n_sessions": 5}}
 
@@ -254,10 +262,10 @@ def test_cli_voiceprints_list_requires_team_when_multiple(tmp_data, tmp_path):
 
 def test_cli_voiceprints_list_defaults_to_only_team(tmp_data):
     from vezir.server import queue, voiceprints
-    queue.create_team("blink", "Blink")
-    voiceprints.ensure_db_exists("blink")
+    blink_uuid = queue.create_team("blink", "Blink")
+    voiceprints.ensure_db_exists(blink_uuid)
     from vezir import config
-    config.team_speaker_profiles_path("blink").write_text(
+    config.team_speaker_profiles_path(blink_uuid).write_text(
         json.dumps({"alice": {}})
     )
 
@@ -280,8 +288,9 @@ def test_cli_voiceprints_seed_writes_to_team(tmp_data, tmp_path):
     )
     assert result.exit_code == 0, result.output
 
-    from vezir.server import voiceprints
-    assert voiceprints.list_known_names("twentyone") == ["carol"]
+    from vezir.server import queue, voiceprints
+    t21_uuid = queue.get_team("twentyone")["id"]
+    assert voiceprints.list_known_names(t21_uuid) == ["carol"]
     # Blink untouched.
     assert voiceprints.list_known_names("blink") == []
 

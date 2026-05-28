@@ -29,7 +29,8 @@ def test_runtime_dirs_and_tokens_are_private(monkeypatch):
         assert _mode(Path(d) / "sessions") == 0o700
         assert _mode(Path(d) / "jobs") == 0o700
         assert _mode(Path(d) / "logs") == 0o700
-        assert _mode(Path(d) / "tokens.json") == 0o600
+        # v0.7.2: tokens live in vezir.sqlite (queue._conn chmods it 0600);
+        # the standalone tokens.json store is gone.
         assert _mode(Path(d) / "vezir.sqlite") == 0o600
         # v0.6.2+: per-team voiceprint DB.
         assert _mode(Path(d) / "teams" / "blink" / "speaker_profiles.json") == 0o600

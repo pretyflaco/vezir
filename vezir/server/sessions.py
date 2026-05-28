@@ -292,14 +292,19 @@ def api_me(auth_pair: tuple = Depends(auth.require_bearer)):
     into the token.  Clients use this to populate their team-picker
     UI and to remember which team to send in ``X-Team-Id``.
 
+    v0.7.4: ``team_id`` is the team's stable uuid (what the client
+    sends back in ``X-Team-Id``); ``slug`` is the mutable display
+    identifier.  A slug rename does not change ``team_id``, so clients
+    keyed on it survive renames transparently.
+
     Response shape:
 
         {
           "github": "pretyflaco",
           "is_admin": false,
           "memberships": [
-            {"team_id": "blink", "team_name": "Blink", "role": "scribe"},
-            {"team_id": "twentyone", "team_name": "Twentyone", "role": "admin"}
+            {"team_id": "<uuid>", "slug": "blink", "team_name": "Blink", "role": "scribe"},
+            {"team_id": "<uuid>", "slug": "twentyone", "team_name": "Twentyone", "role": "admin"}
           ],
           "alternate_urls": [...]
         }

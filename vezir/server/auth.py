@@ -7,21 +7,27 @@ team scope for each request is supplied by the client via an
 table.  This lets one human switch between every team they belong to
 without re-issuing tokens.
 
-Tokens are stored hashed in ``~/vezir-data/tokens.json``:
+v0.7.2: tokens moved from a flat ``~/vezir-data/tokens.json`` file into
+the ``tokens`` table in ``~/vezir-data/vezir.sqlite``.  The old file did
+a full-file read-modify-write with **no lock**, which had a lost-update
+race on concurrent ``issue``/``revoke`` and the ``last_used_at`` touch
+that fires on nearly every authenticated request.  Storing rows in
+SQLite reuses ``queue._conn`` (global ``_LOCK`` + WAL + ``busy_timeout``)
+so each read-modify-write is atomic.  The one-shot migration
+``migrate_0_7_2`` imports any existing ``tokens.json`` and renames it to
+``tokens.json.migrated``.
 
-    {
-      "tokens": [
-        {
-          "github": "kasita",
-          "token_hash": "<sha256>",
-          "issued_at": "...",
-          "expires_at": "..." | null,
-          "last_used_at": "..." | null,
-          "is_admin": false,
-          "label": "..." | null
-        }
-      ]
-    }
+Table shape::
+
+    tokens(
+      token_hash TEXT PRIMARY KEY,   -- sha256 of the plaintext bearer
+      github     TEXT NOT NULL,
+      issued_at  TEXT NOT NULL,
+      expires_at TEXT,               -- nullable
+      last_used_at TEXT,             -- nullable
+      is_admin   INTEGER NOT NULL DEFAULT 0,
+      label      TEXT                -- nullable
+    )
 
 The plaintext token is shown ONCE at issue time and is never persisted.
 Lookup is by SHA-256 of the presented bearer token, in constant time.
@@ -40,14 +46,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import secrets
 import time
 
 from fastapi import Header, HTTPException, status
 
-from .. import config
 from . import queue
 
 log = logging.getLogger("vezir.auth")
@@ -63,16 +67,29 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _load_tokens() -> dict:
-    p = config.tokens_json_path()
-    if not p.exists():
-        return {"tokens": []}
-    return json.loads(p.read_text(encoding="utf-8"))
+def _row_to_entry(row) -> dict:
+    """Normalize a sqlite ``tokens`` row into the legacy dict shape.
 
+    The rest of this module historically operated on dicts loaded from
+    ``tokens.json``; keeping that shape lets the public helpers stay
+    unchanged after the v0.7.2 move to SQLite.  Tolerant of partial
+    SELECTs: columns not present in the row are reported as ``None``
+    (``is_admin`` as ``False``).
+    """
+    keys = set(row.keys())
 
-def _save_tokens(data: dict) -> None:
-    p = config.tokens_json_path()
-    config.secure_write_text(p, json.dumps(data, indent=2))
+    def _g(name):
+        return row[name] if name in keys else None
+
+    return {
+        "github": _g("github"),
+        "token_hash": _g("token_hash"),
+        "issued_at": _g("issued_at"),
+        "expires_at": _g("expires_at"),
+        "last_used_at": _g("last_used_at"),
+        "is_admin": bool(_g("is_admin")),
+        "label": _g("label"),
+    }
 
 
 def _now_iso() -> str:
@@ -129,7 +146,6 @@ def issue(
         for "android-phone" / "linux-laptop" style hints when one human
         owns multiple tokens.  Never used in auth decisions.
     """
-    data = _load_tokens()
     plaintext = "vzr_" + secrets.token_urlsafe(32)
     issued_at = _now_iso()
     expires_at: str | None = None
@@ -138,28 +154,28 @@ def issue(
             "%Y-%m-%dT%H:%M:%SZ",
             time.gmtime(time.time() + expires_in_seconds),
         )
-    data["tokens"].append(
-        {
-            "github": github,
-            "token_hash": _hash(plaintext),
-            "issued_at": issued_at,
-            "expires_at": expires_at,
-            "last_used_at": None,
-            "is_admin": bool(is_admin),
-            "label": label or None,
-        }
-    )
-    _save_tokens(data)
+    with queue._conn() as c:
+        c.execute(
+            "INSERT INTO tokens (token_hash, github, issued_at, expires_at, "
+            "last_used_at, is_admin, label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                _hash(plaintext),
+                github,
+                issued_at,
+                expires_at,
+                None,
+                1 if is_admin else 0,
+                label or None,
+            ),
+        )
     return plaintext
 
 
 def revoke(github: str) -> int:
     """Remove all tokens for a given github handle.  Returns count removed."""
-    data = _load_tokens()
-    before = len(data["tokens"])
-    data["tokens"] = [t for t in data["tokens"] if t["github"] != github]
-    _save_tokens(data)
-    return before - len(data["tokens"])
+    with queue._conn() as c:
+        cur = c.execute("DELETE FROM tokens WHERE github = ?", (github,))
+        return cur.rowcount
 
 
 def revoke_by_filter(
@@ -190,43 +206,46 @@ def revoke_by_filter(
             "accidental wide matches"
         )
 
-    data = _load_tokens()
-    kept: list[dict] = []
     removed: list[dict] = []
-    for entry in data["tokens"]:
-        if github is not None and entry.get("github") != github:
-            kept.append(entry)
-            continue
-        if label is not None:
-            entry_label = entry.get("label")
-            # ``-`` in the CLI is the visual stand-in for ``None``;
-            # treat both equivalently so the operator can revoke a
-            # label-less token by passing ``--label -``.
-            if label == "-":
-                if entry_label is not None:
-                    kept.append(entry)
-                    continue
-            else:
-                if entry_label != label:
-                    kept.append(entry)
-                    continue
-        if token_id_prefix is not None:
-            tid = entry.get("token_hash") or ""
-            if not tid.startswith(token_id_prefix):
-                kept.append(entry)
+    with queue._conn() as c:
+        rows = c.execute(
+            "SELECT token_hash, github, issued_at, label FROM tokens"
+        ).fetchall()
+        to_delete: list[str] = []
+        for row in rows:
+            entry = _row_to_entry(row)
+            if github is not None and entry.get("github") != github:
                 continue
-        # Survived every filter -> remove.
-        removed.append(
-            {
-                "github": entry.get("github"),
-                "label": entry.get("label"),
-                "token_id": (entry.get("token_hash") or "")[:12],
-                "issued_at": entry.get("issued_at"),
-            }
-        )
-    if removed:
-        data["tokens"] = kept
-        _save_tokens(data)
+            if label is not None:
+                entry_label = entry.get("label")
+                # ``-`` in the CLI is the visual stand-in for ``None``;
+                # treat both equivalently so the operator can revoke a
+                # label-less token by passing ``--label -``.
+                if label == "-":
+                    if entry_label is not None:
+                        continue
+                else:
+                    if entry_label != label:
+                        continue
+            if token_id_prefix is not None:
+                tid = entry.get("token_hash") or ""
+                if not tid.startswith(token_id_prefix):
+                    continue
+            # Survived every filter -> remove.
+            to_delete.append(entry["token_hash"])
+            removed.append(
+                {
+                    "github": entry.get("github"),
+                    "label": entry.get("label"),
+                    "token_id": (entry.get("token_hash") or "")[:12],
+                    "issued_at": entry.get("issued_at"),
+                }
+            )
+        if to_delete:
+            c.executemany(
+                "DELETE FROM tokens WHERE token_hash = ?",
+                [(h,) for h in to_delete],
+            )
     return removed
 
 
@@ -241,9 +260,14 @@ def list_tokens() -> list[dict]:
     Never returns the full ``token_hash`` -- callers don't need it and
     leaking it would weaken the at-rest hashing.
     """
-    data = _load_tokens()
+    with queue._conn() as c:
+        rows = c.execute(
+            "SELECT token_hash, github, issued_at, expires_at, last_used_at, "
+            "is_admin, label FROM tokens ORDER BY issued_at"
+        ).fetchall()
     out: list[dict] = []
-    for entry in data.get("tokens", []):
+    for row in rows:
+        entry = _row_to_entry(row)
         out.append(
             {
                 "github": entry.get("github"),
@@ -265,27 +289,25 @@ def _maybe_touch_last_used(entry_hash: str) -> None:
     stored timestamp is older than ``_LAST_USED_WRITE_DEBOUNCE_SEC`` to
     avoid hammering the JSON file on every poll.
     """
-    try:
-        data = _load_tokens()
-    except Exception:
-        return
     now = time.time()
-    changed = False
-    for entry in data["tokens"]:
-        if entry.get("token_hash") != entry_hash:
-            continue
-        prev = _parse_iso(entry.get("last_used_at"))
-        if prev is None or (now - prev) >= _LAST_USED_WRITE_DEBOUNCE_SEC:
-            entry["last_used_at"] = _now_iso()
-            changed = True
-        break
-    if changed:
-        try:
-            _save_tokens(data)
-        except Exception:
-            # Best-effort: a transient FS error on the touch path must
-            # not break auth. The next successful touch will catch up.
-            log.exception("failed to update last_used_at")
+    try:
+        with queue._conn() as c:
+            row = c.execute(
+                "SELECT last_used_at FROM tokens WHERE token_hash = ?",
+                (entry_hash,),
+            ).fetchone()
+            if row is None:
+                return
+            prev = _parse_iso(row["last_used_at"])
+            if prev is None or (now - prev) >= _LAST_USED_WRITE_DEBOUNCE_SEC:
+                c.execute(
+                    "UPDATE tokens SET last_used_at = ? WHERE token_hash = ?",
+                    (_now_iso(), entry_hash),
+                )
+    except Exception:
+        # Best-effort: a transient DB error on the touch path must not
+        # break auth. The next successful touch will catch up.
+        log.exception("failed to update last_used_at")
 
 
 def _lookup_entry(token: str) -> dict | None:
@@ -298,15 +320,21 @@ def _lookup_entry(token: str) -> dict | None:
     if not token:
         return None
     h = _hash(token)
-    data = _load_tokens()
-    for entry in data["tokens"]:
-        stored = entry.get("token_hash") or ""
-        if not hmac.compare_digest(stored, h):
-            continue
-        if _is_expired(entry):
-            return None
-        return entry
-    return None
+    with queue._conn() as c:
+        row = c.execute(
+            "SELECT token_hash, github, issued_at, expires_at, last_used_at, "
+            "is_admin, label FROM tokens WHERE token_hash = ?",
+            (h,),
+        ).fetchone()
+    if row is None:
+        return None
+    entry = _row_to_entry(row)
+    # Defensive constant-time confirmation of the stored hash.
+    if not hmac.compare_digest(entry.get("token_hash") or "", h):
+        return None
+    if _is_expired(entry):
+        return None
+    return entry
 
 
 def lookup(token: str) -> str | None:
@@ -419,7 +447,12 @@ def require_team_context(
                 "team to operate on"
             ),
         )
-    team_id = x_team_id.strip()
+    # v0.7.4: X-Team-Id carries the team's stable uuid, but we accept a
+    # slug too (resolve to uuid) for curl/debug ergonomics.  Handlers
+    # downstream always operate on the uuid so jobs/shares store the
+    # stable key.
+    raw = x_team_id.strip()
+    team_id = queue.resolve_team_uuid(raw) or raw
     if not queue.is_member(github, team_id):
         log.info(
             "auth: %s denied access to team %s (not a member)",
@@ -428,7 +461,7 @@ def require_team_context(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"user {github!r} is not a member of team {team_id!r}; "
+                f"user {github!r} is not a member of team {raw!r}; "
                 "ask an admin to add you with `vezir team add-member`."
             ),
         )

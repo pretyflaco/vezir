@@ -83,8 +83,8 @@ def test_set_job_team_refuses_unknown_destination(tmp_data):
     with pytest.raises(ValueError, match="does not exist"):
         queue.set_job_team("01TEST", "ghost")
 
-    # Original team_id preserved.
-    assert queue.get("01TEST")["team_id"] == "blink"
+    # Original team_id preserved (stored as blink's uuid).
+    assert queue.get("01TEST")["team_id"] == queue.get_team("blink")["id"]
 
 
 def test_set_job_team_happy_path(tmp_data):
@@ -94,7 +94,8 @@ def test_set_job_team_happy_path(tmp_data):
     queue.enqueue("01TEST", github="alice", title="t", team_id="blink")
 
     queue.set_job_team("01TEST", "twentyone")
-    assert queue.get("01TEST")["team_id"] == "twentyone"
+    # v0.7.4: jobs store the team's uuid, not the slug.
+    assert queue.get("01TEST")["team_id"] == queue.get_team("twentyone")["id"]
 
 
 def test_set_job_team_backfill_mode_skips_existence_check(tmp_data):
@@ -127,7 +128,7 @@ def test_moved_session_invisible_to_old_team(client):
     )
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
-    assert queue.get(sid)["team_id"] == "blink"
+    assert queue.get(sid)["team_id"] == queue.get_team("blink")["id"]
 
     # blink scope can see it.
     r1 = client.get(
@@ -171,7 +172,7 @@ def test_cli_session_move_happy_path(tmp_data):
         main, ["session", "move", "01SID", "--to-team", "twentyone", "--yes"],
     )
     assert result.exit_code == 0, result.output
-    assert queue.get("01SID")["team_id"] == "twentyone"
+    assert queue.get("01SID")["team_id"] == queue.get_team("twentyone")["id"]
 
 
 def test_cli_session_move_unknown_dest_team(tmp_data):

@@ -98,22 +98,24 @@ def test_delete_team_cascade_with_reassign(tmp_data):
     queue.add_membership("bob", "blink")
 
     # Drop a sentinel file in blink's on-disk dir so we can confirm
-    # it's removed.
-    blink_dir = config.teams_dir() / "blink"
+    # it's removed.  v0.7.4: dirs are keyed by the team uuid.
+    blink_uuid = queue.get_team("blink")["id"]
+    twentyone_uuid = queue.get_team("twentyone")["id"]
+    blink_dir = config.teams_dir() / blink_uuid
     blink_dir.mkdir(parents=True, exist_ok=True)
     (blink_dir / "roster.json").write_text("[]")
 
     stats = queue.delete_team("blink", reassign_to="twentyone")
     assert stats["jobs_reassigned"] == 2
     assert stats["members_dropped"] == 2
-    assert stats["reassigned_to"] == "twentyone"
+    assert stats["reassigned_to"] == twentyone_uuid
     assert stats["on_disk_removed"] is True
 
     # Team row gone.
     assert queue.get_team("blink") is None
     # Jobs migrated.
-    assert queue.get("01J1")["team_id"] == "twentyone"
-    assert queue.get("01J2")["team_id"] == "twentyone"
+    assert queue.get("01J1")["team_id"] == twentyone_uuid
+    assert queue.get("01J2")["team_id"] == twentyone_uuid
     # Memberships gone for the deleted team; destination team is
     # untouched (its own memberships are owned by its own table).
     assert queue.get_team_members("twentyone") == []
@@ -194,8 +196,9 @@ def test_get_memberships_lists_user_teams(tmp_data):
     queue.add_membership("alice", "blink", role="scribe")
     queue.add_membership("alice", "twentyone", role="admin")
     mems = queue.get_memberships("alice")
-    assert {m["team_id"] for m in mems} == {"blink", "twentyone"}
-    by_team = {m["team_id"]: m for m in mems}
+    # v0.7.4: team_id is the uuid; slug carries the human identifier.
+    assert {m["slug"] for m in mems} == {"blink", "twentyone"}
+    by_team = {m["slug"]: m for m in mems}
     assert by_team["blink"]["role"] == "scribe"
     assert by_team["blink"]["team_name"] == "Blink"
     assert by_team["twentyone"]["role"] == "admin"
@@ -249,6 +252,7 @@ def test_cli_team_delete_with_reassign(tmp_data):
     from vezir.server import queue
     queue.create_team("blink", "Blink")
     queue.create_team("twentyone", "Twentyone")
+    twentyone_uuid = queue.get_team("twentyone")["id"]
     queue.enqueue("01J", github="alice", title="t", team_id="blink")
     queue.add_membership("alice", "blink")
 
@@ -261,7 +265,7 @@ def test_cli_team_delete_with_reassign(tmp_data):
     )
     assert result.exit_code == 0, result.output
     assert queue.get_team("blink") is None
-    assert queue.get("01J")["team_id"] == "twentyone"
+    assert queue.get("01J")["team_id"] == twentyone_uuid
     # Memberships on the deleted team are dropped.
     assert queue.get_team_members("twentyone") == []
 
@@ -412,11 +416,12 @@ def test_admin_delete_team_cascade(client):
     )
     assert r.status_code == 200, r.text
     body = r.json()
+    blink_uuid = queue.get_team("blink")["id"]
     assert body["deleted"] is True
     assert body["jobs_reassigned"] == 1
-    assert body["reassigned_to"] == "blink"
+    assert body["reassigned_to"] == blink_uuid
     assert queue.get_team("twentyone") is None
-    assert queue.get("01J")["team_id"] == "blink"
+    assert queue.get("01J")["team_id"] == blink_uuid
 
 
 def test_admin_delete_team_requires_admin(client):

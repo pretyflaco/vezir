@@ -185,12 +185,13 @@ def test_share_not_found(client_factory):
 def test_api_team_returns_handles(client_factory, tmp_data):
     import json
 
-    from vezir.server import auth
+    from vezir.server import auth, queue
     client = client_factory()
     tok = auth.issue("alice")  # default team_id='blink' via conftest shim
 
-    # v0.6.0: write roster to the per-team path the new code reads from.
-    roster_path = tmp_data / "teams" / "blink" / "roster.json"
+    # v0.7.4: per-team dirs are keyed by the team uuid.
+    blink_uuid = queue.get_team("blink")["id"]
+    roster_path = tmp_data / "teams" / blink_uuid / "roster.json"
     roster_path.parent.mkdir(parents=True, exist_ok=True)
     roster_path.write_text(json.dumps([
         {"github": "kasita", "name": "Kasita"},

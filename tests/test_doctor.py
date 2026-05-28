@@ -289,35 +289,61 @@ def test_c10_deprecated_present(monkeypatch, tmp_data):
                for _, msg in r.rows)
 
 
-# ── S1 + S2: tokens.json ──────────────────────────────────────────────────
+# ── S1 + S2: tokens in vezir.sqlite (v0.7.2) ──────────────────────────────
 
 
-def test_s1_stale_team_id_field(monkeypatch, tmp_data):
-    """v0.7.0: a leftover team_id field in tokens.json is warn-level."""
+def _seed_tokens_table(data_dir, rows: list[dict]) -> None:
+    """Create vezir.sqlite with a tokens table seeded with the given rows."""
+    import sqlite3
+
+    from vezir import config
+    config.ensure_dirs()
+    conn = sqlite3.connect(str(config.queue_db_path()))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tokens ("
+            "token_hash TEXT PRIMARY KEY, github TEXT NOT NULL, "
+            "issued_at TEXT NOT NULL, expires_at TEXT, last_used_at TEXT, "
+            "is_admin INTEGER NOT NULL DEFAULT 0, label TEXT)"
+        )
+        for row in rows:
+            conn.execute(
+                "INSERT INTO tokens (token_hash, github, issued_at, "
+                "expires_at, last_used_at, is_admin, label) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["token_hash"], row["github"], row["issued_at"],
+                    row.get("expires_at"), row.get("last_used_at"),
+                    1 if row.get("is_admin") else 0, row.get("label"),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_s1_stale_tokens_json_present(monkeypatch, tmp_data):
+    """v0.7.2: a live tokens.json (not .migrated) is warn-level."""
     from vezir.doctor import _check_tokens_json, _Results
 
-    _write_json(tmp_data / "tokens.json", {"tokens": [
-        {"github": "alice", "token_hash": "abc",
-         "team_id": "blink",  # stale v0.6.x field
-         "issued_at": "2025-01-01T00:00:00Z"},
-    ]})
     monkeypatch.setenv("VEZIR_DATA", str(tmp_data))
+    _write_json(tmp_data / "tokens.json", {"tokens": []})
     r = _Results()
     _check_tokens_json(r)
-    assert any(sev == "WARN" and "team_id" in msg
+    assert any(sev == "WARN" and "tokens.json" in msg
                for sev, msg in r.rows)
 
 
 def test_s2_expired_tokens(monkeypatch, tmp_data):
     from vezir.doctor import _check_tokens_json, _Results
 
-    _write_json(tmp_data / "tokens.json", {"tokens": [
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_data))
+    _seed_tokens_table(tmp_data, [
         {"github": "alice", "token_hash": "abc",
          "issued_at": "2020-01-01T00:00:00Z",
          "expires_at": "2020-06-01T00:00:00Z",
          "label": "old-phone"},
-    ]})
-    monkeypatch.setenv("VEZIR_DATA", str(tmp_data))
+    ])
     r = _Results()
     _check_tokens_json(r)
     assert any(sev == "WARN" and "expired" in msg
@@ -325,15 +351,15 @@ def test_s2_expired_tokens(monkeypatch, tmp_data):
 
 
 def test_s12_clean_tokens(monkeypatch, tmp_data):
-    """v0.7.0: a row without team_id is the new clean shape."""
+    """v0.7.2: an unexpired row in the tokens table with no leftover file."""
     from vezir.doctor import _check_tokens_json, _Results
 
-    _write_json(tmp_data / "tokens.json", {"tokens": [
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_data))
+    _seed_tokens_table(tmp_data, [
         {"github": "alice", "token_hash": "abc",
          "issued_at": "2025-01-01T00:00:00Z",
          "expires_at": "2099-01-01T00:00:00Z"},
-    ]})
-    monkeypatch.setenv("VEZIR_DATA", str(tmp_data))
+    ])
     r = _Results()
     _check_tokens_json(r)
     assert all(sev == "OK" for sev, _ in r.rows)

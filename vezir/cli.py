@@ -1,7 +1,6 @@
 """Vezir CLI: `vezir serve`, `vezir scribe`, `vezir token`."""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -598,12 +597,11 @@ def token_list(dormant_days, show_id):
     """
     import time as _time
 
-    p = config.tokens_json_path()
-    if not p.exists():
-        click.echo("(no tokens issued)")
-        return
-    data = json.loads(p.read_text(encoding="utf-8"))
-    rows = data.get("tokens", [])
+    from .server import auth as _auth
+
+    # v0.7.2: tokens live in vezir.sqlite, read via the auth helper which
+    # returns a non-secret 12-char ``token_id`` (never the full hash).
+    rows = _auth.list_tokens()
     if not rows:
         click.echo("(no tokens issued)")
         return
@@ -640,7 +638,7 @@ def token_list(dormant_days, show_id):
     githubs = [str(r.get("github") or "?") for r in rows]
     labels = [str(r.get("label") or "-") for r in rows]
     roles = ["admin" if r.get("is_admin") else "scribe" for r in rows]
-    ids = [str((r.get("token_hash") or "")[:12] or "?") for r in rows]
+    ids = [str(r.get("token_id") or "?") for r in rows]
     g_w = _w(githubs, len("github"))
     l_w = _w(labels, len("label"))
     r_w = _w(roles, len("role"))
@@ -662,7 +660,7 @@ def token_list(dormant_days, show_id):
         github = str(entry.get("github") or "?")
         role = "admin" if entry.get("is_admin") else "scribe"
         label = str(entry.get("label") or "-")
-        tid = str((entry.get("token_hash") or "")[:12] or "?")
+        tid = str(entry.get("token_id") or "?")
         issued = str(entry.get("issued_at") or "?")
         expires = entry.get("expires_at") or "never"
         last_used = entry.get("last_used_at") or "never used"
@@ -699,44 +697,45 @@ def team_list():
     if not rows:
         click.echo("(no teams configured)")
         return
-    # Column widths
-    ids = [str(r.get("id") or "?") for r in rows]
+    # Column widths.  v0.7.4: the human-facing key is the slug; the uuid
+    # is shown abbreviated for operators who need it (session move etc).
+    slugs = [str(r.get("slug") or r.get("id") or "?") for r in rows]
     names = [str(r.get("name") or "?") for r in rows]
     remotes = [str(r.get("sync_remote") or "-") for r in rows]
-    id_w = max([len("id")] + [len(s) for s in ids])
+    slug_w = max([len("slug")] + [len(s) for s in slugs])
     name_w = max([len("name")] + [len(s) for s in names])
     remote_w = max([len("sync_remote")] + [len(s) for s in remotes])
     click.echo(
-        f"  {'id':<{id_w}}  {'name':<{name_w}}  "
-        f"{'sync_remote':<{remote_w}}  meeting_type"
+        f"  {'slug':<{slug_w}}  {'name':<{name_w}}  "
+        f"{'sync_remote':<{remote_w}}  {'meeting_type':<12}  uuid"
     )
     for r in rows:
-        rid = str(r.get("id") or "?")
+        rslug = str(r.get("slug") or r.get("id") or "?")
         rname = str(r.get("name") or "?")
         rremote = str(r.get("sync_remote") or "-")
         rmt = str(r.get("sync_meeting_type") or "sandbox")
+        ruuid = str(r.get("id") or "?")
         click.echo(
-            f"  {rid:<{id_w}}  {rname:<{name_w}}  "
-            f"{rremote:<{remote_w}}  {rmt}"
+            f"  {rslug:<{slug_w}}  {rname:<{name_w}}  "
+            f"{rremote:<{remote_w}}  {rmt:<12}  {ruuid}"
         )
 
 
 @team.command("create")
 @click.option("--id", "team_id", required=True,
               help="Slug (3-32 chars, lowercase alphanum + hyphen, "
-                   "starts with a letter). Immutable.")
+                   "starts with a letter). Mutable display name "
+                   "(v0.7.4+); the stable key is an auto-assigned uuid.")
 @click.option("--name", required=True, help="Human display name.")
 @click.option("--sync-remote", default=None,
-              help="Git URL for this team's millet sync target "
-                   "(reserved schema slot in v0.6.0; sync wiring lands "
-                   "in v0.6.1).")
+              help="Git URL for this team's millet sync target.")
 @click.option("--sync-meeting-type", default="sandbox", show_default=True,
               help="Meeting-type prefix passed to `millet sync`.")
 def team_create(team_id, name, sync_remote, sync_meeting_type):
     """Create a new team."""
     from .server import queue as _queue
     try:
-        _queue.create_team(
+        team_uuid = _queue.create_team(
             team_id, name,
             sync_remote=sync_remote,
             sync_meeting_type=sync_meeting_type,
@@ -744,21 +743,19 @@ def team_create(team_id, name, sync_remote, sync_meeting_type):
     except ValueError as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)
-    click.echo(f"team created: id={team_id} name={name!r}")
+    click.echo(f"team created: slug={team_id} name={name!r} uuid={team_uuid}")
     if sync_remote:
         click.echo(f"  sync_remote: {sync_remote}")
     click.echo(f"  sync_meeting_type: {sync_meeting_type}")
 
 
 @team.command("set-name")
-@click.option("--id", "team_id", required=True, help="Team slug.")
+@click.option("--id", "team_id", required=True, help="Team slug or uuid.")
 @click.option("--name", required=True, help="New display name.")
 def team_set_name(team_id, name):
-    """Rename a team's display name (v0.6.2+).
+    """Update a team's freeform display name.
 
-    Slug (id) is immutable — see CHANGELOG / vezir_plan.md for the
-    rationale.  Use this to fix typos or to update a company name
-    after a rebrand.
+    To change the slug, use ``vezir team rename`` (v0.7.4+).
     """
     from .server import queue as _queue
     try:
@@ -767,7 +764,28 @@ def team_set_name(team_id, name):
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)
     row = _queue.get_team(team_id)
-    click.echo(f"team renamed: id={team_id} name={row['name']!r}")
+    click.echo(f"team renamed: slug={row['slug']} name={row['name']!r}")
+
+
+@team.command("rename")
+@click.option("--id", "team_id", required=True,
+              help="Current team slug or uuid.")
+@click.option("--new-slug", required=True, help="New slug.")
+def team_rename(team_id, new_slug):
+    """Change a team's slug (v0.7.4+).
+
+    The team's stable uuid is unchanged, so jobs, memberships,
+    on-disk dirs, and any client keyed on the uuid (every v0.5.2+
+    client, via /api/me) survive the rename with no cascade.
+    """
+    from .server import queue as _queue
+    try:
+        _queue.rename_team_slug(team_id, new_slug)
+    except ValueError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    row = _queue.get_team(new_slug)
+    click.echo(f"team slug changed: slug={row['slug']} uuid={row['id']}")
 
 
 @team.command("delete")
@@ -1100,20 +1118,23 @@ def session_move(session_id, to_team, confirm):
         click.echo(f"error: session {session_id!r} not found", err=True)
         sys.exit(2)
     src_team = row.get("team_id") or "(unassigned)"
-    if src_team == to_team:
-        click.echo(
-            f"session {session_id} is already in team {to_team!r}; "
-            f"nothing to do"
-        )
-        return
-    if _queue.get_team(to_team) is None:
-        available = [t["id"] for t in _queue.list_teams()]
+    # v0.7.4: jobs store the team uuid; resolve the target slug to its
+    # uuid before the same-team comparison.
+    dest_uuid = _queue.resolve_team_uuid(to_team)
+    if dest_uuid is None:
+        available = [t["slug"] for t in _queue.list_teams()]
         click.echo(
             f"error: destination team {to_team!r} does not exist "
             f"(known teams: {', '.join(available) or '(none)'})",
             err=True,
         )
         sys.exit(2)
+    if src_team == dest_uuid:
+        click.echo(
+            f"session {session_id} is already in team {to_team!r}; "
+            f"nothing to do"
+        )
+        return
 
     click.echo(f"session {session_id}: team {src_team} -> {to_team}")
     if not confirm:
@@ -1147,15 +1168,18 @@ def _resolve_team_arg(team_id: str | None) -> str:
     """
     from .server import queue as _queue
     if team_id:
-        if _queue.get_team(team_id) is None:
-            available = [t["id"] for t in _queue.list_teams()]
+        # v0.7.4: accept slug or uuid; return the stable uuid so path
+        # helpers resolve the correct teams/<uuid>/ dir.
+        uuid = _queue.resolve_team_uuid(team_id)
+        if uuid is None:
+            available = [t["slug"] for t in _queue.list_teams()]
             click.echo(
                 f"error: team {team_id!r} not found "
                 f"(known teams: {', '.join(available) or '(none)'})",
                 err=True,
             )
             sys.exit(2)
-        return team_id
+        return uuid
     teams = _queue.list_teams()
     if len(teams) == 1:
         return teams[0]["id"]
@@ -1166,7 +1190,7 @@ def _resolve_team_arg(team_id: str | None) -> str:
             err=True,
         )
         sys.exit(2)
-    available = ", ".join(t["id"] for t in teams)
+    available = ", ".join(t["slug"] for t in teams)
     click.echo(
         f"error: --team is required when multiple teams exist "
         f"(choose one of: {available})",

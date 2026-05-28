@@ -46,6 +46,7 @@ class _CreateTeamBody(BaseModel):
 
 class _UpdateTeamBody(BaseModel):
     name: str | None = None
+    slug: str | None = None  # v0.7.4: slug renames are now first-class
     sync_remote: str | None = None
     sync_meeting_type: str | None = None
 
@@ -120,6 +121,11 @@ def admin_update_team(
     try:
         if "name" in fields_set and body.name is not None:
             queue.update_team_name(team_id, body.name)
+
+        # v0.7.4: slug renames are a pure single-row UPDATE (uuid PK
+        # unchanged), so no cascade.
+        if "slug" in fields_set and body.slug is not None:
+            queue.rename_team_slug(team_id, body.slug)
 
         # Build kwargs for update_team_sync from explicitly-set fields
         # so an omitted field doesn't accidentally clear a value.

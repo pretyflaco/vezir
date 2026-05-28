@@ -57,6 +57,11 @@ def create_app() -> FastAPI:
     def _startup():
         log.info("vezir %s starting up", __version__)
         log.info("data dir: %s", config.data_dir())
+        # Sweep any resumable-upload staging left over from a crash/restart.
+        try:
+            uploads.sweep_abandoned_uploads()
+        except Exception:
+            log.exception("startup resumable-upload sweep failed (non-fatal)")
         worker.start_background_worker()
 
     @app.on_event("shutdown")

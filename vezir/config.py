@@ -134,6 +134,16 @@ def jobs_dir() -> Path:
     return data_dir() / "jobs"
 
 
+def uploads_tmp_dir() -> Path:
+    """Staging dir for in-progress resumable uploads (v0.7.3+).
+
+    Each resumable upload session gets a ``<upload_id>.part`` file plus a
+    ``<upload_id>.meta.json`` sidecar here until it completes (then it's
+    assembled into ``sessions/<session_id>/``) or is swept after the TTL.
+    """
+    return data_dir() / "uploads-tmp"
+
+
 def logs_dir() -> Path:
     return data_dir() / "logs"
 
@@ -897,5 +907,6 @@ def rename_session_dir_with_title(session_dir: Path, title: str | None) -> Path:
 
 def ensure_dirs() -> None:
     """Create runtime directories if they don't exist."""
-    for d in (data_dir(), sessions_dir(), jobs_dir(), logs_dir(), teams_dir()):
+    for d in (data_dir(), sessions_dir(), jobs_dir(), logs_dir(), teams_dir(),
+              uploads_tmp_dir()):
         secure_mkdir(d)

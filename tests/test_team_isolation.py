@@ -85,7 +85,8 @@ def test_migration_seeds_blink_and_twentyone(client_factory):
     """Confirm the seed migration ran and the two teams exist."""
     client_factory()  # triggers create_app() -> run_pending_migrations()
     from vezir.server import queue
-    teams = {t["id"]: t for t in queue.list_teams()}
+    # v0.7.4: teams keyed by uuid; slug is the human identifier.
+    teams = {t["slug"]: t for t in queue.list_teams()}
     assert "blink" in teams
     assert "twentyone" in teams
     assert teams["blink"]["name"] == "Blink"
@@ -108,7 +109,7 @@ def test_upload_routes_to_team_from_header(client_factory):
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
     row = queue.get(sid)
-    assert row["team_id"] == "blink"
+    assert row["team_id"] == queue.get_team("blink")["id"]
 
 
 def test_upload_routes_to_twentyone_when_header_says_so(client_factory):
@@ -124,7 +125,7 @@ def test_upload_routes_to_twentyone_when_header_says_so(client_factory):
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
     row = queue.get(sid)
-    assert row["team_id"] == "twentyone"
+    assert row["team_id"] == queue.get_team("twentyone")["id"]
 
 
 # ── /api/sessions visibility filter ────────────────────────────────────────

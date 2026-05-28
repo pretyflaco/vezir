@@ -891,19 +891,31 @@ class RecordBody(Vertical):
                 gen=gen,
             ))
 
+        server_url = self.app.server_url
+        token = self.app.token or ""
+        team_id = getattr(self.app, "active_team_id", None)
+        upload_kwargs = dict(
+            title=title,
+            summary_preset=preset,
+            auto_label=auto_label,
+            sync=sync,
+            personal=personal,
+            progress=on_progress,
+            on_retry=on_retry,
+            team_id=team_id,
+        )
         try:
-            result = uploader.upload(
-                self.app.server_url,
-                self.app.token or "",
-                audio_path,
-                title=title,
-                summary_preset=preset,
-                auto_label=auto_label,
-                sync=sync,
-                personal=personal,
-                progress=on_progress,
-                on_retry=on_retry,
-            )
+            # Prefer resumable; fall back to one-shot on older servers.
+            if uploader.server_supports_resumable(
+                server_url, token, team_id=team_id
+            ):
+                result = uploader.upload_resumable(
+                    server_url, token, audio_path, **upload_kwargs
+                )
+            else:
+                result = uploader.upload(
+                    server_url, token, audio_path, **upload_kwargs
+                )
         except Exception as exc:
             self.post_message(UploadFailed(
                 error=f"upload failed: {exc}",

@@ -175,11 +175,13 @@ def test_api_label_post_success(mock_apply, client_and_token, tmp_data):
     body = resp.json()
     assert body["ok"] is True
     assert body["session_id"] == "01TEST"
+    from vezir.server import queue
+    blink_uuid = queue.get_team("blink")["id"]
     mock_apply.assert_called_once_with(
         "01TEST",
         {"REMOTE_0": "kasita", "REMOTE_1": "alice"},
         "alice",  # github handle of the authenticated user
-        "blink",  # team_id (v0.6.2+): the auth-resolved team scope
+        blink_uuid,  # team_id (v0.7.4+): the auth-resolved team uuid
     )
 
 
@@ -195,8 +197,10 @@ def test_api_label_post_strips_empty_labels(mock_apply, client_and_token, tmp_da
         json={"labels": {"REMOTE_0": "kasita", "REMOTE_1": "  ", "YOU": ""}},
     )
     assert resp.status_code == 200
+    from vezir.server import queue
+    blink_uuid = queue.get_team("blink")["id"]
     mock_apply.assert_called_once_with(
-        "01TEST", {"REMOTE_0": "kasita"}, "alice", "blink",
+        "01TEST", {"REMOTE_0": "kasita"}, "alice", blink_uuid,
     )
 
 

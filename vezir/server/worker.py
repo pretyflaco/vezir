@@ -425,10 +425,24 @@ def _dns_warmup() -> None:
             )
 
 
+_UPLOAD_SWEEP_INTERVAL_SEC = 60 * 60  # hourly
+
+
 def _loop() -> None:
     log.info("vezir worker started")
     _dns_warmup()
+    next_sweep = 0.0
     while not _stop_flag.is_set():
+        # Periodically sweep abandoned resumable-upload staging files.
+        now = time.monotonic()
+        if now >= next_sweep:
+            try:
+                from . import uploads
+                uploads.sweep_abandoned_uploads()
+            except Exception:
+                log.exception("resumable-upload sweep failed (non-fatal)")
+            next_sweep = now + _UPLOAD_SWEEP_INTERVAL_SEC
+
         try:
             job = queue.claim_next()
         except Exception:

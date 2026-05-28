@@ -88,7 +88,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS teams (
-    id                  TEXT PRIMARY KEY,
+    id                  TEXT PRIMARY KEY,   -- stable UUID (v0.7.4+)
+    slug                TEXT UNIQUE,        -- mutable display slug (v0.7.4+)
     name                TEXT NOT NULL,
     sync_remote         TEXT,
     sync_meeting_type   TEXT NOT NULL DEFAULT 'sandbox',
@@ -112,6 +113,18 @@ CREATE TABLE IF NOT EXISTS session_teams (
 
 CREATE INDEX IF NOT EXISTS idx_memberships_team ON memberships(team_id);
 CREATE INDEX IF NOT EXISTS idx_session_teams_team ON session_teams(team_id);
+
+CREATE TABLE IF NOT EXISTS tokens (
+    token_hash    TEXT PRIMARY KEY,
+    github        TEXT NOT NULL,
+    issued_at     TEXT NOT NULL,
+    expires_at    TEXT,
+    last_used_at  TEXT,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    label         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_github ON tokens(github);
 """
 
 
@@ -130,6 +143,37 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _apply_pragmas(conn: sqlite3.Connection) -> None:
+    """Apply connection-level PRAGMAs for concurrency + integrity.
+
+    Must run on every fresh connection, before any other statement,
+    because several of these PRAGMAs are per-connection in SQLite:
+
+    * ``journal_mode=WAL`` — readers don't block the single writer and
+      vice-versa; also the only mode safe for concurrent multi-process
+      access (server + a CLI invocation touching the same file).  WAL
+      is a *database-level* setting that persists once set, but issuing
+      it per-connect is harmless and idempotent.
+    * ``busy_timeout=5000`` — wait up to 5s for a competing writer to
+      release its lock instead of immediately raising
+      ``database is locked``.  Per-connection.
+    * ``synchronous=NORMAL`` — safe with WAL (the WAL is fsynced at
+      checkpoint, not on every commit); markedly faster than the
+      default ``FULL`` with no durability loss that matters for our
+      workload.  Per-connection.
+    * ``foreign_keys=ON`` — enforce the ``REFERENCES`` clauses in the
+      schema (``memberships``/``session_teams`` → ``teams``,
+      ``session_teams`` → ``jobs``).  Previously documentary only.
+      Per-connection, MUST be set before any statement in a
+      transaction.  ``delete_team`` already deletes child rows before
+      the parent, so enforcement is order-compatible.
+    """
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
     """Get a connection to the queue DB. Thread-safe via a global lock."""
@@ -139,6 +183,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(str(db_path))
         config.secure_chmod_file(db_path)
         conn.row_factory = sqlite3.Row
+        _apply_pragmas(conn)
         try:
             conn.executescript(SCHEMA)
             # Idempotent column-add migrations for existing DBs predating
@@ -168,6 +213,22 @@ def _conn() -> Iterator[sqlite3.Connection]:
                     pass
             try:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_team ON jobs(team_id)")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            # v0.7.4: teams.slug (mutable display name); teams.id is now a
+            # stable UUID.  Added here for DBs predating the column; the
+            # 0.7.4 data migration backfills slug=id for legacy rows then
+            # rewrites ids to UUIDs.
+            try:
+                conn.execute("ALTER TABLE teams ADD COLUMN slug TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_slug ON teams(slug)"
+                )
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
@@ -205,6 +266,10 @@ def enqueue(
         raise ValueError("enqueue requires team_id (added in v0.6.0)")
     if personal:
         sync_enabled = False
+    # v0.7.4: jobs store the team's stable uuid.  In production
+    # ``team_id`` arrives as the uuid (from require_team_context); accept
+    # a slug too and resolve, so the stored value is always the uuid.
+    team_id = resolve_team_uuid(team_id) or team_id
     with _conn() as c:
         c.execute(
             "INSERT INTO jobs (id, github, team_id, title, summary_preset, "
@@ -362,6 +427,14 @@ def list_recent(
             "or viewer_team_id (v0.6.0+ team isolation)"
         )
 
+    # v0.7.4: jobs store the team uuid.  Resolve slug-or-uuid inputs so
+    # callers may pass either form; in production these arrive as the
+    # uuid already (from require_team_context).
+    if viewer_team_id:
+        viewer_team_id = resolve_team_uuid(viewer_team_id) or viewer_team_id
+    if team_id:
+        team_id = resolve_team_uuid(team_id) or team_id
+
     # v0.7.0: optional ``since`` filter for incremental ``vezir pull``.
     since_clause = ""
     since_params: tuple = ()
@@ -407,63 +480,122 @@ def list_recent(
 # ── teams CRUD ───────────────────────────────────────────────────────────────
 
 
-_TEAM_ID_RE = None  # lazy-compiled in validate_team_id
+_TEAM_SLUG_RE = None  # lazy-compiled in validate_slug
 
 
-def validate_team_id(team_id: str) -> None:
-    """Raise ``ValueError`` if ``team_id`` doesn't match the slug shape.
+def validate_slug(slug: str) -> None:
+    """Raise ``ValueError`` if ``slug`` doesn't match the slug shape.
 
     Constraints (per the v0.6.0 design): 3-32 chars, lowercase
     alphanumeric and hyphen, must start with a letter.
+
+    v0.7.4: slugs are now mutable *display* identifiers; the stable
+    primary key is a UUID (``teams.id``).
     """
-    global _TEAM_ID_RE
-    if _TEAM_ID_RE is None:
+    global _TEAM_SLUG_RE
+    if _TEAM_SLUG_RE is None:
         import re as _re
-        _TEAM_ID_RE = _re.compile(r"^[a-z][a-z0-9-]{2,31}$")
-    if not isinstance(team_id, str) or not _TEAM_ID_RE.match(team_id):
+        _TEAM_SLUG_RE = _re.compile(r"^[a-z][a-z0-9-]{2,31}$")
+    if not isinstance(slug, str) or not _TEAM_SLUG_RE.match(slug):
         raise ValueError(
-            f"invalid team_id {team_id!r}: must be 3-32 chars, lowercase "
+            f"invalid team slug {slug!r}: must be 3-32 chars, lowercase "
             "alphanumeric + hyphen, starting with a letter"
         )
 
 
+# Back-compat alias: pre-0.7.4 callers used validate_team_id for slugs.
+validate_team_id = validate_slug
+
+
+def _new_team_uuid() -> str:
+    import uuid as _uuid
+    return _uuid.uuid4().hex
+
+
+def resolve_team_uuid(slug_or_uuid: str) -> str | None:
+    """Resolve a slug OR a uuid to the team's uuid (``teams.id``), or None.
+
+    Used at API/CLI boundaries: callers may pass either form.  The
+    ``X-Team-Id`` header carries the uuid (v0.7.4+), but CLI commands
+    accept the human slug.
+    """
+    if not slug_or_uuid:
+        return None
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id FROM teams WHERE id = ? OR slug = ?",
+            (slug_or_uuid, slug_or_uuid),
+        ).fetchone()
+        return row["id"] if row else None
+
+
 def create_team(
-    team_id: str,
+    slug: str,
     name: str,
     sync_remote: str | None = None,
     sync_meeting_type: str = "sandbox",
-) -> None:
-    """Insert a new team row.  Idempotent: raises if the slug exists."""
-    validate_team_id(team_id)
+    *,
+    team_uuid: str | None = None,
+) -> str:
+    """Insert a new team row keyed by a fresh UUID; returns the uuid.
+
+    ``slug`` is the mutable display identifier (must be unique).  Pass
+    ``team_uuid`` only from migrations that need a deterministic id.
+    """
+    validate_slug(slug)
+    team_uuid = team_uuid or _new_team_uuid()
     with _conn() as c:
         existing = c.execute(
-            "SELECT id FROM teams WHERE id = ?", (team_id,)
+            "SELECT id FROM teams WHERE slug = ?", (slug,)
         ).fetchone()
         if existing:
-            raise ValueError(f"team {team_id!r} already exists")
+            raise ValueError(f"team {slug!r} already exists")
         c.execute(
-            "INSERT INTO teams (id, name, sync_remote, sync_meeting_type, "
-            "created_at) VALUES (?, ?, ?, ?, ?)",
-            (team_id, name, sync_remote, sync_meeting_type, _now()),
+            "INSERT INTO teams (id, slug, name, sync_remote, "
+            "sync_meeting_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (team_uuid, slug, name, sync_remote, sync_meeting_type, _now()),
         )
+    return team_uuid
 
 
 def get_team(team_id: str) -> dict | None:
-    """Return the team row as a dict, or None if missing."""
+    """Return the team row as a dict (keyed by uuid OR slug), or None."""
     with _conn() as c:
         row = c.execute(
-            "SELECT * FROM teams WHERE id = ?", (team_id,)
+            "SELECT * FROM teams WHERE id = ? OR slug = ?",
+            (team_id, team_id),
         ).fetchone()
         return dict(row) if row else None
 
 
 def list_teams() -> list[dict]:
-    """Return all teams ordered by id."""
+    """Return all teams ordered by slug."""
     with _conn() as c:
         rows = c.execute(
-            "SELECT * FROM teams ORDER BY id ASC"
+            "SELECT * FROM teams ORDER BY slug ASC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def rename_team_slug(team_id: str, new_slug: str) -> None:
+    """Change a team's display slug (uuid PK is unchanged).
+
+    Because the slug is no longer a key (v0.7.4), this is a pure
+    single-row UPDATE — no cascade across jobs/memberships/dirs.
+    Raises ``ValueError`` on bad slug shape, unknown team, or collision.
+    """
+    validate_slug(new_slug)
+    uuid = resolve_team_uuid(team_id)
+    if uuid is None:
+        raise ValueError(f"team {team_id!r} does not exist")
+    with _conn() as c:
+        clash = c.execute(
+            "SELECT id FROM teams WHERE slug = ? AND id != ?",
+            (new_slug, uuid),
+        ).fetchone()
+        if clash:
+            raise ValueError(f"slug {new_slug!r} is already in use")
+        c.execute("UPDATE teams SET slug = ? WHERE id = ?", (new_slug, uuid))
 
 
 def update_team_sync(
@@ -474,9 +606,12 @@ def update_team_sync(
     """Update sync_remote and/or sync_meeting_type for an existing team.
 
     Sentinel default ``...`` distinguishes "don't touch" from explicit
-    ``None`` (which clears sync_remote).
+    ``None`` (which clears sync_remote).  ``team_id`` may be a slug or
+    a uuid.
     """
-    validate_team_id(team_id)
+    uuid = resolve_team_uuid(team_id)
+    if uuid is None:
+        raise ValueError(f"team {team_id!r} does not exist")
     with _conn() as c:
         sets: list[str] = []
         params: list = []
@@ -490,7 +625,7 @@ def update_team_sync(
             params.append(sync_meeting_type)
         if not sets:
             return  # nothing to update
-        params.append(team_id)
+        params.append(uuid)
         c.execute(
             f"UPDATE teams SET {', '.join(sets)} WHERE id = ?",
             params,
@@ -512,17 +647,24 @@ def set_job_team(
     the destination team doesn't exist, instead of silently leaving
     an orphaned job that's invisible to every token.
 
-    Raises ``ValueError`` if the slug shape is invalid, or (when
-    ``require_team_exists=True``) if no team with that slug exists.
+    ``team_id`` may be a slug or a uuid; the job is stored against the
+    resolved uuid.  Raises ``ValueError`` when ``require_team_exists``
+    and no such team exists.
+
+    Migration backfill passes ``require_team_exists=False`` and a raw
+    uuid (the seed teams are inserted in the same transaction), so in
+    that mode the value is used verbatim.
     """
-    validate_team_id(team_id)
     if require_team_exists:
-        if get_team(team_id) is None:
+        uuid = resolve_team_uuid(team_id)
+        if uuid is None:
             raise ValueError(f"team {team_id!r} does not exist")
+    else:
+        uuid = team_id
     with _conn() as c:
         c.execute(
             "UPDATE jobs SET team_id = ?, updated_at = ? WHERE id = ?",
-            (team_id, _now(), job_id),
+            (uuid, _now(), job_id),
         )
 
 
@@ -532,23 +674,20 @@ def set_job_team(
 def update_team_name(team_id: str, name: str) -> None:
     """Update the human display name of an existing team.
 
-    Slug (``id``) renames are deferred to v0.7.0 — they require cascading
-    updates across ``jobs.team_id``, the ``tokens.json`` token rows, and
-    the on-disk ``teams/<id>/`` directory, plus invalidate every
-    in-memory web-session that was minted against the old slug.  The
-    immutable-slug contract is part of v0.6.0's design.
-
-    Display-name updates are pure-DB and trivially safe.
+    v0.7.4: slug renames are now first-class (see
+    :func:`rename_team_slug`) because the slug is no longer a key —
+    the stable PK is a uuid.  This function updates only the freeform
+    ``name``.  ``team_id`` may be a slug or a uuid.
     """
-    validate_team_id(team_id)
     if not name or not name.strip():
         raise ValueError("name must be non-empty")
-    if get_team(team_id) is None:
+    uuid = resolve_team_uuid(team_id)
+    if uuid is None:
         raise ValueError(f"team {team_id!r} does not exist")
     with _conn() as c:
         c.execute(
             "UPDATE teams SET name = ? WHERE id = ?",
-            (name.strip(), team_id),
+            (name.strip(), uuid),
         )
 
 
@@ -573,31 +712,33 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
     themselves; operator can ``vezir session move`` first or write SQL.
 
     Returns a stats dict: ``{jobs_reassigned, tokens_revoked,
-    on_disk_removed}``.
+    on_disk_removed}``.  ``team_id`` and ``reassign_to`` may each be a
+    slug or a uuid.
     """
-    validate_team_id(team_id)
-    if get_team(team_id) is None:
+    uuid = resolve_team_uuid(team_id)
+    if uuid is None:
         raise ValueError(f"team {team_id!r} does not exist")
 
+    reassign_uuid: str | None = None
     if reassign_to is not None:
-        validate_team_id(reassign_to)
-        if reassign_to == team_id:
-            raise ValueError(
-                "reassign_to must be a different team than the one being deleted"
-            )
-        if get_team(reassign_to) is None:
+        reassign_uuid = resolve_team_uuid(reassign_to)
+        if reassign_uuid is None:
             raise ValueError(
                 f"reassign-to team {reassign_to!r} does not exist"
+            )
+        if reassign_uuid == uuid:
+            raise ValueError(
+                "reassign_to must be a different team than the one being deleted"
             )
 
     # 1. Count and (optionally) reassign jobs.
     with _conn() as c:
         n_jobs = c.execute(
             "SELECT COUNT(*) AS n FROM jobs WHERE team_id = ?",
-            (team_id,),
+            (uuid,),
         ).fetchone()["n"]
 
-        if n_jobs and reassign_to is None:
+        if n_jobs and reassign_uuid is None:
             raise ValueError(
                 f"team {team_id!r} has {n_jobs} job(s) assigned; "
                 f"pass reassign_to=<slug> to cascade, or move them "
@@ -608,7 +749,7 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
             c.execute(
                 "UPDATE jobs SET team_id = ?, updated_at = ? "
                 "WHERE team_id = ?",
-                (reassign_to, _now(), team_id),
+                (reassign_uuid, _now(), uuid),
             )
 
     # 2. Count and (optionally) drop memberships.  v0.7.0: tokens no
@@ -619,10 +760,10 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
     with _conn() as c:
         n_members = c.execute(
             "SELECT COUNT(*) AS n FROM memberships WHERE team_id = ?",
-            (team_id,),
+            (uuid,),
         ).fetchone()["n"]
 
-    if n_members and reassign_to is None:
+    if n_members and reassign_uuid is None:
         raise ValueError(
             f"team {team_id!r} has {n_members} member(s); "
             f"pass reassign_to=<slug> to cascade-drop memberships, "
@@ -633,35 +774,35 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
     if n_members:
         with _conn() as c:
             cur = c.execute(
-                "DELETE FROM memberships WHERE team_id = ?", (team_id,)
+                "DELETE FROM memberships WHERE team_id = ?", (uuid,)
             )
             members_dropped = cur.rowcount
 
     # 3. Drop session_teams rows targeting this team (cross-team shares).
     with _conn() as c:
         c.execute(
-            "DELETE FROM session_teams WHERE team_id = ?", (team_id,)
+            "DELETE FROM session_teams WHERE team_id = ?", (uuid,)
         )
 
     # 4. Delete the team row itself.
     with _conn() as c:
-        c.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+        c.execute("DELETE FROM teams WHERE id = ?", (uuid,))
 
-    # 5. Remove the on-disk per-team dir (roster, voiceprints, sync_config).
+    # 5. Remove the on-disk per-team dir (keyed by uuid in v0.7.4+).
     on_disk_removed = False
     import shutil as _shutil
 
     from .. import config as _config
-    team_dir = _config.teams_dir() / team_id
+    team_dir = _config.teams_dir() / uuid
     if team_dir.exists():
         _shutil.rmtree(team_dir, ignore_errors=True)
         on_disk_removed = not team_dir.exists()
 
     return {
-        "jobs_reassigned": n_jobs if reassign_to else 0,
+        "jobs_reassigned": n_jobs if reassign_uuid else 0,
         "members_dropped": members_dropped,
         "on_disk_removed": on_disk_removed,
-        "reassigned_to": reassign_to,
+        "reassigned_to": reassign_uuid,
     }
 
 
@@ -671,68 +812,85 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
 def add_membership(
     github: str, team_id: str, role: str = "scribe", added_by: str | None = None,
 ) -> None:
-    """Add or update a user's membership in a team."""
+    """Add or update a user's membership in a team.
+
+    ``team_id`` may be a slug or a uuid; stored against the uuid.
+    """
     if role not in ("admin", "scribe"):
         raise ValueError(f"invalid role {role!r}; must be 'admin' or 'scribe'")
+    uuid = resolve_team_uuid(team_id)
+    if uuid is None:
+        raise ValueError(f"team {team_id!r} does not exist")
     now = _now()
     with _conn() as c:
         c.execute(
             "INSERT OR REPLACE INTO memberships "
             "(github, team_id, role, added_at, added_by) "
             "VALUES (?, ?, ?, ?, ?)",
-            (github, team_id, role, now, added_by),
+            (github, uuid, role, now, added_by),
         )
 
 
 def remove_membership(github: str, team_id: str) -> bool:
-    """Remove a user from a team. Returns True if a row was deleted."""
+    """Remove a user from a team. Returns True if a row was deleted.
+
+    ``team_id`` may be a slug or a uuid.
+    """
+    uuid = resolve_team_uuid(team_id) or team_id
     with _conn() as c:
         cur = c.execute(
             "DELETE FROM memberships WHERE github = ? AND team_id = ?",
-            (github, team_id),
+            (github, uuid),
         )
         return cur.rowcount > 0
 
 
 def get_memberships(github: str) -> list[dict]:
-    """Return all teams a user is a member of, with team name and role."""
+    """Return all teams a user is a member of, with name, slug, and role.
+
+    Each dict carries ``team_id`` (the uuid — what the client sends back
+    in ``X-Team-Id``), ``slug`` (display), ``team_name``, and ``role``.
+    """
     with _conn() as c:
         rows = c.execute(
-            "SELECT m.team_id, m.role, t.name AS team_name "
+            "SELECT m.team_id, t.slug, m.role, t.name AS team_name "
             "FROM memberships m JOIN teams t ON m.team_id = t.id "
-            "WHERE m.github = ? ORDER BY m.team_id",
+            "WHERE m.github = ? ORDER BY t.slug",
             (github,),
         ).fetchall()
         return [dict(r) for r in rows]
 
 
 def get_team_members(team_id: str) -> list[dict]:
-    """Return all members of a team with their roles."""
+    """Return all members of a team with their roles (slug or uuid ok)."""
+    uuid = resolve_team_uuid(team_id) or team_id
     with _conn() as c:
         rows = c.execute(
             "SELECT github, role, added_at, added_by "
             "FROM memberships WHERE team_id = ? ORDER BY github",
-            (team_id,),
+            (uuid,),
         ).fetchall()
         return [dict(r) for r in rows]
 
 
 def is_member(github: str, team_id: str) -> bool:
-    """Check if a user is a member of a team."""
+    """Check if a user is a member of a team (slug or uuid ok)."""
+    uuid = resolve_team_uuid(team_id) or team_id
     with _conn() as c:
         row = c.execute(
             "SELECT 1 FROM memberships WHERE github = ? AND team_id = ?",
-            (github, team_id),
+            (github, uuid),
         ).fetchone()
         return row is not None
 
 
 def get_role(github: str, team_id: str) -> str | None:
     """Return the user's role in a team, or None if not a member."""
+    uuid = resolve_team_uuid(team_id) or team_id
     with _conn() as c:
         row = c.execute(
             "SELECT role FROM memberships WHERE github = ? AND team_id = ?",
-            (github, team_id),
+            (github, uuid),
         ).fetchone()
         return row["role"] if row else None
 
@@ -741,20 +899,24 @@ def get_role(github: str, team_id: str) -> str | None:
 
 
 def share_session_with_team(session_id: str, team_id: str) -> None:
-    """Make a session visible to a team."""
+    """Make a session visible to a team (slug or uuid ok)."""
+    uuid = resolve_team_uuid(team_id)
+    if uuid is None:
+        raise ValueError(f"team {team_id!r} does not exist")
     with _conn() as c:
         c.execute(
             "INSERT OR IGNORE INTO session_teams (session_id, team_id) VALUES (?, ?)",
-            (session_id, team_id),
+            (session_id, uuid),
         )
 
 
 def unshare_session_from_team(session_id: str, team_id: str) -> None:
-    """Remove a session's visibility from a team."""
+    """Remove a session's visibility from a team (slug or uuid ok)."""
+    uuid = resolve_team_uuid(team_id) or team_id
     with _conn() as c:
         c.execute(
             "DELETE FROM session_teams WHERE session_id = ? AND team_id = ?",
-            (session_id, team_id),
+            (session_id, uuid),
         )
 
 

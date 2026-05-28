@@ -63,10 +63,20 @@ def _now() -> str:
 
 
 def _conn() -> sqlite3.Connection:
-    """Open a connection to the queue DB (same file used by queue.py)."""
+    """Open a connection to the queue DB (same file used by queue.py).
+
+    Applies the same connection PRAGMAs as ``queue._conn`` (WAL,
+    busy_timeout, synchronous, foreign_keys) so the startup migration
+    path is consistent with the running server.  These are set before
+    any statement, as required for per-connection PRAGMAs.
+    """
     db_path = config.queue_db_path()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_TRACKING)
     return conn
 
@@ -100,10 +110,18 @@ def _seed_teams(conn: sqlite3.Connection) -> None:
     matches the case where the operator manually pre-created teams
     before running the migration.
     """
-    existing = {
-        row["id"]
-        for row in conn.execute("SELECT id FROM teams").fetchall()
-    }
+    # Existence check covers BOTH the legacy slug-as-id rows and the
+    # v0.7.4 uuid-keyed rows (where the slug lives in the slug column).
+    existing = set()
+    has_slug = any(
+        r[1] == "slug"
+        for r in conn.execute("PRAGMA table_info(teams)").fetchall()
+    )
+    cols = "id, slug" if has_slug else "id"
+    for row in conn.execute(f"SELECT {cols} FROM teams").fetchall():
+        existing.add(row["id"])
+        if has_slug and row["slug"]:
+            existing.add(row["slug"])
     seeds = [
         ("blink", "Blink", None, "sandbox"),
         ("twentyone", "Twentyone", None, "sandbox"),
@@ -112,6 +130,7 @@ def _seed_teams(conn: sqlite3.Connection) -> None:
         if slug in existing:
             log.info("migration: team %r already exists; skipping seed", slug)
             continue
+        # Legacy seed: id=slug (the 0.7.4 migration later remaps to uuid).
         conn.execute(
             "INSERT INTO teams (id, name, sync_remote, sync_meeting_type, "
             "created_at) VALUES (?, ?, ?, ?, ?)",
@@ -579,10 +598,231 @@ def migrate_0_7_0() -> dict:
     return summary
 
 
+# ── v0.7.2: tokens.json -> sqlite tokens table ────────────────────────────
+
+
+def _import_tokens_to_sqlite(conn: sqlite3.Connection) -> dict:
+    """Import every row from ``tokens.json`` into the ``tokens`` table.
+
+    The old flat file did an unlocked full-file read-modify-write with a
+    lost-update race.  v0.7.2 stores tokens in ``vezir.sqlite`` instead.
+
+    Idempotent: ``INSERT OR IGNORE`` keyed on ``token_hash`` means a
+    re-run never duplicates rows.  After a successful import the source
+    file is renamed to ``tokens.json.migrated`` so it's preserved as a
+    backstop but no longer treated as authoritative.  If the file is
+    already absent (fresh install, or a prior run renamed it) this is a
+    no-op.
+    """
+    p = config.tokens_json_path()
+    if not p.exists():
+        log.info("migration 0.7.2: no tokens.json; nothing to import")
+        return {"tokens_imported": 0, "file_renamed": False}
+
+    data = json.loads(p.read_text(encoding="utf-8"))
+    tokens = data.get("tokens", [])
+
+    imported = 0
+    for entry in tokens:
+        token_hash = entry.get("token_hash")
+        github = entry.get("github")
+        if not token_hash or not github:
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO tokens "
+            "(token_hash, github, issued_at, expires_at, last_used_at, "
+            "is_admin, label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                token_hash,
+                github,
+                entry.get("issued_at") or _now(),
+                entry.get("expires_at"),
+                entry.get("last_used_at"),
+                1 if entry.get("is_admin") else 0,
+                entry.get("label"),
+            ),
+        )
+        imported += cur.rowcount
+    conn.commit()
+
+    # Preserve the old file as a backstop rather than deleting it.
+    migrated_path = p.with_suffix(p.suffix + ".migrated")
+    p.rename(migrated_path)
+
+    stats = {
+        "tokens_imported": imported,
+        "rows_in_file": len(tokens),
+        "file_renamed": True,
+        "backstop": str(migrated_path),
+    }
+    log.info("migration 0.7.2: token import stats: %s", stats)
+    return stats
+
+
+def migrate_0_7_2() -> dict:
+    """Apply the v0.7.2 tokens-to-sqlite migration.
+
+    Steps (idempotent):
+
+    1. Materialize the schema (the ``tokens`` table is part of the queue
+       module's ``SCHEMA``).
+    2. Import every row from ``tokens.json`` into the ``tokens`` table
+       via ``INSERT OR IGNORE`` (keyed on ``token_hash``), then rename
+       ``tokens.json`` -> ``tokens.json.migrated``.
+
+    Returns a stats dict suitable for the audit log.
+    """
+    version = "0.7.2-tokens-to-sqlite"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        c.commit()
+        import_stats = _import_tokens_to_sqlite(c)
+
+    _mark_applied(version)
+
+    summary = {"version": version, "tokens": import_stats}
+
+    log_dir = config.logs_dir()
+    config.secure_mkdir(log_dir)
+    log_file = log_dir / f"migration-{version}.log"
+    config.secure_write_text(
+        log_file,
+        json.dumps(summary, indent=2) + "\n",
+    )
+    log.info("migration %s complete; audit at %s", version, log_file)
+
+    return summary
+
+
+# ── v0.7.4: team slug -> UUID primary key ─────────────────────────────────
+
+
+def _migrate_teams_to_uuid(conn: sqlite3.Connection) -> dict:
+    """Give every team a stable UUID id; slugs become mutable display names.
+
+    Pre-0.7.4 the team slug WAS the primary key (``teams.id``) and the FK
+    discriminator on ``jobs``/``memberships``/``session_teams``.  This
+    rewrites each team's ``id`` to a fresh uuid, sets ``slug`` to the old
+    id, rewrites the child FKs, and renames the on-disk ``teams/<slug>/``
+    dir to ``teams/<uuid>/``.
+
+    Idempotent: a team whose ``slug`` column is already populated (the
+    v0.7.4 marker) is skipped.
+    """
+    import uuid as _uuid
+
+    rows = conn.execute("SELECT * FROM teams").fetchall()
+    remapped = 0
+    dirs_renamed = 0
+    teams_root = config.teams_dir()
+
+    # FK-safe ordering under foreign_keys=ON: for each legacy team,
+    # INSERT a new uuid-keyed row, repoint every child to it, then
+    # DELETE the old slug-keyed row.  No PK is ever mutated in place, so
+    # children never transiently dangle and we don't touch the
+    # connection's foreign_keys pragma (which would leak to pooled
+    # state).
+    for row in rows:
+        old_id = row["id"]
+        keys = row.keys()
+        existing_slug = row["slug"] if "slug" in keys else None
+        # Already migrated if the slug column is populated — that's the
+        # definitive marker of the v0.7.4 model.  (We must NOT rely on
+        # the id's *shape*: a uuid4 hex like "ed89...fcfb" happens to
+        # satisfy the slug regex — lowercase alnum, starts with a
+        # letter, <=32 chars — so shape-matching would re-migrate an
+        # already-uuid team and clobber its slug.)
+        if existing_slug:
+            continue
+        new_uuid = _uuid.uuid4().hex
+        name = row["name"] if "name" in keys else old_id
+        sync_remote = row["sync_remote"] if "sync_remote" in keys else None
+        sync_meeting_type = (
+            row["sync_meeting_type"] if "sync_meeting_type" in keys else "sandbox"
+        )
+        created_at = row["created_at"] if "created_at" in keys else _now()
+
+        conn.execute(
+            "INSERT INTO teams (id, slug, name, sync_remote, "
+            "sync_meeting_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (new_uuid, old_id, name, sync_remote, sync_meeting_type, created_at),
+        )
+        conn.execute(
+            "UPDATE jobs SET team_id = ? WHERE team_id = ?", (new_uuid, old_id)
+        )
+        conn.execute(
+            "UPDATE memberships SET team_id = ? WHERE team_id = ?",
+            (new_uuid, old_id),
+        )
+        conn.execute(
+            "UPDATE session_teams SET team_id = ? WHERE team_id = ?",
+            (new_uuid, old_id),
+        )
+        conn.execute("DELETE FROM teams WHERE id = ?", (old_id,))
+        remapped += 1
+
+        # Rename on-disk dir teams/<slug>/ -> teams/<uuid>/.
+        old_dir = teams_root / old_id
+        new_dir = teams_root / new_uuid
+        if old_dir.is_dir() and not new_dir.exists():
+            old_dir.rename(new_dir)
+            dirs_renamed += 1
+    conn.commit()
+
+    stats = {"teams_remapped": remapped, "dirs_renamed": dirs_renamed}
+    log.info("migration 0.7.4: team uuid remap stats: %s", stats)
+    return stats
+
+
+def migrate_0_7_4() -> dict:
+    """Apply the v0.7.4 team-slug-to-uuid migration."""
+    version = "0.7.4-team-uuid"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        # Ensure the slug column exists on pre-0.7.4 DBs before the remap.
+        try:
+            c.execute("ALTER TABLE teams ADD COLUMN slug TEXT")
+        except sqlite3.OperationalError:
+            pass
+        c.commit()
+        remap_stats = _migrate_teams_to_uuid(c)
+
+    _mark_applied(version)
+
+    summary = {"version": version, "teams": remap_stats}
+
+    log_dir = config.logs_dir()
+    config.secure_mkdir(log_dir)
+    log_file = log_dir / f"migration-{version}.log"
+    config.secure_write_text(
+        log_file,
+        json.dumps(summary, indent=2) + "\n",
+    )
+    log.info("migration %s complete; audit at %s", version, log_file)
+
+    return summary
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
-ALL_MIGRATIONS = [migrate_0_6_0, migrate_0_6_2, migrate_0_7_0]
+ALL_MIGRATIONS = [
+    migrate_0_6_0, migrate_0_6_2, migrate_0_7_0, migrate_0_7_2, migrate_0_7_4,
+]
 
 
 def run_pending_migrations() -> list[dict]:

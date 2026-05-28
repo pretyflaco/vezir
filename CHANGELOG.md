@@ -3,6 +3,148 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.4 — team UUID keys + slug rename
+
+Teams now have a stable UUID primary key; the slug becomes a mutable
+display identifier.  This makes `vezir team rename` a pure single-row
+update instead of a cascade across jobs, memberships, on-disk dirs, and
+in-flight sessions.
+
+### Changed
+
+* **`teams.id` is now a UUID**; new `teams.slug` column holds the
+  mutable display slug (unique).  FK discriminators (`jobs.team_id`,
+  `memberships.team_id`, `session_teams.team_id`) and on-disk
+  `teams/<id>/` dirs are all keyed by the uuid.
+* **`X-Team-Id` carries the uuid** (a slug is still accepted and
+  resolved, for curl/debug).  `/api/me` memberships return both
+  `team_id` (uuid) and `slug`.  Clients key on the uuid, so a rename
+  never orphans them.
+* `queue` functions (`create_team` returns the uuid; `get_team`,
+  `is_member`, `set_job_team`, `enqueue`, `delete_team`,
+  `list_recent`, membership + session-share helpers) accept slug OR
+  uuid and resolve to the uuid internally.
+
+### Added
+
+* **`vezir team rename --id <slug|uuid> --new-slug <slug>`** and
+  `PATCH /admin/teams/{id}` accepting `slug`.  Pure DB update — no
+  cascade.
+* `queue.resolve_team_uuid()` + `queue.rename_team_slug()`.
+
+### Migration
+
+* `migrate_0_7_4` assigns a uuid to every legacy slug-keyed team,
+  rewrites child FKs, and renames `teams/<slug>/` → `teams/<uuid>/`.
+  Idempotent (keyed on the `slug` column being populated).  FK-safe
+  under `foreign_keys=ON`: inserts the new uuid row, repoints children,
+  then deletes the old row (no in-place PK mutation).
+
+### Fixed
+
+* `_seed_teams` existence check now matches on **slug** as well as id,
+  so a team pre-created in the v0.7.4 (uuid) model is no longer
+  double-seeded as a duplicate slug-keyed row.
+
+### Tests
+
+* `test_team_uuid_rename.py` (NEW): uuid assignment, slug↔uuid resolve,
+  rename preserves uuid + data, collision/bad-slug rejection, the
+  migration's FK rewrite + dir rename, CLI rename.
+* Existing team/voiceprint/label/session-move tests updated to expect
+  uuid-keyed `team_id` and slug-keyed display.
+
+## 0.7.3 — resumable uploads (tus.io subset)
+
+Adds a resumable upload path so a dropped transfer resumes from the
+last byte the server received instead of restarting at zero — directly
+mitigating the documented nvpn/Tailscale tunnel flakiness.
+
+### Added
+
+* **Server: tus.io 1.0 subset** on `POST /upload/resumable` (create),
+  `HEAD /upload/resumable/{id}` (offset), `PATCH /upload/resumable/{id}`
+  (append).  Staging lives in `~/vezir-data/uploads-tmp/` as
+  `<id>.part` + `<id>.meta.json`; on completion the file is assembled
+  into `sessions/<session_id>/` and enqueued exactly like the one-shot
+  path.  Same auth (`X-Team-Id`), magic-byte validation, size cap, and
+  rate-limit bucket.  Ownership-scoped 404s (a caller never learns
+  another user's/team's upload exists).  The legacy `POST /upload`
+  endpoint is unchanged for older clients.
+* **Abandoned-staging sweep** — `.part`/`.meta.json` older than 24h are
+  swept at startup and hourly from the worker loop.
+* **Desktop client** — `uploader.upload_resumable()` (PATCH loop with
+  HEAD-based offset resync on network error) plus
+  `uploader.server_supports_resumable()` probe.  `vezir scribe` and the
+  TUI prefer resumable and fall back to one-shot on older servers.
+
+### Fixed
+
+* **`uploader.upload()` now sends `X-Team-Id`** (new `team_id=` param).
+  The desktop one-shot path previously sent only `Authorization`, which
+  would 400 against a v0.7.0+ server.  `vezir scribe` resolves the
+  active team via `resolve_credentials()` and passes it through.
+
+### Tests
+
+* `test_resumable_upload.py` (NEW) — create/HEAD/PATCH happy path,
+  resume-after-drop, offset-mismatch 409, overshoot 413, bad-magic 415,
+  cross-user 404, TTL sweep.
+* `test_uploader_resumable_e2e.py` (NEW) — desktop client against a live
+  uvicorn server (happy path + legacy X-Team-Id header).
+
+## 0.7.2 — SQLite hardening: WAL + token store migration
+
+Two database-layer hardening changes. No API or client-visible
+behavior change; both are operational/correctness improvements.
+
+### Changed
+
+* **SQLite now runs in WAL mode** with a 5s `busy_timeout`,
+  `synchronous=NORMAL`, and `foreign_keys=ON`.  Applied on every
+  connection in both `queue._conn` and `migrations._conn` via a new
+  `queue._apply_pragmas` helper.  WAL lets readers and the single
+  writer proceed without blocking each other and makes concurrent
+  multi-process access (server + a `vezir` CLI invocation) safe
+  instead of raising `database is locked`.  `foreign_keys=ON`
+  promotes the schema's `REFERENCES` clauses
+  (`memberships`/`session_teams` → `teams`, `session_teams` →
+  `jobs`) from documentary to enforced; the existing
+  `delete_team` cascade already deletes child rows before parents,
+  so enforcement is order-compatible (verified against the full
+  suite).
+
+* **Token storage moved from `tokens.json` to a `tokens` table in
+  `vezir.sqlite`.**  The old flat file did an unlocked full-file
+  read-modify-write, which had a lost-update race on concurrent
+  `issue`/`revoke` and on the `last_used_at` touch that fires on
+  nearly every authenticated request.  Storage now goes through
+  `queue._conn` (global `_LOCK` + WAL), so each read-modify-write
+  is atomic.  Public `auth` signatures are unchanged.
+
+### Migration
+
+* New one-shot `migrate_0_7_2` (`0.7.2-tokens-to-sqlite`) imports
+  every row from `tokens.json` into the `tokens` table
+  (`INSERT OR IGNORE` on `token_hash`), then renames the file to
+  `tokens.json.migrated` as a backstop.  Idempotent; runs after the
+  v0.7.0 memberships migration (which strips `team_id` from the
+  file first).  Audit log at
+  `~/vezir-data/logs/migration-0.7.2-tokens-to-sqlite.log`.
+
+* **`vezir doctor`** S1/S2/S3 repointed to the `tokens` table; S1
+  now warns if a live `tokens.json` (not the `.migrated` backstop)
+  is still present.
+
+### Tests
+
+* `test_queue.py`: pragma assertions, FK enforcement, concurrent-
+  writer no-lost-update.
+* `test_tokens_sqlite_migration.py` (NEW): JSON import, idempotence,
+  no-file no-op, end-to-end issue→lookup, concurrent issue.
+* Existing token/doctor/permissions tests adapted to the SQLite
+  store.
+
 ## 0.7.1 — fix: `vezir token enroll` missing CA cert in QR
 
 ### Fixed

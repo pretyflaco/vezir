@@ -54,6 +54,37 @@ def _team_headers(token: str, team: str = "blink") -> dict:
     }
 
 
+def _token_rows() -> list[dict]:
+    """Read the tokens table from the active VEZIR_DATA vezir.sqlite."""
+    import sqlite3
+
+    from vezir import config
+
+    conn = sqlite3.connect(str(config.queue_db_path()))
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM tokens")]
+    finally:
+        conn.close()
+
+
+def _set_token_field(token_hash_prefix_github: str, field: str, value) -> None:
+    """Update a single token row's field by github handle (test helper)."""
+    import sqlite3
+
+    from vezir import config
+
+    conn = sqlite3.connect(str(config.queue_db_path()))
+    try:
+        conn.execute(
+            f"UPDATE tokens SET {field} = ? WHERE github = ?",
+            (value, token_hash_prefix_github),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _tiny_wav_bytes() -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -68,23 +99,21 @@ def _tiny_wav_bytes() -> bytes:
 
 
 def test_issue_records_new_fields(tmp_data):
-    import json
-
     from vezir.server import auth
 
     auth.issue("alice", expires_in_seconds=3600, is_admin=True, label="laptop")
-    rows = json.loads((tmp_data / "tokens.json").read_text())["tokens"]
+    rows = _token_rows()
     assert len(rows) == 1
     row = rows[0]
     assert row["github"] == "alice"
-    assert row["is_admin"] is True
+    assert bool(row["is_admin"]) is True
     assert row["label"] == "laptop"
     assert row["expires_at"] is not None
     assert row["last_used_at"] is None
     # plaintext is never persisted
     assert "token" not in row
     assert "plaintext" not in row
-    # v0.7.0: team_id no longer baked into the token
+    # v0.7.0+: team_id no longer baked into the token (no such column)
     assert "team_id" not in row
 
 
@@ -110,63 +139,52 @@ def test_expired_token_is_rejected(tmp_data):
     from vezir.server import auth
 
     tok = auth.issue("alice", expires_in_seconds=10)
-    import json
-    p = tmp_data / "tokens.json"
-    data = json.loads(p.read_text())
-    data["tokens"][0]["expires_at"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60)
+    _set_token_field(
+        "alice",
+        "expires_at",
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60)),
     )
-    auth._save_tokens(data)
 
     assert auth.lookup(tok) is None
     assert auth.is_admin_token(tok) is False
 
 
 def test_legacy_row_without_expires_at_still_works(tmp_data):
-    """A token row from pre-0.1.12 (no expires_at field) is treated as
-    'no expiry'.  Required for upgrade safety.
-    """
-    import json
+    """A token row with NULL expires_at is treated as 'no expiry'.
 
+    Mirrors a pre-0.1.12 row imported by the 0.7.2 migration where the
+    optional columns are NULL.  Required for upgrade safety.
+    """
     from vezir.server import auth
 
     tok = auth.issue("alice")
-    p = tmp_data / "tokens.json"
-    data = json.loads(p.read_text())
-    del data["tokens"][0]["expires_at"]
-    del data["tokens"][0]["last_used_at"]
-    del data["tokens"][0]["is_admin"]
-    del data["tokens"][0]["label"]
-    auth._save_tokens(data)
+    _set_token_field("alice", "expires_at", None)
+    _set_token_field("alice", "last_used_at", None)
+    _set_token_field("alice", "is_admin", 0)
+    _set_token_field("alice", "label", None)
 
     assert auth.lookup(tok) == "alice"
 
 
 def test_last_used_at_updates_on_success(tmp_data):
-    import json
-
     from vezir.server import auth
 
     tok = auth.issue("alice")
-    p = tmp_data / "tokens.json"
-    assert json.loads(p.read_text())["tokens"][0]["last_used_at"] is None
+    assert _token_rows()[0]["last_used_at"] is None
     assert auth.lookup(tok) == "alice"
-    after = json.loads(p.read_text())["tokens"][0]["last_used_at"]
+    after = _token_rows()[0]["last_used_at"]
     assert after is not None
 
 
 def test_last_used_at_is_debounced(tmp_data, monkeypatch):
     """Two consecutive lookups should not write twice."""
-    import json
-
     from vezir.server import auth
 
     tok = auth.issue("alice")
     auth.lookup(tok)
-    p = tmp_data / "tokens.json"
-    first = json.loads(p.read_text())["tokens"][0]["last_used_at"]
+    first = _token_rows()[0]["last_used_at"]
     auth.lookup(tok)
-    second = json.loads(p.read_text())["tokens"][0]["last_used_at"]
+    second = _token_rows()[0]["last_used_at"]
     assert first == second  # not touched again
 
 

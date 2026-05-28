@@ -44,11 +44,15 @@ def test_api_me_returns_memberships(client_factory):
     body = r.json()
     assert body["github"] == "alice"
     assert body["is_admin"] is False
-    by_team = {m["team_id"]: m for m in body["memberships"]}
+    # v0.7.4: memberships are keyed by uuid (team_id); slug is the
+    # human identifier the client shows.
+    by_team = {m["slug"]: m for m in body["memberships"]}
     assert "blink" in by_team
     assert "twentyone" in by_team
     assert by_team["twentyone"]["role"] == "admin"
     assert by_team["blink"]["team_name"] == "Blink"
+    # team_id is the uuid the client sends back in X-Team-Id.
+    assert by_team["blink"]["team_id"] != "blink"
 
 
 def test_api_me_returns_admin_flag(client_factory):

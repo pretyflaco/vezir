@@ -492,50 +492,57 @@ def _is_server_local() -> bool:
 
 
 def _check_tokens_json(r: _Results) -> None:
-    """S1 + S2: stale team_id fields and expired tokens.
+    """S1 + S2: expired tokens + leftover legacy token store.
 
-    v0.7.0: tokens no longer carry a team_id.  The migration strips
-    the field, but a hand-edited tokens.json could still have stale
-    rows.  Flag (warn) so the operator notices, then runs the
-    migration or revokes manually.
+    v0.7.2: tokens live in the ``tokens`` table inside ``vezir.sqlite``.
+    This check reads the table for expired rows (S2) and warns if a
+    stale ``tokens.json`` (not the post-migration ``.migrated`` backstop)
+    is still present (S1) — that would mean the migration hasn't run or
+    someone hand-restored the old file.
     """
+    import sqlite3
+    import time
+
+    # S1: a live tokens.json should not exist post-0.7.2.
     p = config.tokens_json_path()
-    if not p.exists():
-        r.ok("tokens.json: not present (no tokens issued)")
+    if p.exists():
+        r.warn(
+            "tokens.json still present.  v0.7.2 moved tokens into "
+            "vezir.sqlite; restart the server to run the migration "
+            "(it will be renamed to tokens.json.migrated)."
+        )
+
+    db_path = config.queue_db_path()
+    if not db_path.exists():
+        r.ok("tokens: no vezir.sqlite yet (no tokens issued)")
         return
 
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT github, expires_at, label FROM tokens"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        # tokens table not created yet (fresh DB before first auth call).
+        r.ok("tokens: table not yet created (no tokens issued)")
+        return
     except Exception as exc:
-        r.error(f"tokens.json: invalid JSON: {exc}")
+        r.error(f"tokens: cannot read vezir.sqlite: {exc}")
         return
 
-    rows = data.get("tokens", [])
     if not rows:
-        r.ok("tokens.json: empty")
+        r.ok("tokens: 0 rows (no tokens issued)")
         return
 
-    # S1: tokens with a stale team_id field (v0.6.x leftover).  The
-    # field is unused in v0.7.0; presence indicates the migration
-    # didn't run or someone hand-edited.
-    stale = [t for t in rows if "team_id" in t]
-    if stale:
-        names = ", ".join(
-            f"{t.get('github', '?')}"
-            for t in stale
-        )
-        r.warn(
-            f"{len(stale)} token(s) carry a legacy team_id field: {names}.  "
-            "Field is ignored in v0.7.0; rerun the server to trigger the "
-            "migration, or edit tokens.json to remove it."
-        )
-
-    # S2: expired tokens still in the file
-    import time
+    # S2: expired tokens still in the table.
     now = time.time()
     expired = []
     for t in rows:
-        exp = t.get("expires_at")
+        exp = t["expires_at"]
         if not exp:
             continue
         try:
@@ -549,23 +556,25 @@ def _check_tokens_json(r: _Results) -> None:
             continue
     if expired:
         names = ", ".join(
-            f"{t.get('github', '?')} ({t.get('label') or '-'})"
+            f"{t['github'] or '?'} ({t['label'] or '-'})"
             for t in expired
         )
         r.warn(
-            f"{len(expired)} expired token(s) in tokens.json: {names}.  "
+            f"{len(expired)} expired token(s) in vezir.sqlite: {names}.  "
             "Consider revoking to clean up: "
             "`vezir token revoke --github <handle> --label <label>`."
         )
     else:
-        n_active = len(rows) - len(stale)
-        r.ok(f"tokens.json: {n_active} active token(s)")
+        r.ok(f"tokens: {len(rows)} active token(s)")
 
 
 def _check_server_data_perms(r: _Results) -> None:
-    """S3: data directory and tokens.json permissions."""
+    """S3: data directory and DB/token store permissions."""
     _check_dir_perms(r, config.data_dir(), "VEZIR_DATA")
-    _check_file_perms(r, config.tokens_json_path(), "tokens.json")
+    _check_file_perms(r, config.queue_db_path(), "vezir.sqlite")
+    # The legacy file may still exist as a .migrated backstop.
+    if config.tokens_json_path().exists():
+        _check_file_perms(r, config.tokens_json_path(), "tokens.json")
     teams_root = config.teams_dir()
     if teams_root.is_dir():
         for child in teams_root.iterdir():

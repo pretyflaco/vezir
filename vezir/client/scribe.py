@@ -38,13 +38,17 @@ log = logging.getLogger("vezir.client.scribe")
 
 
 def _meet_bin() -> str:
-    explicit = os.environ.get("VEZIR_MEET_BIN")
+    # Prefer the explicit override (new VEZIR_MILLET_BIN, legacy
+    # VEZIR_MEET_BIN), then the renamed `millet` console script, then
+    # the legacy `meet` name.
+    explicit = os.environ.get("VEZIR_MILLET_BIN") or os.environ.get("VEZIR_MEET_BIN")
     if explicit:
         return explicit
-    found = shutil.which("meet")
+    found = shutil.which("millet") or shutil.which("meet")
     if not found:
         raise RuntimeError(
-            "millet `meet` binary not found in PATH. Install millet-pipeline."
+            "millet binary not found in PATH (looked for `millet` and "
+            "legacy `meet`). Install millet-pipeline / millet-record."
         )
     return found
 
@@ -461,6 +465,15 @@ def run_scribe(
     """
     if personal:
         sync = False
+    # Resolve credentials + the active team so the upload carries
+    # X-Team-Id (required by v0.7.0+ servers).
+    team_id: str | None = None
+    if not server_url or not token:
+        from .config import resolve_credentials
+        r_url, r_token, r_team, _src = resolve_credentials()
+        server_url = server_url or r_url
+        token = token or r_token
+        team_id = r_team
     server_url = server_url or config.server_url()
     token = token or config.client_token()
     if not token:
@@ -510,10 +523,9 @@ def run_scribe(
 
     print(f"vezir: uploading to {server_url} ...", flush=True)
     try:
-        result = uploader.upload(
-            server_url,
-            token,
-            audio,
+        # Prefer the resumable protocol; fall back to the one-shot
+        # endpoint when the server is too old to expose it.
+        upload_kwargs = dict(
             title=title,
             summary_preset=summary_preset,
             auto_label=auto_label,
@@ -521,7 +533,18 @@ def run_scribe(
             personal=personal,
             progress=_progress_line,
             on_retry=_retry_line,
+            team_id=team_id,
         )
+        if uploader.server_supports_resumable(
+            server_url, token, team_id=team_id
+        ):
+            result = uploader.upload_resumable(
+                server_url, token, audio, **upload_kwargs
+            )
+        else:
+            result = uploader.upload(
+                server_url, token, audio, **upload_kwargs
+            )
     except Exception as exc:
         print(flush=True)
         print(

@@ -9,11 +9,23 @@ POST /upload
 """
 from __future__ import annotations
 
+import json
 import logging
+import time
 from pathlib import Path
 
 import ulid
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from .. import config
 from . import auth, queue, ratelimit
@@ -24,6 +36,11 @@ router = APIRouter()
 
 
 CHUNK_BYTES = 4 * 1024 * 1024  # 4 MB
+
+# Resumable-upload tuning.
+TUS_VERSION = "1.0.0"
+# Abandoned .part sessions older than this are swept (24h, per plan).
+RESUMABLE_TTL_SEC = 24 * 60 * 60
 
 # Audio extensions vezir accepts. Meetscribe handles both WAV and OGG natively
 # (see meet/cli.py:389-390 and meet/label.py:66-70).
@@ -179,3 +196,262 @@ async def upload(
         "session_id": session_id,
         "bytes": bytes_written,
     }
+
+
+# ─── Resumable uploads (tus.io 1.0 subset, v0.7.3+) ──────────────────────────
+#
+# Protocol:
+#   POST   /upload/resumable           → create session; returns upload_id +
+#                                         Location; stores metadata sidecar.
+#   HEAD   /upload/resumable/{id}       → returns Upload-Offset (bytes on disk).
+#   PATCH  /upload/resumable/{id}       → append at Upload-Offset; on reaching
+#                                         Upload-Length, assemble + enqueue.
+#
+# A client that drops mid-transfer HEADs the id to learn the server's
+# offset, then resumes the PATCH from there.  The on-disk staging lives
+# in config.uploads_tmp_dir() as <id>.part + <id>.meta.json.
+
+
+def _part_path(upload_id: str) -> Path:
+    return config.uploads_tmp_dir() / f"{upload_id}.part"
+
+
+def _meta_path(upload_id: str) -> Path:
+    return config.uploads_tmp_dir() / f"{upload_id}.meta.json"
+
+
+def _load_meta(upload_id: str) -> dict | None:
+    p = _meta_path(upload_id)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _save_meta(upload_id: str, meta: dict) -> None:
+    config.secure_write_text(_meta_path(upload_id), json.dumps(meta, indent=2))
+
+
+def sweep_abandoned_uploads(now: float | None = None) -> int:
+    """Delete resumable staging files older than RESUMABLE_TTL_SEC.
+
+    Called at startup and periodically by the worker loop.  Returns the
+    number of upload sessions removed.  Best-effort; never raises.
+    """
+    now = now if now is not None else time.time()
+    removed = 0
+    tmp = config.uploads_tmp_dir()
+    if not tmp.is_dir():
+        return 0
+    for meta_file in list(tmp.glob("*.meta.json")):
+        try:
+            created = json.loads(meta_file.read_text())["created_at_epoch"]
+        except Exception:
+            created = meta_file.stat().st_mtime
+        if now - created < RESUMABLE_TTL_SEC:
+            continue
+        upload_id = meta_file.name[: -len(".meta.json")]
+        _part_path(upload_id).unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+        removed += 1
+    if removed:
+        log.info("swept %d abandoned resumable upload(s)", removed)
+    return removed
+
+
+@router.post(
+    "/upload/resumable",
+    dependencies=[Depends(ratelimit.limit_upload)],
+    status_code=201,
+)
+async def create_resumable_upload(
+    response: Response,
+    upload_length: int | None = Header(default=None),
+    upload_filename: str | None = Header(default=None),
+    upload_content_type: str | None = Header(default=None),
+    title: str | None = Form(default=None),
+    summary_preset: str | None = Form(default=None),
+    auto_label: str | None = Form(default=None),
+    sync: str | None = Form(default=None),
+    personal: str | None = Form(default=None),
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Create a resumable upload session (tus creation extension).
+
+    The client sends ``Upload-Length`` (total bytes) and the original
+    filename / content-type as headers (used to pick the on-disk
+    extension and validate the magic bytes once the first chunk lands).
+    """
+    github, team_id, _admin = auth_triple
+    if upload_length is None or upload_length <= 0:
+        raise HTTPException(status_code=400, detail="missing/invalid Upload-Length")
+    max_bytes = config.max_upload_bytes()
+    if upload_length > max_bytes:
+        raise HTTPException(status_code=413, detail="upload too large")
+
+    ext = _pick_extension(upload_filename, upload_content_type)
+    upload_id = ulid.new().str
+    config.secure_mkdir(config.uploads_tmp_dir())
+    # Touch an empty part file.
+    part = _part_path(upload_id)
+    part.touch()
+    config.secure_chmod_file(part)
+
+    _save_meta(upload_id, {
+        "upload_id": upload_id,
+        "github": github,
+        "team_id": team_id,
+        "ext": ext,
+        "upload_length": upload_length,
+        "title": title,
+        "summary_preset": summary_preset,
+        "auto_label": _parse_bool_form(auto_label, default=True),
+        "sync": _parse_bool_form(sync, default=True),
+        "personal": _parse_bool_form(personal, default=False),
+        "created_at_epoch": time.time(),
+    })
+
+    log.info(
+        "resumable upload created: id=%s github=%s team=%s length=%d ext=%s",
+        upload_id, github, team_id, upload_length, ext,
+    )
+    response.headers["Location"] = f"/upload/resumable/{upload_id}"
+    response.headers["Tus-Resumable"] = TUS_VERSION
+    response.headers["Upload-Offset"] = "0"
+    return {"upload_id": upload_id, "offset": 0}
+
+
+def _owned_meta_or_404(upload_id: str, github: str, team_id: str) -> dict:
+    """Load the meta for an upload, enforcing the caller owns it.
+
+    Returns 404 for both "doesn't exist" and "not yours" so we never
+    leak the existence of another user's/team's upload session.
+    """
+    meta = _load_meta(upload_id)
+    if meta is None or meta.get("github") != github or meta.get("team_id") != team_id:
+        raise HTTPException(status_code=404, detail="upload session not found")
+    return meta
+
+
+@router.head("/upload/resumable/{upload_id}")
+async def resumable_offset(
+    upload_id: str,
+    response: Response,
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Return the current ``Upload-Offset`` so a client can resume."""
+    github, team_id, _admin = auth_triple
+    meta = _owned_meta_or_404(upload_id, github, team_id)
+    part = _part_path(upload_id)
+    offset = part.stat().st_size if part.exists() else 0
+    response.headers["Upload-Offset"] = str(offset)
+    response.headers["Upload-Length"] = str(meta["upload_length"])
+    response.headers["Tus-Resumable"] = TUS_VERSION
+    return Response(
+        status_code=200,
+        headers={
+            "Upload-Offset": str(offset),
+            "Upload-Length": str(meta["upload_length"]),
+            "Tus-Resumable": TUS_VERSION,
+        },
+    )
+
+
+@router.patch(
+    "/upload/resumable/{upload_id}",
+    dependencies=[Depends(ratelimit.limit_upload)],
+)
+async def resumable_append(
+    upload_id: str,
+    request: Request,
+    response: Response,
+    upload_offset: int | None = Header(default=None),
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Append a chunk at ``Upload-Offset`` (tus core PATCH).
+
+    On reaching ``Upload-Length`` the staged file is magic-validated,
+    moved into ``sessions/<session_id>/`` and enqueued — returning the
+    ``session_id``.
+    """
+    github, team_id, _admin = auth_triple
+    meta = _owned_meta_or_404(upload_id, github, team_id)
+    part = _part_path(upload_id)
+    current = part.stat().st_size if part.exists() else 0
+
+    if upload_offset is None:
+        raise HTTPException(status_code=400, detail="missing Upload-Offset")
+    if upload_offset != current:
+        # tus mandates 409 on offset mismatch so the client re-syncs.
+        raise HTTPException(
+            status_code=409,
+            detail=f"offset mismatch: server at {current}, client sent {upload_offset}",
+        )
+
+    total = meta["upload_length"]
+    ext = meta["ext"]
+    max_bytes = config.max_upload_bytes()
+
+    written = current
+    validated = current > 0  # first chunk already validated on a prior PATCH
+    with part.open("ab") as f:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            if not validated:
+                _validate_magic(ext, chunk)
+                validated = True
+            written += len(chunk)
+            if written > total or written > max_bytes:
+                # Roll back this PATCH's bytes; client must not overshoot.
+                f.flush()
+                raise HTTPException(status_code=413, detail="upload exceeds declared length")
+            f.write(chunk)
+    config.secure_chmod_file(part)
+
+    response.headers["Upload-Offset"] = str(written)
+    response.headers["Tus-Resumable"] = TUS_VERSION
+
+    if written < total:
+        # More chunks to come.
+        return Response(
+            status_code=204,
+            headers={
+                "Upload-Offset": str(written),
+                "Tus-Resumable": TUS_VERSION,
+            },
+        )
+
+    # Complete — assemble into a session dir and enqueue.
+    session_id = _finalize_resumable(upload_id, meta)
+    return {"session_id": session_id, "bytes": written}
+
+
+def _finalize_resumable(upload_id: str, meta: dict) -> str:
+    """Move a completed .part into sessions/<id>/ and enqueue the job."""
+    ext = meta["ext"]
+    session_id = ulid.new().str
+    sdir = config.sessions_dir() / session_id
+    config.secure_mkdir(sdir)
+    out = sdir / f"{session_id}{ext}"
+    _part_path(upload_id).replace(out)
+    config.secure_chmod_file(out)
+    _meta_path(upload_id).unlink(missing_ok=True)
+
+    log.info(
+        "resumable upload complete: upload_id=%s session=%s github=%s team=%s",
+        upload_id, session_id, meta["github"], meta["team_id"],
+    )
+    queue.enqueue(
+        session_id,
+        github=meta["github"],
+        team_id=meta["team_id"],
+        title=meta.get("title"),
+        summary_preset=meta.get("summary_preset"),
+        auto_label_enabled=meta.get("auto_label", True),
+        sync_enabled=meta.get("sync", True),
+        personal=meta.get("personal", False),
+    )
+    return session_id
