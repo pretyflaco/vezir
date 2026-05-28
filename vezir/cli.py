@@ -529,7 +529,7 @@ def token_enroll(github, server_url, expires_in, label):
     run ``vezir team add-member`` first.
     """
     from .server import auth
-    from .server.enroll import build_payload, render_qr_terminal
+    from .server.enroll import _load_caddy_root_cert, build_payload, render_qr_terminal
 
     seconds = _parse_duration(expires_in)
     plaintext = auth.issue(
@@ -543,9 +543,15 @@ def token_enroll(github, server_url, expires_in, label):
     # config.server_url()'s default.
     base = (server_url or config.server_url()).rstrip("/")
 
-    # Build the QR payload (v1 schema; CA cert embedding happens
-    # automatically when VEZIR_CADDY_ROOT_CERT_PATH is set in env).
-    payload = build_payload(base, plaintext)
+    # Build the QR payload.  When VEZIR_CADDY_ROOT_CERT_PATH points at
+    # a readable PEM, _load_caddy_root_cert returns it and build_payload
+    # emits a v2 payload with ca_pem embedded -- which the Android app's
+    # CaTrustManager pins so TLS to the self-signed Caddy cert works.
+    # When the env var is unset (or the file unreadable), ca_pem is None
+    # and we fall back to a v1 payload that relies on the system trust
+    # store.
+    ca_pem = _load_caddy_root_cert()
+    payload = build_payload(base, plaintext, ca_pem=ca_pem)
     qr_art = render_qr_terminal(payload)
 
     click.echo(f"Token issued for github={github}")

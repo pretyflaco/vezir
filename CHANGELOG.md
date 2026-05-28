@@ -3,6 +3,24 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.1 — fix: `vezir token enroll` missing CA cert in QR
+
+### Fixed
+
+* **`vezir token enroll` now embeds the Caddy CA cert in the QR
+  payload** when ``VEZIR_CADDY_ROOT_CERT_PATH`` is set.  v0.7.0
+  shipped with the inline comment promising "automatic CA cert
+  embedding" but the actual ``build_payload()`` call passed no
+  ``ca_pem`` argument, so every QR came out as a v1 payload.  The
+  Android app then couldn't verify the self-signed Caddy TLS cert
+  and every API call failed with ``CertPathValidatorException:
+  Trust anchor for certification path not found``.
+
+  Now matches the v0.6.x ``/admin/enroll`` HTML handler behavior:
+  calls ``_load_caddy_root_cert()`` and passes the result through
+  to ``build_payload()``.  When the env var is unset (or the file
+  unreadable) we still fall back to v1 cleanly.
+
 ## 0.7.0 — JSON-only API, membership-based teams
 
 This release is a **breaking** simplification of the v0.6.x team
