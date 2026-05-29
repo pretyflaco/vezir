@@ -258,7 +258,8 @@ def server_config() -> dict:
         return {}
     try:
         import json as _json
-        return _json.loads(p.read_text())
+        data = _json.loads(p.read_text())
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -651,7 +652,7 @@ def server_url() -> str:
         from .client.config import resolve_credentials as _rc
         url, _tok, _team, _src = _rc()
         if url:
-            return url
+            return str(url)
     except Exception:
         pass
     return "http://localhost:8000"
@@ -671,7 +672,7 @@ def client_token() -> str | None:
         from .client.config import resolve_credentials as _rc
         _url, tok, _team, _src = _rc()
         if tok:
-            return tok
+            return str(tok)
     except Exception:
         pass
     return None
@@ -691,7 +692,7 @@ def client_team_id() -> str | None:
         from .client.config import resolve_credentials as _rc
         _url, _tok, team, _src = _rc()
         if team:
-            return team
+            return str(team)
     except Exception:
         pass
     return None

@@ -512,7 +512,7 @@ def _check_deprecated_env_vars(r: _Results) -> None:
 
 def _is_server_local() -> bool:
     """True if the local machine looks like a vezir server (queue DB exists)."""
-    return config.queue_db_path().is_file()
+    return bool(config.queue_db_path().is_file())
 
 
 def _check_tokens_json(r: _Results) -> None:

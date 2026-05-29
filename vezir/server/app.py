@@ -8,6 +8,8 @@ All interaction is via JSON API (TUI, Android, CLI).
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Response
 
@@ -34,14 +36,31 @@ def create_app() -> FastAPI:
     for _t in queue.list_teams():
         voiceprints.ensure_db_exists(_t["id"])
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # ── startup ──
+        log.info("vezir %s starting up", __version__)
+        log.info("data dir: %s", config.data_dir())
+        # Sweep any resumable-upload staging left over from a crash/restart.
+        try:
+            uploads.sweep_abandoned_uploads()
+        except Exception:
+            log.exception("startup resumable-upload sweep failed (non-fatal)")
+        worker.start_background_worker()
+        yield
+        # ── shutdown ──
+        log.info("vezir shutting down")
+        worker.stop_background_worker()
+
     app = FastAPI(
         title="vezir",
         description="Internal scribe service wrapping millet.",
         version=__version__,
+        lifespan=lifespan,
     )
 
     @app.get("/health")
-    def health():
+    def health() -> dict[str, str]:
         return {
             "status": "ok",
             "version": __version__,
@@ -49,7 +68,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/ca.crt")
-    def ca_cert():
+    def ca_cert() -> Response:
         """Serve the internal Caddy CA certificate (v0.7.7).
 
         Unauthenticated by design: this is the PUBLIC CA cert (only the
@@ -78,22 +97,6 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(labels.router)
     app.include_router(teams.router)
-
-    @app.on_event("startup")
-    def _startup():
-        log.info("vezir %s starting up", __version__)
-        log.info("data dir: %s", config.data_dir())
-        # Sweep any resumable-upload staging left over from a crash/restart.
-        try:
-            uploads.sweep_abandoned_uploads()
-        except Exception:
-            log.exception("startup resumable-upload sweep failed (non-fatal)")
-        worker.start_background_worker()
-
-    @app.on_event("shutdown")
-    def _shutdown():
-        log.info("vezir shutting down")
-        worker.stop_background_worker()
 
     return app
 

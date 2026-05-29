@@ -3,6 +3,26 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.9 — tech-debt: FastAPI lifespan + mypy in CI
+
+Code-health release.  No user-facing behavior change.
+
+### Changed
+
+* **FastAPI startup/shutdown migrated to a `lifespan` context manager**,
+  replacing the deprecated `@app.on_event("startup"/"shutdown")` handlers
+  (which emitted a `DeprecationWarning` on every server start and test
+  run).  Same behavior: resumable-upload sweep + worker start on entry,
+  worker stop on exit.
+* **mypy now runs in CI** on a strict allowlist (it was configured since
+  0.6.4 but never actually executed).  Widened the allowlist from 3 to 5
+  modules — added `server.app`, `server.ratelimit`, `server.enroll`
+  (dropped `client.tui.record_screen`, which had pre-existing strict-mode
+  gaps that were never enforced; deferred).  Global mypy config gained
+  `ignore_missing_imports` + `follow_imports = "silent"` for unstubbed
+  third-party deps.  A few `no-any-return` sites in `config.py` /
+  `doctor.py` annotated to pass.
+
 ## 0.7.8 — fix resumable upload 429 on larger meetings
 
 A meeting larger than ~36 MB failed mid-upload with
