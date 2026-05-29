@@ -194,3 +194,63 @@ def test_sweep_removes_old_staging(client_and_token):
     future = time.time() + uploads.RESUMABLE_TTL_SEC + 10
     assert uploads.sweep_abandoned_uploads(now=future) == 1
     assert not part.exists()
+
+
+# ── v0.7.8: PATCH chunk endpoint is NOT rate-limited ────────────────────────
+
+
+@pytest.fixture
+def ratelimited_client_and_token(tmp_data, monkeypatch):
+    """Like client_and_token but with the rate limiter ENABLED (conftest
+    disables it globally).  Resets bucket state so the per-test budget
+    is clean."""
+    monkeypatch.delenv("VEZIR_DISABLE_RATELIMIT", raising=False)
+    from fastapi.testclient import TestClient
+
+    from vezir.server import auth, ratelimit
+    from vezir.server.app import create_app
+
+    ratelimit._reset_for_tests()
+    token = auth.issue("alice")
+    app = create_app()
+    yield TestClient(app, follow_redirects=False), token, tmp_data
+    ratelimit._reset_for_tests()
+
+
+def test_many_patch_chunks_not_rate_limited(ratelimited_client_and_token):
+    """Regression for the 'upload failed: 429' on a ~33 MB meeting.
+
+    The resumable PATCH endpoint sends one request per chunk; with the
+    old 10/min 'upload' bucket on PATCH, the 11th chunk got a 429 and
+    the whole upload hard-failed.  v0.7.8 drops the limiter on PATCH so
+    an arbitrary number of chunks succeeds.
+    """
+    client, token, tmp_data = ratelimited_client_and_token
+    data = _wav_bytes(seconds=4)
+    upload_id = _create(client, token, data).json()["upload_id"]
+
+    # Send the body in 25 tiny chunks — well past the old cap of 10.
+    n_chunks = 25
+    step = max(1, len(data) // n_chunks)
+    offset = 0
+    statuses = []
+    while offset < len(data):
+        chunk = data[offset:offset + step]
+        r = _patch(client, token, upload_id, chunk, offset)
+        statuses.append(r.status_code)
+        assert r.status_code != 429, (
+            f"chunk at offset {offset} was rate-limited (429)"
+        )
+        offset = int(r.headers.get("Upload-Offset", offset + len(chunk)))
+    # Final PATCH completes the upload (200); intermediate ones are 204.
+    assert statuses[-1] == 200
+    assert statuses.count(204) >= 11  # more than the old 10-token bucket
+
+
+def test_resumable_create_still_rate_limited(ratelimited_client_and_token):
+    """The creation endpoint keeps the 'upload' bucket (cap 10/min): the
+    limit is meant to cap uploads STARTED, not chunks appended."""
+    client, token, _ = ratelimited_client_and_token
+    data = _wav_bytes()
+    codes = [_create(client, token, data).status_code for _ in range(12)]
+    assert 429 in codes, "create endpoint should still be rate-limited"

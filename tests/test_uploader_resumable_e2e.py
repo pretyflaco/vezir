@@ -100,3 +100,62 @@ def test_legacy_upload_carries_team_header(live_server):
         _wav(audio, seconds=1)
         result = uploader.upload(base, token, audio, team_id="blink")
         assert "session_id" in result
+
+
+def test_resumable_client_honors_429_retry_after(monkeypatch, tmp_path):
+    """v0.7.8: a 429 mid-upload must be retried (honoring Retry-After),
+    not hard-fail.  Stubs the transport so the first PATCH returns 429
+    and the resend succeeds."""
+    import httpx
+
+    from vezir.client import uploader
+
+    audio = tmp_path / "m.wav"
+    _wav(audio, seconds=1)
+    total = audio.stat().st_size
+
+    state = {"patches": 0, "offset": 0, "rate_limited_once": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if request.method == "POST" and p == "/upload/resumable":
+            return httpx.Response(201, json={"upload_id": "U1"},
+                                  headers={"Upload-Offset": "0"})
+        if request.method == "HEAD":
+            return httpx.Response(
+                200, headers={"Upload-Offset": str(state["offset"])})
+        if request.method == "PATCH":
+            # First PATCH: rate-limit it once.
+            if not state["rate_limited_once"]:
+                state["rate_limited_once"] = True
+                return httpx.Response(429, headers={"Retry-After": "1"},
+                                      text="rate limited")
+            state["patches"] += 1
+            body = request.content
+            state["offset"] += len(body)
+            done = state["offset"] >= total
+            if done:
+                return httpx.Response(
+                    200, json={"session_id": "S1", "bytes": state["offset"]},
+                    headers={"Upload-Offset": str(state["offset"])})
+            return httpx.Response(
+                204, headers={"Upload-Offset": str(state["offset"])})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    orig_client = uploader.httpx.Client
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return orig_client(*args, **kwargs)
+
+    monkeypatch.setattr(uploader.httpx, "Client", factory)
+    # Don't actually sleep for Retry-After during the test.
+    monkeypatch.setattr(uploader.time, "sleep", lambda *_a, **_k: None)
+
+    result = uploader.upload_resumable(
+        "http://stub", "vzr_x", audio, team_id="blink", chunk_bytes=8192,
+    )
+    assert result["session_id"] == "S1"
+    assert state["rate_limited_once"] is True  # the 429 path was exercised
+    assert result["bytes"] == total

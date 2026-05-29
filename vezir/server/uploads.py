@@ -361,7 +361,15 @@ async def resumable_offset(
 
 @router.patch(
     "/upload/resumable/{upload_id}",
-    dependencies=[Depends(ratelimit.limit_upload)],
+    # v0.7.8: do NOT rate-limit the chunk-append endpoint.  The resumable
+    # protocol sends one PATCH per ``chunk_bytes`` (4 MB) slice, so a
+    # single ~40 MB meeting issues 10+ PATCHes in seconds and drained the
+    # old 10/min "upload" bucket, hard-failing the upload with 429.  The
+    # bucket is meant to limit *uploads started*, not *chunks*, so it
+    # stays on the creation endpoints (POST /upload, POST /upload/resumable)
+    # below/above.  PATCH is already authenticated, offset-validated, and
+    # total-size-capped (Upload-Length checked at create time), so a
+    # runaway client can't write unbounded data here.
 )
 async def resumable_append(
     upload_id: str,

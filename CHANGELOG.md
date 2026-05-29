@@ -3,6 +3,27 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.8 — fix resumable upload 429 on larger meetings
+
+A meeting larger than ~36 MB failed mid-upload with
+`429 Too Many Requests`. The resumable protocol sends one `PATCH` per
+4 MB chunk, but every chunk was counted against the `upload` rate-limit
+bucket (capacity 10/min), which is meant to limit *uploads started*,
+not *chunks appended*. The 11th chunk got a 429 and the client aborted.
+
+### Fixed
+
+* **Server: the resumable `PATCH /upload/resumable/{id}` chunk endpoint
+  is no longer rate-limited.** It's already authenticated,
+  offset-validated, and total-size-capped at create time, so a runaway
+  client can't write unbounded data. The `upload` bucket stays on the
+  creation endpoints (`POST /upload`, `POST /upload/resumable`), which
+  is the correct granularity.
+* **Client: `upload_resumable` now honors `429` + `Retry-After`.**
+  Previously a 429 was an uncaught `HTTPStatusError` that hard-failed
+  the upload; now the client waits for `Retry-After` (capped 1–60 s) and
+  re-sends the same chunk. Defence-in-depth against any future limiter.
+
 ## 0.7.7 — serve the CA cert over HTTP for onboarding
 
 ### Added

@@ -353,6 +353,24 @@ def upload_resumable(
                             offset = int(r.headers.get("Upload-Offset", offset))
                             f.seek(offset)
                             continue
+                        if r.status_code == 429:
+                            # Rate limited (e.g. an old server that still
+                            # buckets PATCH chunks).  Honor Retry-After and
+                            # re-send the SAME chunk (offset unchanged), so
+                            # the upload pauses instead of hard-failing.
+                            try:
+                                wait = float(r.headers.get("Retry-After", "5"))
+                            except ValueError:
+                                wait = 5.0
+                            wait = min(max(wait, 1.0), 60.0)
+                            log.warning(
+                                "resumable upload rate-limited at offset "
+                                "%d; waiting %.0fs (Retry-After)",
+                                offset, wait,
+                            )
+                            time.sleep(wait)
+                            f.seek(offset)
+                            continue
                         if 500 <= r.status_code < 600:
                             raise httpx.RemoteProtocolError(
                                 f"server {r.status_code}", request=r.request)
