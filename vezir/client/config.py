@@ -250,12 +250,26 @@ def next_team_id(current: str | None) -> str | None:
     Wraps around at the end of the list.  Returns ``None`` if no
     teams are configured.  When ``current`` isn't in the list,
     returns the first configured team.
+
+    Hardened for v0.7.4's team-UUID migration: if ``current`` is a
+    team UUID (e.g. it leaked in from /api/me's UUID-keyed membership
+    list) rather than a configured slug, resolve it back to the
+    matching slug via any ``uuid``/``team_id`` field a team entry
+    happens to carry, so the cycle starts from the right position
+    instead of snapping to the first team.
     """
     cfg = load_teams_config()
     teams = cfg["teams"]
     if not teams:
         return None
     ids = [t["id"] for t in teams]
+    if current not in ids:
+        # Maybe ``current`` is a UUID; map it back to a slug if any
+        # entry records one.
+        for t in teams:
+            if current and current in (t.get("uuid"), t.get("team_id")):
+                current = t["id"]
+                break
     if current not in ids:
         return ids[0]
     idx = ids.index(current)

@@ -219,6 +219,33 @@ def test_next_team_id_unknown_current_returns_first(tmp_home):
     assert next_team_id("never-configured") == "blink"
 
 
+def test_next_team_id_resolves_uuid_current_to_slug(tmp_home):
+    """v0.7.4 regression: a team UUID passed as ``current`` (leaked in
+    from /api/me's UUID-keyed membership list) must resolve back to its
+    slug and cycle from the right position, not snap to the first team.
+    """
+    import json
+
+    from vezir.client.config import next_team_id, teams_config_path
+    # Write teams.json directly with a recorded uuid per entry.
+    cfg = {
+        "teams": [
+            {"id": "blink", "url": "https://m/", "token": "vzr_b",
+             "label": "Blink", "uuid": "5e0d4eecd0e24b2a8dbc517adb486199"},
+            {"id": "twentyone", "url": "https://m/", "token": "vzr_t",
+             "label": "Twentyone", "uuid": "c013ddd44d6e4a6995446e2128739e69"},
+        ],
+        "active": "blink",
+    }
+    p = teams_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cfg), encoding="utf-8")
+    # current is blink's UUID -> should advance to twentyone (slug).
+    assert next_team_id("5e0d4eecd0e24b2a8dbc517adb486199") == "twentyone"
+    # current is twentyone's UUID -> wraps to blink.
+    assert next_team_id("c013ddd44d6e4a6995446e2128739e69") == "blink"
+
+
 # ── resolve_credentials precedence ──────────────────────────────────────────
 
 

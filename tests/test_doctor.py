@@ -189,6 +189,47 @@ def test_c5_wrong_prefix(tmp_data):
     assert any("does not start with" in msg for _, msg in r.rows)
 
 
+# ── C9: token membership (slug/UUID matching, v0.7.4) ───────────────────────
+
+
+def _uuid_membership(slug, uuid, role="admin"):
+    return {"team_id": uuid, "slug": slug, "role": role, "team_name": slug}
+
+
+def test_c9_slug_configured_matches_uuid_membership(tmp_data):
+    """v0.7.4 regression: a slug-configured team must NOT be flagged as
+    missing when /api/me returns UUID-keyed memberships carrying slug.
+    """
+    from vezir.doctor import _check_token_membership, _Results
+
+    mems = [_uuid_membership("blink", "5e0d4eecd0e24b2a8dbc517adb486199")]
+    r = _Results()
+    _check_token_membership(r, "blink", mems, github="pretyflaco", role="admin")
+    assert all(sev != "ERROR" for sev, _ in r.rows)
+    # Summary shows the slug, not the raw UUID.
+    assert any("blink(admin)" in msg for _, msg in r.rows)
+
+
+def test_c9_uuid_configured_matches_uuid_membership(tmp_data):
+    from vezir.doctor import _check_token_membership, _Results
+
+    uuid = "5e0d4eecd0e24b2a8dbc517adb486199"
+    mems = [_uuid_membership("blink", uuid)]
+    r = _Results()
+    _check_token_membership(r, uuid, mems)
+    assert all(sev != "ERROR" for sev, _ in r.rows)
+
+
+def test_c9_genuinely_missing_team_still_errors(tmp_data):
+    from vezir.doctor import _check_token_membership, _Results
+
+    mems = [_uuid_membership("blink", "5e0d4eecd0e24b2a8dbc517adb486199")]
+    r = _Results()
+    _check_token_membership(r, "startups", mems)
+    assert any(sev == "ERROR" and "not in this token" in msg
+               for sev, msg in r.rows)
+
+
 def test_c5_wrong_length(tmp_data):
     from vezir.doctor import _check_token_format, _Results
 

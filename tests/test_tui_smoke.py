@@ -129,6 +129,64 @@ async def test_help_screen_opens_and_closes(app, mock_server):
         assert app.screen.__class__.__name__ != "HelpScreen"
 
 
+# ─── team identity / switching (v0.7.4 slug↔UUID regression) ─────────────────
+
+
+def _mock_api_me(monkeypatch, memberships):
+    """Patch httpx.get (imported locally inside _refresh_identity) to
+    return a /api/me payload with the given memberships."""
+
+    def fake_get(url, *args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "github": "pretyflaco",
+                "is_admin": True,
+                "memberships": memberships,
+                "alternate_urls": [],
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+
+async def test_refresh_identity_slug_matches_uuid_membership(
+    app, mock_server, monkeypatch
+):
+    """A slug-configured active team must resolve against UUID-keyed
+    memberships WITHOUT being rewritten to the UUID (the v0.7.4 bug
+    that broke the TUI team switcher)."""
+    _mock_api_me(monkeypatch, [
+        {"team_id": "5e0d4eecd0e24b2a8dbc517adb486199", "slug": "blink",
+         "role": "scribe", "team_name": "Blink"},
+    ])
+    async with app.run_test():
+        app.active_team_id = "blink"  # slug, as configured in teams.json
+        app._refresh_identity()
+        # active_team_id stays the slug, not the UUID.
+        assert app.active_team_id == "blink"
+        # Label resolves to the human team name.
+        assert app.team_label == "Blink"
+
+
+async def test_refresh_identity_fallback_keeps_slug_not_uuid(
+    app, mock_server, monkeypatch
+):
+    """When the configured team isn't matched and we fall back to the
+    first membership, adopt its SLUG (so next_team_id's slug cycle
+    still works), never the bare UUID."""
+    _mock_api_me(monkeypatch, [
+        {"team_id": "8ec688fd1a1a4b94b9ce7dbafb6e330c", "slug": "startups",
+         "role": "admin", "team_name": "startups"},
+    ])
+    async with app.run_test():
+        app.active_team_id = "not-a-configured-team"
+        app._refresh_identity()
+        assert app.active_team_id == "startups"  # slug, not the UUID
+        assert app.team_label == "startups"
+
+
 # ─── sessions screen ──────────────────────────────────────────────────────────
 
 

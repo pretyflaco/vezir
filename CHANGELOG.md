@@ -3,6 +3,37 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.5 — fix TUI team switcher after 0.7.4 UUID migration
+
+Client-only patch. No server, schema, or migration changes. The 0.7.4
+migration made the server key team memberships by UUID while clients
+still configure teams by slug in `teams.json`; that mismatch broke the
+TUI's `^t` team switcher (it showed only one team and refused to
+switch) and produced a false-positive `vezir doctor` error.
+
+### Fixed
+
+* **TUI `^t` team switcher.** `_refresh_identity()` matched the
+  slug-configured active team against `/api/me`'s UUID-keyed
+  membership list, never matched, and silently overwrote
+  `active_team_id` with the first membership's **UUID**. That UUID
+  then wasn't in `next_team_id()`'s slug list, so cycling snapped back
+  to the same team. Now memberships match on **slug OR uuid**
+  (each membership carries both), and the fallback adopts the
+  membership's **slug**, keeping `active_team_id` consistent with
+  `teams.json`.
+* **`vezir doctor` false 403.** The C9 token-membership check compared
+  the configured slug against the UUID-only membership list and
+  reported `configured team_id=... is not in this token's
+  memberships`. It now matches on slug OR uuid and shows the slug in
+  the team summary. Logic extracted to `_check_token_membership()`.
+
+### Changed
+
+* `config.next_team_id()` resolves a UUID `current` back to its slug
+  (via any `uuid`/`team_id` field on a team entry) before cycling, so
+  a stray UUID can't wedge the switcher.
+
 ## 0.7.4 — team UUID keys + slug rename
 
 Teams now have a stable UUID primary key; the slug becomes a mutable

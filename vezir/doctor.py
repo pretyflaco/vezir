@@ -457,16 +457,40 @@ def _check_server_connectivity(
     github = me_data.get("github", "?")
     role = "admin" if me_data.get("is_admin") else "scribe"
     mems = me_data.get("memberships") or []
+    _check_token_membership(r, team_id, mems, github=github, role=role)
+
+
+def _check_token_membership(
+    r: _Results,
+    team_id: str | None,
+    mems: list,
+    *,
+    github: str = "?",
+    role: str = "?",
+) -> None:
+    """C9 sub-check: report token memberships and flag a configured
+    team that isn't among them.
+
+    v0.7.4 keys memberships by team UUID (``team_id``) but users
+    configure teams by slug; each membership also carries ``slug``.
+    Match the configured ``team_id`` against EITHER the UUID or the
+    slug so a slug-configured client isn't flagged with a false 403,
+    and show the slug (human-friendly) in the summary.
+    """
     if mems:
         team_summary = ", ".join(
-            f"{m.get('team_id', '?')}({m.get('role', '?')})" for m in mems
+            f"{m.get('slug') or m.get('team_id', '?')}({m.get('role', '?')})"
+            for m in mems
         )
     else:
         team_summary = "(no team memberships)"
     r.ok(
         f"token accepted: github={github}  role={role}  teams=[{team_summary}]"
     )
-    if team_id and not any(m.get("team_id") == team_id for m in mems):
+    if team_id and not any(
+        m.get("team_id") == team_id or m.get("slug") == team_id
+        for m in mems
+    ):
         r.error(
             f"configured team_id={team_id!r} is not in this token's "
             "memberships; team-scoped requests will return 403."

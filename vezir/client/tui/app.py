@@ -306,17 +306,31 @@ class VezirTuiApp(App):
                 # set, fall back to the first membership (and remember
                 # it so X-Team-Id starts working).
                 mems = data.get("memberships") or []
+                # v0.7.4 migration made the server key memberships by
+                # team UUID (``team_id``) while the client still
+                # configures teams by slug in teams.json.  Match on
+                # EITHER so a slug-configured active team resolves
+                # against the UUID-keyed membership list.  Each
+                # membership also carries ``slug`` (v0.7.4+).
                 matched = None
                 if self.active_team_id:
                     matched = next(
                         (m for m in mems
-                         if m.get("team_id") == self.active_team_id),
+                         if m.get("team_id") == self.active_team_id
+                         or m.get("slug") == self.active_team_id),
                         None,
                     )
                 if matched is None and mems:
                     matched = mems[0]
-                    self.active_team_id = matched.get("team_id")
-                    # Re-bind the client with the discovered team_id
+                    # Adopt the discovered team but keep active_team_id
+                    # as the SLUG (not the UUID) so it stays consistent
+                    # with teams.json and next_team_id()'s cycle list.
+                    # The server resolves a slug in X-Team-Id to its
+                    # UUID, so slug is a valid X-Team-Id value.
+                    self.active_team_id = (
+                        matched.get("slug") or matched.get("team_id")
+                    )
+                    # Re-bind the client with the discovered team
                     # so subsequent requests carry X-Team-Id.
                     self.api = VezirClient(
                         self.server_url,
