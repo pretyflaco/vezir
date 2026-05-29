@@ -13,6 +13,8 @@ _HELP_TEXT = """\
 [b cyan]Global[/b cyan]
   [b]ctrl+r[/b]        Record tab
   [b]ctrl+s[/b]        Sessions tab
+  [b]ctrl+e[/b]        Teams tab
+  [b]ctrl+t[/b]        Switch to next team (cycles all your teams)
   [b]ctrl+l[/b]        Refresh current screen
   [b]ctrl+q[/b]        Quit
   [b]ctrl+shift+q[/b]  Force quit (emergency escape from any screen)
@@ -32,6 +34,14 @@ _HELP_TEXT = """\
   [b]o[/b]       Open selected session in web browser
   [b]f[/b]       Open local artifacts folder (auto-pulls if needed)
   [b]d[/b]       Copy local artifacts path (auto-pulls if needed)
+
+[b cyan]Teams tab[/b cyan]
+  Lists every team you belong to (auto-discovered from the server --
+  no `vezir team config add` needed).  The [green]●[/green] marks the
+  active team.
+  [b]enter[/b]   Switch active team to the highlighted row
+  [b]ctrl+t[/b]  Cycle to the next team (works from any tab)
+  [dim]Switching keeps the same login; only the team scope changes.[/dim]
 
 [b cyan]Session detail[/b cyan]
   [b]enter[/b]   View highlighted artifact

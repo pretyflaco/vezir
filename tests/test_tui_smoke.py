@@ -31,6 +31,8 @@ def mock_server(monkeypatch):
         "sessions": [],
         "team": [],
         "labels": {},
+        # v0.7.6: /api/me memberships for the Teams tab tests.
+        "memberships": [],
     }
 
     # Per-session-id label info, populated by tests that need it.
@@ -40,6 +42,13 @@ def mock_server(monkeypatch):
         p = request.url.path
         if p == "/api/sessions":
             return httpx.Response(200, json={"sessions": state["sessions"]})
+        if p == "/api/me":
+            return httpx.Response(200, json={
+                "github": "tester",
+                "is_admin": False,
+                "memberships": state["memberships"],
+                "alternate_urls": [],
+            })
         if p == "/api/team":
             return httpx.Response(200, json={"team": state["team"]})
         if p.startswith("/api/sessions/"):
@@ -185,6 +194,130 @@ async def test_refresh_identity_fallback_keeps_slug_not_uuid(
         app._refresh_identity()
         assert app.active_team_id == "startups"  # slug, not the UUID
         assert app.team_label == "startups"
+
+
+# ─── Teams tab + auto-discovery (v0.7.6) ─────────────────────────────────────
+
+
+_MEMBERSHIPS_3 = [
+    {"team_id": "uuid-blink", "slug": "blink", "role": "scribe",
+     "team_name": "Blink"},
+    {"team_id": "uuid-21", "slug": "twentyone", "role": "admin",
+     "team_name": "Twentyone"},
+    {"team_id": "uuid-abct", "slug": "abcapetown", "role": "admin",
+     "team_name": "AB Cape Town"},
+]
+
+
+async def test_all_teams_merges_discovered_memberships(app, mock_server):
+    """all_teams() surfaces every /api/me membership even with an empty
+    teams.json — the core of feature (1)."""
+    async with app.run_test():
+        app.memberships = list(_MEMBERSHIPS_3)
+        teams = app.all_teams()
+        slugs = [t["slug"] for t in teams]
+        assert slugs == ["abcapetown", "blink", "twentyone"]  # slug-sorted
+        # All discovered, all inherit the current token.
+        assert all(t["source"] == "discovered" for t in teams)
+        assert all(t["token"] == app.token for t in teams)
+        # Labels come from team_name; roles preserved.
+        blink = next(t for t in teams if t["slug"] == "blink")
+        assert blink["label"] == "Blink"
+        assert blink["role"] == "scribe"
+
+
+async def test_all_teams_config_overrides_discovered(app, mock_server, monkeypatch):
+    """A teams.json entry (own server/token) takes precedence over the
+    discovered membership of the same slug."""
+    from vezir.client import config as cfg_mod
+    async with app.run_test():
+        app.memberships = list(_MEMBERSHIPS_3)
+        monkeypatch.setattr(cfg_mod, "load_teams_config", lambda: {
+            "teams": [{"id": "blink", "url": "https://other",
+                       "token": "vzr_other", "label": "Blink HQ"}],
+            "active": "blink",
+        })
+        # app.all_teams reads load_teams_config via its own import site.
+        monkeypatch.setattr(
+            "vezir.client.tui.app.load_teams_config",
+            cfg_mod.load_teams_config,
+        )
+        teams = app.all_teams()
+        blink = next(t for t in teams if t["slug"] == "blink")
+        assert blink["source"] == "config"
+        assert blink["url"] == "https://other"
+        assert blink["token"] == "vzr_other"
+        assert blink["label"] == "Blink HQ"
+        # Role still enriched from the discovered membership.
+        assert blink["role"] == "scribe"
+
+
+async def test_switch_to_discovered_team_preserves_token(app, mock_server):
+    """Switching to a discovered-only team keeps the same bearer token
+    and only changes the team scope (X-Team-Id)."""
+    async with app.run_test():
+        app.memberships = list(_MEMBERSHIPS_3)
+        original_token = app.token
+        ok = app.switch_to_team("twentyone")
+        assert ok is True
+        assert app.active_team_id == "twentyone"
+        assert app.token == original_token       # token unchanged
+        assert app.api.token == original_token
+        assert app.api.team_id == "twentyone"     # X-Team-Id updated
+        # Discovered-only selection is in-memory, not persisted.
+        assert app._discovered_active == "twentyone"
+        assert app.cred_source == "discovered:twentyone"
+
+
+async def test_ctrl_t_cycles_all_discovered_teams(app, mock_server):
+    """^t cycles through ALL discovered teams without teams.json — the
+    fix for the laptop showing only manually-added teams."""
+    async with app.run_test() as pilot:
+        app.memberships = list(_MEMBERSHIPS_3)
+        app.active_team_id = "abcapetown"  # first in slug-sorted order
+        visited = []
+        for _ in range(3):
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            visited.append(app.active_team_id)
+        # slug-sorted: abcapetown -> blink -> twentyone -> abcapetown
+        assert visited == ["blink", "twentyone", "abcapetown"]
+
+
+async def test_teams_tab_lists_memberships(app, mock_server):
+    """The Teams tab DataTable lists every membership from /api/me."""
+    from textual.widgets import DataTable
+
+    from vezir.client.tui.teams_screen import TeamsBody
+    mock_server["memberships"] = list(_MEMBERSHIPS_3)
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+e")
+        await pilot.pause(0.5)
+        body = app.screen.query_one(TeamsBody)
+        table = body.query_one(DataTable)
+        assert table.row_count == 3
+
+
+async def test_teams_tab_single_membership_still_lists(app, mock_server):
+    from textual.widgets import DataTable
+
+    from vezir.client.tui.teams_screen import TeamsBody
+    mock_server["memberships"] = [_MEMBERSHIPS_3[0]]
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+e")
+        await pilot.pause(0.5)
+        body = app.screen.query_one(TeamsBody)
+        table = body.query_one(DataTable)
+        assert table.row_count == 1
+
+
+async def test_ctrl_t_single_team_is_noop(app, mock_server):
+    async with app.run_test() as pilot:
+        app.memberships = [_MEMBERSHIPS_3[0]]
+        app.active_team_id = "blink"
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        assert app.active_team_id == "blink"  # unchanged
 
 
 # ─── sessions screen ──────────────────────────────────────────────────────────

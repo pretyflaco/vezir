@@ -3,6 +3,38 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.6 — TUI auto-discovers teams + Teams tab
+
+Client-only. No server, schema, or migration changes. Brings the TUI to
+parity with the android app: it now shows **every** team you belong to
+(from the server's `/api/me`), without needing `vezir team config add`
+for each one.
+
+### Added
+
+* **Teams tab** (`ctrl+e`). A visual picker listing every team you
+  belong to — auto-discovered from the server, unioned with any
+  explicit `teams.json` entries — with the active team marked. Press
+  `enter` on a row to switch. New widget `client/tui/teams_screen.py`.
+* `VezirTuiApp.all_teams()` merges `/api/me` memberships with
+  `teams.json` (config entries win on collision; discovered teams
+  inherit the current server/token). `VezirTuiApp.switch_to_team()`
+  performs a token-preserving switch.
+
+### Changed
+
+* **`ctrl+t` now cycles every team you belong to**, not just the ones
+  in `teams.json`. A single bearer token authorizes all of them; only
+  the per-request `X-Team-Id` changes. This fixes the case where the
+  switcher showed only manually-added teams.
+* Discovered-only team selections are kept **in-memory** for the
+  session (the server is the source of truth); `teams.json` is reserved
+  for explicit multi-server / multi-token setups and is not auto-written.
+* `_refresh_identity()` caches the full membership list on the app
+  (`self.memberships`) for the Teams tab and the `ctrl+t` cycle.
+* Help screen documents the Teams tab and the new `ctrl+t`/`ctrl+e`
+  bindings.
+
 ## 0.7.5 — fix TUI team switcher after 0.7.4 UUID migration
 
 Client-only patch. No server, schema, or migration changes. The 0.7.4

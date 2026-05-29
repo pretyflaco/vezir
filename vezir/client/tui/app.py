@@ -42,7 +42,6 @@ from textual.widgets import Footer, Header, TabbedContent, TabPane
 from ..api import VezirClient
 from ..config import (
     load_teams_config,
-    next_team_id,
     resolve_credentials,
     set_active_team,
 )
@@ -82,6 +81,7 @@ class MainScreen(Screen):
     BINDINGS = [
         Binding("ctrl+r", "show_tab('record')", "Record"),
         Binding("ctrl+s", "show_tab('sessions')", "Sessions"),
+        Binding("ctrl+e", "show_tab('teams')", "Teams"),
         Binding("ctrl+l", "refresh_current", "Refresh", show=False),
     ]
 
@@ -93,6 +93,7 @@ class MainScreen(Screen):
         # Lazy imports so `vezir --help` stays snappy on minimal installs.
         from .record_screen import RecordBody
         from .sessions_screen import SessionsBody
+        from .teams_screen import TeamsBody
 
         yield Header(show_clock=True)
         with TabbedContent(id="main-tabs"):
@@ -100,6 +101,8 @@ class MainScreen(Screen):
                 yield RecordBody.body_widget()
             with TabPane("Sessions", id="sessions"):
                 yield SessionsBody.body_widget()
+            with TabPane("Teams", id="teams"):
+                yield TeamsBody.body_widget()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -122,13 +125,14 @@ class MainScreen(Screen):
         """Forward refresh to whichever tab's body widget exposes it."""
         from .record_screen import RecordBody
         from .sessions_screen import SessionsBody
+        from .teams_screen import TeamsBody
 
         tabs = self.query_one(TabbedContent)
         active = tabs.active_pane
         if active is None:
             return
         try:
-            body = active.query_one((RecordBody, SessionsBody))
+            body = active.query_one((RecordBody, SessionsBody, TeamsBody))
         except Exception:
             return
         action = getattr(body, "action_refresh", None)
@@ -150,10 +154,17 @@ class MainScreen(Screen):
         flick fast enough for it to matter.
         """
         from .sessions_screen import SessionsBody
-        if event.pane.id != "sessions":
+        from .teams_screen import TeamsBody
+        if event.pane.id == "sessions":
+            cls: type = SessionsBody
+        elif event.pane.id == "teams":
+            # v0.7.6: re-fetch /api/me memberships so the Teams tab
+            # reflects any server-side membership changes.
+            cls = TeamsBody
+        else:
             return
         try:
-            body = event.pane.query_one(SessionsBody)
+            body = event.pane.query_one(cls)
         except Exception:
             return
         body.action_refresh()
@@ -261,6 +272,17 @@ class VezirTuiApp(App):
         # after mount.  Default "?" shows up in the title bar until the
         # network round-trip completes.
         self.team_label: str = "?"
+        # v0.7.6: memberships discovered from GET /api/me, cached so the
+        # Teams tab and ^t can show every team the user belongs to —
+        # not just the ones manually added to teams.json.  Each entry is
+        # ``{team_id(uuid), slug, role, team_name}``.  Filled by
+        # _refresh_identity().
+        self.memberships: list[dict] = []
+        # In-memory active-team override for teams DISCOVERED via /api/me
+        # that aren't in teams.json.  set_active_team() only persists
+        # config-backed teams; discovered selections live here for the
+        # session (mirrors the android UX: server is the source of truth).
+        self._discovered_active: str | None = None
         if not self.token:
             log.warning("VEZIR_TOKEN is not set; TUI will run in degraded mode")
         self.api = VezirClient(
@@ -306,6 +328,9 @@ class VezirTuiApp(App):
                 # set, fall back to the first membership (and remember
                 # it so X-Team-Id starts working).
                 mems = data.get("memberships") or []
+                # v0.7.6: cache the full membership list for the Teams
+                # tab + ^t merged cycle.
+                self.memberships = list(mems)
                 # v0.7.4 migration made the server key memberships by
                 # team UUID (``team_id``) while the client still
                 # configures teams by slug in teams.json.  Match on
@@ -366,81 +391,103 @@ class VezirTuiApp(App):
         else:
             self.title = "vezir"
 
-    def action_switch_team(self) -> None:
-        """Cycle to the next team configured in teams.json.
+    def all_teams(self) -> list[dict]:
+        """Merge teams.json entries with /api/me memberships (v0.7.6).
 
-        Refuses while a recording or upload is in flight (because the
-        upload pipeline uses the current credentials; switching mid-
-        flight would orphan the upload on the old team's server view).
+        Returns a deduplicated, slug-ordered list of teams the user can
+        switch to.  Each item:
 
-        After the swap:
-          1. Persist the new ``active`` in teams.json.
-          2. Re-resolve credentials, rebuild ``self.api``.
-          3. Re-fetch identity for the new team.
-          4. Refresh the visible screen so the Sessions list re-loads
-             scoped to the new team.
-          5. Toast the user with the new team name.
+            {"slug": str, "label": str, "role": str | None,
+             "source": "config" | "discovered",
+             "url": str, "token": str}
+
+        teams.json entries (which may target a DIFFERENT server/token)
+        take precedence on collision; discovered-only memberships
+        inherit the CURRENT server_url + token (one token authorizes
+        every team the github user belongs to — team scope is the
+        per-request X-Team-Id header, resolved slug-or-uuid server-side).
         """
-        cfg = load_teams_config()
-        teams = cfg["teams"]
-        if not teams:
-            self.notify(
-                "No teams configured.  Run "
-                "`vezir team config add --id <slug> --url ... --token ...` "
-                "first.",
-                severity="warning",
-                timeout=6,
-            )
-            return
-        if len(teams) == 1:
-            self.notify(
-                f"Only one team configured ({teams[0]['id']}).  "
-                "Add another with `vezir team config add`.",
-                severity="information",
-                timeout=4,
-            )
-            return
+        merged: dict[str, dict] = {}
+        # Discovered memberships first (lower precedence).
+        for m in self.memberships:
+            slug = m.get("slug") or m.get("team_id")
+            if not slug:
+                continue
+            merged[slug] = {
+                "slug": slug,
+                "label": m.get("team_name") or slug,
+                "role": m.get("role"),
+                "source": "discovered",
+                "url": self.server_url,
+                "token": self.token or "",
+            }
+        # teams.json entries override (explicit multi-server/token case).
+        for t in load_teams_config()["teams"]:
+            slug = t["id"]
+            merged[slug] = {
+                "slug": slug,
+                "label": t.get("label") or slug,
+                "role": merged.get(slug, {}).get("role"),
+                "source": "config",
+                "url": t.get("url", self.server_url),
+                "token": t.get("token", self.token or ""),
+            }
+        return [merged[k] for k in sorted(merged)]
 
-        # Refuse while a recording or upload is in flight.  The Record
-        # screen owns the only blocking state we care about; query it
-        # if it's mounted.
+    def _inflight_blocks_switch(self) -> bool:
+        """True if a recording/upload is in flight (mid-flight switching
+        would orphan the upload on the old team's server view)."""
         try:
             from .record_screen import RecordBody
             body = self.query_one(RecordBody)
-            if body.is_recording or body.is_uploading:
-                self.notify(
-                    "Cannot switch teams while recording or uploading.",
-                    severity="error",
-                    timeout=5,
-                )
-                return
+            return bool(body.is_recording or body.is_uploading)
         except Exception:
-            pass  # Record screen not mounted; no inflight work to guard.
+            return False  # Record screen not mounted; nothing to guard.
 
-        new_id = next_team_id(self.active_team_id)
-        if new_id is None or new_id == self.active_team_id:
-            return  # nothing to switch to
+    def switch_to_team(self, slug: str) -> bool:
+        """Switch the active team to ``slug`` (token-preserving).
 
-        try:
-            set_active_team(new_id)
-        except ValueError as exc:
-            self.notify(str(exc), severity="error", timeout=5)
-            return
+        Works for both teams.json-configured teams and teams discovered
+        via /api/me.  For config teams the selection persists via
+        set_active_team(); for discovered-only teams it lives in-memory
+        for the session (mirrors android: the server is the source of
+        truth, no redundant teams.json writes).
 
-        # Find the new credentials.  By construction (set_active_team
-        # validated the id) one of these entries matches.
-        new_url = ""
-        new_token = ""
-        for t in teams:
-            if t["id"] == new_id:
-                new_url = t.get("url", "")
-                new_token = t.get("token", "")
-                break
+        Returns True on success.  Refuses (returns False) while a
+        recording/upload is in flight.
+        """
+        if self._inflight_blocks_switch():
+            self.notify(
+                "Cannot switch teams while recording or uploading.",
+                severity="error",
+                timeout=5,
+            )
+            return False
+        if slug == self.active_team_id:
+            return True  # already active; no-op
 
-        self.server_url = new_url or self.server_url
-        self.token = new_token or self.token
-        self.active_team_id = new_id
-        self.cred_source = f"teams:{new_id}"
+        entry = next((t for t in self.all_teams() if t["slug"] == slug), None)
+        if entry is None:
+            self.notify(f"Unknown team: {slug}", severity="error", timeout=5)
+            return False
+
+        # Persist to teams.json only when the team is config-backed.
+        if entry["source"] == "config":
+            try:
+                set_active_team(slug)
+            except ValueError as exc:
+                self.notify(str(exc), severity="error", timeout=5)
+                return False
+            self.cred_source = f"teams:{slug}"
+            self._discovered_active = None
+        else:
+            # Discovered-only: remember in-memory for this session.
+            self._discovered_active = slug
+            self.cred_source = f"discovered:{slug}"
+
+        self.server_url = entry["url"] or self.server_url
+        self.token = entry["token"] or self.token
+        self.active_team_id = slug
         self.team_label = "?"  # cleared until /api/me round-trips
         self.api = VezirClient(
             self.server_url,
@@ -449,19 +496,60 @@ class VezirTuiApp(App):
         )
         self._refresh_identity()
 
-        # Force the Sessions tab to reload against the new server.
+        # Force the Sessions tab to reload against the new team.
         try:
             from .sessions_screen import SessionsBody
             body = self.query_one(SessionsBody)
             body.action_refresh()
         except Exception:
             pass
+        # Refresh the Teams tab's active marker if it's mounted.
+        try:
+            from .teams_screen import TeamsBody
+            self.query_one(TeamsBody).refresh_active_marker()
+        except Exception:
+            pass
 
         self.notify(
-            f"Switched to team: {self.team_label if self.team_label != '?' else new_id}",
+            "Switched to team: "
+            f"{self.team_label if self.team_label != '?' else slug}",
             severity="information",
             timeout=4,
         )
+        return True
+
+    def action_switch_team(self) -> None:
+        """Cycle ^t to the next team in the MERGED list (v0.7.6).
+
+        The cycle covers every team the user belongs to — teams.json
+        entries AND memberships discovered from /api/me — so switching
+        no longer requires manually adding each team to teams.json.
+        """
+        teams = self.all_teams()
+        if not teams:
+            self.notify(
+                "No teams available.  The server's /api/me returned no "
+                "memberships and teams.json is empty.",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        if len(teams) == 1:
+            self.notify(
+                f"Only one team available ({teams[0]['slug']}).",
+                severity="information",
+                timeout=4,
+            )
+            return
+
+        slugs = [t["slug"] for t in teams]
+        if self.active_team_id in slugs:
+            idx = slugs.index(self.active_team_id)
+            nxt = slugs[(idx + 1) % len(slugs)]
+        else:
+            nxt = slugs[0]
+        if nxt != self.active_team_id:
+            self.switch_to_team(nxt)
 
     # ── global actions ──
 
