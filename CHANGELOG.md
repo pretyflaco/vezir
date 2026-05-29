@@ -3,6 +3,19 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.7 — serve the CA cert over HTTP for onboarding
+
+### Added
+
+* **`GET /ca.crt`** — an unauthenticated endpoint that serves the
+  server's internal Caddy **public** CA certificate (the same PEM the
+  QR enrollment payload embeds, read from `VEZIR_CADDY_ROOT_CERT_PATH`).
+  Onboarding teammates can now fetch it over the tunnel with
+  `curl -k https://<server>/ca.crt -o vezir-ca.crt` instead of needing
+  an SSH login on the server box. Returns 404 when no CA path is
+  configured. Safe to serve openly: only the private key is sensitive,
+  and it never leaves the server.
+
 ## 0.7.6 — TUI auto-discovers teams + Teams tab
 
 Client-only. No server, schema, or migration changes. Brings the TUI to

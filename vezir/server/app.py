@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
 
 from .. import __version__, config
 from . import (
@@ -47,6 +47,32 @@ def create_app() -> FastAPI:
             "version": __version__,
             "data_dir": str(config.data_dir()),
         }
+
+    @app.get("/ca.crt")
+    def ca_cert():
+        """Serve the internal Caddy CA certificate (v0.7.7).
+
+        Unauthenticated by design: this is the PUBLIC CA cert (only the
+        private key is sensitive, and that never leaves the server).
+        Lets onboarding teammates fetch it over the tunnel with a plain
+        ``curl -k https://<server>/ca.crt`` instead of needing an SSH
+        login on the server box.  Served from the same path the QR
+        enrollment payload embeds (``VEZIR_CADDY_ROOT_CERT_PATH``).
+        """
+        from .enroll import _load_caddy_root_cert
+        pem = _load_caddy_root_cert()
+        if not pem:
+            raise HTTPException(
+                status_code=404,
+                detail="CA certificate not configured on this server.",
+            )
+        return Response(
+            content=pem,
+            media_type="application/x-pem-file",
+            headers={
+                "Content-Disposition": 'attachment; filename="vezir-ca.crt"',
+            },
+        )
 
     app.include_router(uploads.router)
     app.include_router(sessions.router)
