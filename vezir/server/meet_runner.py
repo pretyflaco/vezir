@@ -342,6 +342,51 @@ def _ulid_to_utc_datetime(ulid_str: str):
         return None
 
 
+def _read_session_duration_seconds(session_dir: Path) -> float | None:
+    """Read the meeting duration (seconds) from frontmatter or transcript JSON.
+
+    Returns None if the duration cannot be determined.  Tries
+    ``*.frontmatter.json`` first (ISO-8601 duration), then the main
+    transcript ``*.json`` (numeric ``duration`` field).
+    """
+    import json as _json
+    import re
+
+    # 1. frontmatter.json: "duration": "PT1H1M54S" (ISO 8601)
+    for fm in sorted(session_dir.glob("*.frontmatter.json")):
+        try:
+            data = _json.loads(fm.read_text(encoding="utf-8"))
+            iso = data.get("duration", "")
+            if iso:
+                m = re.match(
+                    r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?", iso
+                )
+                if m:
+                    h = int(m.group(1) or 0)
+                    mn = int(m.group(2) or 0)
+                    s = float(m.group(3) or 0)
+                    total = h * 3600 + mn * 60 + s
+                    if total > 0:
+                        return total
+        except Exception:
+            pass
+
+    # 2. transcript *.json: "duration": 3713.712
+    for tj in sorted(session_dir.glob("*.json")):
+        if tj.name.endswith((".session.json", ".frontmatter.json",
+                             ".summary.meta.json")):
+            continue
+        try:
+            data = _json.loads(tj.read_text(encoding="utf-8"))
+            dur = data.get("duration")
+            if isinstance(dur, (int, float)) and dur > 0:
+                return float(dur)
+        except Exception:
+            pass
+
+    return None
+
+
 def ensure_session_json(session_dir: Path, session_id: str) -> Path:
     """Inject a `<session_id>.session.json` if one is not present.
 
@@ -350,23 +395,48 @@ def ensure_session_json(session_dir: Path, session_id: str) -> Path:
     falls back to reading `*.session.json` for `started_at`. Without an
     injected session.json, millet falls all the way through to
     datetime.now() at sync time, which is wrong (it's the worker's clock,
-    not the meeting's start). For a vezir-uploaded session, the closest
-    proxy for "meeting started" is the ULID's embedded timestamp.
+    not the meeting's start).
+
+    The ULID's embedded timestamp approximates session *creation* (≈ meeting
+    end / upload), not meeting start.  For a 1-hour meeting, the difference
+    is large enough to push the start outside the schedule-match window.
+    We recover the true start as ``ULID_time - duration`` when the meeting's
+    duration is available (frontmatter or transcript JSON, both present by
+    the time sync runs).  Falls back to the ULID time when duration is
+    unavailable.
 
     Returns the session.json path, creating it from the ULID if needed.
     """
     sj = session_dir / f"{session_id}.session.json"
     if sj.exists():
         return sj
+
+    from datetime import datetime, timedelta, timezone
+
     dt = _ulid_to_utc_datetime(session_id)
     if dt is None:
-        from datetime import datetime, timezone
         dt = datetime.now(timezone.utc)
+
+    # Recover the true meeting start: ULID ≈ upload/creation time ≈ meeting
+    # end.  Subtract the meeting duration to approximate the real start.
+    dur = _read_session_duration_seconds(session_dir)
+    if dur is not None and dur > 0:
+        dt = dt - timedelta(seconds=dur)
+        note = (
+            "Injected by vezir; started_at = ULID_time - duration "
+            f"({dur:.0f}s) to approximate true recording start."
+        )
+    else:
+        note = (
+            "Injected by vezir; started_at = ULID_time (duration unavailable, "
+            "may reflect upload time rather than recording start)."
+        )
+
     payload = {
         "started_at": dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
         "source": "vezir",
         "session_id": session_id,
-        "_note": "Injected by vezir to satisfy meet/sync.py:_date_from_session.",
+        "_note": note,
     }
     import json as _json
     config.secure_write_text(sj, _json.dumps(payload, indent=2))

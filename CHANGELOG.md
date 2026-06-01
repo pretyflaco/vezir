@@ -3,6 +3,21 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.10 — fix sync schedule detection for long meetings
+
+### Fixed
+
+* **`ensure_session_json` used upload time, not recording start.**  The
+  ULID's embedded timestamp approximates session creation (≈ meeting end /
+  upload), not start.  For a 62-minute standup the 62-min skew pushed the
+  meeting 4 minutes outside the ±60-min schedule window → "not a scheduled
+  meeting."  Now subtracts the meeting's duration (from frontmatter/transcript
+  JSON) to recover the true recording start.
+
+### Changed
+
+* **Dev Standup Daily window widened** 60 → 90 min as defense-in-depth.
+
 ## 0.7.9 — tech-debt: FastAPI lifespan + mypy in CI
 
 Code-health release.  No user-facing behavior change.
