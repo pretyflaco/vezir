@@ -1317,6 +1317,12 @@ async def test_label_screen_play_button_resolves_named_speaker(
     """Clicking Play on a named speaker resolves the index-based button id
     back to the real speaker id and fetches that speaker's clip."""
     monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    # Reproduce headless CI deterministically: no ffplay on PATH, so the Play
+    # button renders disabled.  The test invokes the handler directly, so it
+    # must still resolve the speaker id regardless of the disabled state.
+    monkeypatch.setattr(
+        "vezir.client.tui.label_screen.ffplay_available", lambda: False
+    )
     mock_server["label_info"]["01PLAY"] = {
         "session_id": "01PLAY",
         "status": "needs_labeling",
@@ -1348,7 +1354,11 @@ async def test_label_screen_play_button_resolves_named_speaker(
         )
         play_btn = app.screen.query_one("#play-0", Button)
         assert play_btn.id == "play-0"  # index-based, valid identifier
-        await pilot.click(play_btn)
+        # Invoke the handler directly rather than via pilot.click(): in
+        # headless CI there is no ffplay on PATH, so the Play button renders
+        # disabled and a real click is a no-op.  We're testing the
+        # button-id -> speaker-id resolution, not click geometry / ffplay.
+        screen.on_button_pressed(Button.Pressed(play_btn))
         await pilot.pause(0.1)
         assert requested == ["Juan Pablo"]
 
