@@ -3,6 +3,24 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.11 — pre-fill recognized speaker names in the labeling screen
+
+### Added
+
+* **Labeling screen now pre-fills voiceprint-recognized names + shows match
+  confidence.**  `GET /api/label/{id}` reads millet's `*.autoid.json` sidecar
+  and returns `suggested_name` + `confidence` per speaker.  The TUI labeling
+  screen pre-fills the name input from the suggestion (even when the
+  transcript id is still a raw `SPEAKER_N`) and annotates the row with the
+  match confidence, so you only type names for genuinely unknown speakers.
+
+### Fixed
+
+* Pairs with millet v0.12.1, which fixes `label --auto` discarding confident
+  matches in the non-interactive worker context — previously every
+  multi-speaker meeting with one unmatched speaker landed in the labeling
+  screen with all raw ids.
+
 ## 0.7.10 — fix sync schedule detection for long meetings
 
 ### Fixed

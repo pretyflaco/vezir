@@ -94,6 +94,26 @@ def _get_speakers(session_id: str):
     return meet_get_speakers(_session_dir(session_id))
 
 
+def _load_autoid_suggestions(session_dir: Path) -> dict[str, dict]:
+    """Load voiceprint auto-id suggestions from the ``*.autoid.json`` sidecar.
+
+    Returns a dict mapping speaker id -> {"name": str, "confidence": float},
+    or an empty dict if no sidecar exists.  Written by millet's
+    ``label --auto`` (keyed by the final transcript speaker id).
+    """
+    import json as _json
+
+    for sidecar in sorted(session_dir.glob("*.autoid.json")):
+        try:
+            data = _json.loads(sidecar.read_text(encoding="utf-8"))
+            sugg = data.get("suggestions")
+            if isinstance(sugg, dict):
+                return sugg
+        except Exception:
+            log.debug("could not read auto-id sidecar %s", sidecar, exc_info=True)
+    return {}
+
+
 def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
     """Reject cross-team access with a 404 (mirror of sessions._enforce_team_visibility).
 
@@ -299,6 +319,7 @@ def api_label_get(
     speakers = _get_speakers(session_id)
     sdir = _session_dir(session_id)
     audio_available = _find_wav(sdir) is not None
+    suggestions = _load_autoid_suggestions(sdir)
 
     return {
         "session_id": session_id,
@@ -308,6 +329,11 @@ def api_label_get(
                 "id": sp.id,
                 "channel": getattr(sp, "channel", None),
                 "sample_text": getattr(sp, "sample_text", None),
+                # Voiceprint auto-id suggestion (from *.autoid.json sidecar).
+                # Lets native clients pre-fill recognized names + show
+                # confidence.  None when no confident match was found.
+                "suggested_name": (suggestions.get(sp.id) or {}).get("name"),
+                "confidence": (suggestions.get(sp.id) or {}).get("confidence"),
             }
             for sp in speakers
         ],

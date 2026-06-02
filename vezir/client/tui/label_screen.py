@@ -305,9 +305,15 @@ class LabelScreen(Screen):
         for sp in info.speakers:
             sid = str(sp.get("id", "?"))
             sample = (sp.get("sample_text") or "")[:80]
+            suggested = sp.get("suggested_name")
+            confidence = sp.get("confidence")
             row = Horizontal(classes="speaker-row")
             container.mount(row)
-            row.mount(Label(sid, classes="speaker-id"))
+            # Speaker id, annotated with auto-id confidence when available.
+            id_label = sid
+            if suggested and confidence is not None:
+                id_label = f"{sid} [dim]({round(confidence * 100)}%)[/dim]"
+            row.mount(Label(id_label, classes="speaker-id"))
             row.mount(Label(sample, classes="sample"))
             play_btn = Button(
                 "▶ Play",
@@ -322,14 +328,23 @@ class LabelScreen(Screen):
                 disabled=not play_available,
             )
             row.mount(play_btn)
-            # Prefill already-resolved speakers (auto-labeling renames
-            # the speaker id from e.g. "REMOTE_1" to "Pedro").  Only
-            # unresolved placeholders (YOU, REMOTE_N, SPEAKER_N) start
-            # with an empty input.
+            # Prefill the name input from the best available source:
+            #   1. Already-resolved speaker id (auto-labeling renamed
+            #      e.g. "REMOTE_1" -> "Pedro" in the transcript), OR
+            #   2. A voiceprint auto-id suggestion (sidecar), which lets us
+            #      pre-fill recognized names even when the transcript id is
+            #      still a raw placeholder.
+            # Unresolved speakers with no suggestion start empty.
             resolved = not _UNRESOLVED_RE.match(sid)
+            if resolved:
+                prefill = sid
+            elif suggested:
+                prefill = suggested
+            else:
+                prefill = ""
             inp = Input(
-                value=sid if resolved else "",
-                placeholder=sid if not resolved else "name",
+                value=prefill,
+                placeholder=sid if not prefill else "name",
                 id=f"input-{sid}",
                 classes="name-input",
             )
