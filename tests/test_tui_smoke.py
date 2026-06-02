@@ -226,6 +226,23 @@ async def test_all_teams_merges_discovered_memberships(app, mock_server):
         assert blink["role"] == "scribe"
 
 
+async def test_team_slug_for_maps_uuid_to_slug(app, mock_server):
+    """team_slug_for() resolves a server UUID to the on-disk team slug so
+    local-folder lookups hit ~/vezir-meetings/<slug>/ (regression: open
+    folder said 'No artifacts' because it looked under the UUID dir)."""
+    async with app.run_test():
+        app.memberships = list(_MEMBERSHIPS_3)
+        # UUID -> slug.
+        assert app.team_slug_for("uuid-blink") == "blink"
+        assert app.team_slug_for("uuid-21") == "twentyone"
+        # Already a slug -> unchanged.
+        assert app.team_slug_for("blink") == "blink"
+        # Unknown id -> returned as-is (global-scan fallback covers it).
+        assert app.team_slug_for("uuid-unknown") == "uuid-unknown"
+        # None -> None.
+        assert app.team_slug_for(None) is None
+
+
 async def test_all_teams_config_overrides_discovered(app, mock_server, monkeypatch):
     """A teams.json entry (own server/token) takes precedence over the
     discovered membership of the same slug."""
@@ -1236,3 +1253,101 @@ async def test_label_screen_enter_submits(app, mock_server, monkeypatch):
         assert submitted, "expected a submit call after pressing enter"
         assert submitted[0]["id"] == "01ENTER"
         assert submitted[0]["labels"] == {"SPEAKER_00": "alice"}
+
+
+# ─── v0.7.12 regression: named speakers (spaces) must not crash the screen ────
+#
+# Background: once voiceprint auto-labeling persists matched names into the
+# transcript (millet 0.12.1), the labeling screen receives real names like
+# "Juan Pablo" instead of placeholder ids.  The old code built widget ids as
+# f"play-{sid}" / f"input-{sid}"; a space made these invalid Textual
+# identifiers and the screen crashed on mount with
+# ``textual.dom.BadIdentifier``.  Widget ids are now derived from the row
+# index, with a _row_sid map recovering the real id on click.
+
+
+async def test_label_screen_named_speaker_with_space_mounts(
+    app, mock_server, monkeypatch
+):
+    """A speaker named "Juan Pablo" must render without BadIdentifier.
+
+    With VEZIR_TUI_CRASH_ON_ERROR=1 a mount crash propagates and fails the
+    test; pre-fix this raised on the first compositor pass.
+    """
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["label_info"]["01NAMED"] = {
+        "session_id": "01NAMED",
+        "status": "needs_labeling",
+        "speakers": [
+            {"id": "Juan Pablo", "channel": "system",
+             "sample_text": "Hola equipo"},
+            {"id": "SPEAKER_08", "channel": "system",
+             "sample_text": "still raw"},
+        ],
+        "team": ["alice", "bob"],
+        "audio_available": True,
+    }
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        from vezir.client.tui.label_screen import LabelScreen
+        await app.push_screen(LabelScreen(session_id="01NAMED"))
+        for _ in range(20):
+            await pilot.pause(0.1)
+            inputs = list(app.screen.query(Input))
+            if len(inputs) == 2:
+                break
+        else:
+            raise AssertionError(
+                f"speaker rows never populated; final count: {len(inputs)}"
+            )
+        screen = app.screen
+        # Widget ids are index-based and valid; the named speaker's prefill
+        # holds the real name.
+        assert screen._row_sid == {"0": "Juan Pablo", "1": "SPEAKER_08"}
+        named_input = screen._inputs["Juan Pablo"]
+        assert named_input.value == "Juan Pablo"
+        # The raw speaker starts empty (unresolved, no suggestion).
+        assert screen._inputs["SPEAKER_08"].value == ""
+
+
+async def test_label_screen_play_button_resolves_named_speaker(
+    app, mock_server, monkeypatch
+):
+    """Clicking Play on a named speaker resolves the index-based button id
+    back to the real speaker id and fetches that speaker's clip."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["label_info"]["01PLAY"] = {
+        "session_id": "01PLAY",
+        "status": "needs_labeling",
+        "speakers": [
+            {"id": "Juan Pablo", "channel": "system",
+             "sample_text": "Hola equipo"},
+        ],
+        "team": ["alice"],
+        "audio_available": True,
+    }
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Button, Input
+
+        from vezir.client.tui.label_screen import LabelScreen
+        await app.push_screen(LabelScreen(session_id="01PLAY"))
+        for _ in range(20):
+            await pilot.pause(0.1)
+            if list(app.screen.query(Input)):
+                break
+        else:
+            raise AssertionError("speaker Input never mounted")
+
+        screen = app.screen
+        requested: list[str] = []
+        # Intercept the clip worker so no real audio/ffplay is needed; assert
+        # it receives the resolved name, not the index token.
+        monkeypatch.setattr(
+            screen, "_clip_worker", lambda sid: requested.append(sid)
+        )
+        play_btn = app.screen.query_one("#play-0", Button)
+        assert play_btn.id == "play-0"  # index-based, valid identifier
+        await pilot.click(play_btn)
+        await pilot.pause(0.1)
+        assert requested == ["Juan Pablo"]

@@ -434,6 +434,25 @@ class VezirTuiApp(App):
             }
         return [merged[k] for k in sorted(merged)]
 
+    def team_slug_for(self, team_id: str | None) -> str | None:
+        """Resolve a team id (UUID or slug) to its human slug.
+
+        The server identifies teams by UUID (so ``Session.team_id`` is a
+        UUID), but recordings live under the team **slug** on disk
+        (``~/vezir-meetings/<slug>/``).  This maps a UUID to its slug via
+        the cached ``/api/me`` memberships so local-folder lookups hit the
+        right directory.  Returns the input unchanged if it already looks
+        like a slug (or no membership matches).
+        """
+        if not team_id:
+            return team_id
+        for m in self.memberships:
+            if m.get("team_id") == team_id:
+                return m.get("slug") or team_id
+            if m.get("slug") == team_id:
+                return team_id
+        return team_id
+
     def _inflight_blocks_switch(self) -> bool:
         """True if a recording/upload is in flight (mid-flight switching
         would orphan the upload on the old team's server view)."""

@@ -244,9 +244,20 @@ class DetailScreen(Screen):
         )
 
     def _resolve_local_dir(self) -> Path | None:
-        """Resolve the local recording/pull directory for this session."""
+        """Resolve the local recording/pull directory for this session.
+
+        ``session.team_id`` is the server **UUID**, but recordings live on
+        disk under the team **slug** (``~/vezir-meetings/<slug>/``).  Map
+        UUID -> slug via the app's memberships so the fast path hits the
+        right team dir; ``find_local_session_dir`` also has a global scan
+        fallback that covers cases where the mapping is unavailable.
+        """
         from ..pull import find_local_session_dir
         team_id = self.session.team_id if self.session else None
+        try:
+            team_id = self.app.team_slug_for(team_id)
+        except Exception:
+            pass
         return find_local_session_dir(self.session_id, team_id)
 
     def action_open_folder(self) -> None:

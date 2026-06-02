@@ -200,6 +200,58 @@ def test_find_local_not_found(tmp_path, monkeypatch):
     assert result is None
 
 
+def test_find_local_global_fallback_uuid_finds_slug_dir(tmp_path, monkeypatch):
+    """Regression: recordings live under the team SLUG, but the TUI passes
+    the team UUID.  ``recordings_dir(uuid)`` points at a nonexistent dir;
+    the global fallback must still find the session under its slug dir.
+    """
+    from vezir import config
+    from vezir.client.pull import find_local_session_dir
+
+    root = tmp_path / "vezir-meetings"
+    # Recording written under the slug "blink".
+    slug_dir = root / "blink"
+    session_dir = slug_dir / "meeting-20260602-134206_DESTINY"
+    session_dir.mkdir(parents=True)
+    (session_dir / "session.json").write_text(
+        json.dumps({"session_id": "01KT3YT9", "team_id": "5e0d-uuid"})
+    )
+    # A decoy second team dir without the session.
+    (root / "twentyone").mkdir(parents=True)
+
+    # recordings_dir honors team_id realistically: <root>/<team_id>.
+    monkeypatch.setattr(
+        config, "recordings_dir", lambda team_id=None: root / (team_id or "default")
+    )
+
+    # The UUID dir doesn't exist on disk; only the slug dir does.
+    assert not (root / "5e0d-uuid").exists()
+    result = find_local_session_dir("01KT3YT9", "5e0d-uuid")
+    assert result == session_dir
+
+
+def test_find_local_team_specific_takes_precedence(tmp_path, monkeypatch):
+    """When the team-specific dir resolves, it wins over the global scan."""
+    from vezir import config
+    from vezir.client.pull import find_local_session_dir
+
+    root = tmp_path / "vezir-meetings"
+    blink = root / "blink"
+    right = blink / "meeting-A_RIGHT"
+    right.mkdir(parents=True)
+    (right / "session.json").write_text(json.dumps({"session_id": "01DUP"}))
+    # A same-session_id dir under a different team (should NOT be returned).
+    other = root / "twentyone" / "meeting-B_WRONG"
+    other.mkdir(parents=True)
+    (other / "session.json").write_text(json.dumps({"session_id": "01DUP"}))
+
+    monkeypatch.setattr(
+        config, "recordings_dir", lambda team_id=None: root / (team_id or "default")
+    )
+    result = find_local_session_dir("01DUP", "blink")
+    assert result == right
+
+
 # ── meet_runner._sync_log_shows_push ─────────────────────────────────────────
 
 

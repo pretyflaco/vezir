@@ -92,20 +92,8 @@ def _find_existing_dir(output_dir: Path, session: Session) -> Path | None:
     return None
 
 
-def find_local_session_dir(
-    session_id: str,
-    team_id: str | None = None,
-) -> Path | None:
-    """Find the local directory for a session, or None if not pulled/recorded.
-
-    Resolution order:
-    1. Pull manifest (O(1) lookup).
-    2. Directory scan for ``session.json`` containing the session_id.
-
-    Used by TUI actions (copy path, open folder) to locate the local
-    meeting artifacts directory.
-    """
-    output_dir = config.recordings_dir(team_id)
+def _scan_dir_for_session(output_dir: Path, session_id: str) -> Path | None:
+    """Manifest + ``session.json`` scan for *session_id* within one team dir."""
     if not output_dir.is_dir():
         return None
     # 1. Check manifest.
@@ -127,6 +115,50 @@ def find_local_session_dir(
                 return d
         except Exception:
             continue
+    return None
+
+
+def find_local_session_dir(
+    session_id: str,
+    team_id: str | None = None,
+) -> Path | None:
+    """Find the local directory for a session, or None if not pulled/recorded.
+
+    Resolution order:
+    1. The team-specific recordings dir (manifest, then ``session.json`` scan).
+    2. **Global fallback** — scan every team subdirectory under the
+       ``~/vezir-meetings/`` root for a ``session.json`` matching the
+       session_id.
+
+    The global fallback exists because recordings are written under the
+    team **slug** (``~/vezir-meetings/blink/``) at record time, while the
+    server identifies teams by **UUID**.  A caller that passes the UUID
+    (e.g. the TUI detail screen, whose ``session.team_id`` is the server
+    UUID) would otherwise resolve to a nonexistent ``~/vezir-meetings/<uuid>/``
+    and report "no artifacts" for a session that is present on disk under
+    its slug.  Scanning all sibling team dirs makes lookup robust to the
+    slug/UUID split (and to a session filed under an unexpected team dir).
+
+    Used by TUI actions (copy path, open folder) to locate the local
+    meeting artifacts directory.
+    """
+    # 1. Team-specific dir (fast path when team_id matches the on-disk name).
+    output_dir = config.recordings_dir(team_id)
+    found = _scan_dir_for_session(output_dir, session_id)
+    if found is not None:
+        return found
+
+    # 2. Global fallback: scan all team subdirs under the recordings root.
+    #    ``output_dir`` is ``<root>/<team_id>``; its parent is the root.
+    root = output_dir.parent
+    if not root.is_dir():
+        return None
+    for team_dir in sorted(root.iterdir()):
+        if not team_dir.is_dir() or team_dir == output_dir:
+            continue
+        found = _scan_dir_for_session(team_dir, session_id)
+        if found is not None:
+            return found
     return None
 
 
