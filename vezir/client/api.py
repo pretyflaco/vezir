@@ -386,8 +386,15 @@ class VezirClient:
         session_id: str,
         *,
         preset: str | None = None,
+        language: str | None = None,
     ) -> ApiResult:
-        body = {"preset": preset} if preset else {}
+        body: dict = {}
+        if preset:
+            body["preset"] = preset
+        # "auto" (or None) means use the transcript's detected language; only
+        # send an explicit override so the server can preserve the primary.
+        if language and language != "auto":
+            body["language"] = language
         return self._post(
             f"/api/sessions/{quote(session_id, safe='')}/retry-summary",
             json=body,

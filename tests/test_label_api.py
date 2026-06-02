@@ -309,3 +309,99 @@ def test_label_clip_accepts_named_speaker(
     # Cached under the slugified filename, within the clips dir (no escape).
     cached = sdir / "clips" / _safe_clip_filename("Juan Pablo")
     assert cached.exists()
+
+
+# ── POST /api/sessions/{id}/retry-summary — language override ────────────────
+
+
+def _set_summary_error(session_id: str, msg: str | None) -> None:
+    from vezir.server import queue
+    queue.update_status(session_id, "done", summary_error=msg)
+
+
+def test_retry_summary_rejects_invalid_language(client_and_token, tmp_data):
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    _set_summary_error("01TEST", "boom")
+    resp = client.post(
+        "/api/sessions/01TEST/retry-summary",
+        headers=_bearer(token),
+        json={"language": "klingon"},
+    )
+    assert resp.status_code == 400
+
+
+@patch("vezir.server.worker.retry_summary_for_session")
+def test_retry_summary_language_allows_successful_session(
+    mock_worker, client_and_token, tmp_data,
+):
+    """A language override re-summarizes even when the summary already
+    succeeded (no summary_error)."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    _set_summary_error("01TEST", None)  # summary succeeded
+
+    resp = client.post(
+        "/api/sessions/01TEST/retry-summary",
+        headers=_bearer(token),
+        json={"language": "de"},
+    )
+    assert resp.status_code == 200
+    # Worker invoked with the language override.
+    assert mock_worker.called
+    _, kwargs = mock_worker.call_args
+    assert kwargs.get("language_override") == "de"
+
+
+def test_retry_summary_no_language_still_requires_error(client_and_token, tmp_data):
+    """Without a language override, a successful session still 409s
+    (preserves the original 'fix a failed summary' contract)."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    _set_summary_error("01TEST", None)
+    resp = client.post(
+        "/api/sessions/01TEST/retry-summary",
+        headers=_bearer(token),
+        json={},
+    )
+    assert resp.status_code == 409
+
+
+@patch("vezir.server.worker.retry_summary_for_session")
+def test_retry_summary_auto_language_treated_as_none(
+    mock_worker, client_and_token, tmp_data,
+):
+    """language='auto' is not an override: it should NOT bypass the
+    summary_error guard."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    _set_summary_error("01TEST", None)
+    resp = client.post(
+        "/api/sessions/01TEST/retry-summary",
+        headers=_bearer(token),
+        json={"language": "auto"},
+    )
+    assert resp.status_code == 409
+    assert not mock_worker.called
+
+
+# ── _find_artifacts: per-language summaries ──────────────────────────────────
+
+
+def test_find_artifacts_exposes_per_language_summaries(tmp_path):
+    from vezir.server.worker import _find_artifacts
+    base = "m"
+    for n in [
+        f"{base}.txt", f"{base}.srt", f"{base}.summary.md",
+        f"{base}.summary.de.md", f"{base}.summary.fr.md", f"{base}.pdf",
+        f"{base}.json", f"{base}.frontmatter.json",
+        f"{base}.de.frontmatter.json", f"{base}.summary.meta.json",
+        f"{base}.autoid.json",
+    ]:
+        (tmp_path / n).write_text("x")
+    arts = _find_artifacts(tmp_path)
+    assert arts["summary"] == f"{base}.summary.md"
+    assert arts["summary_de"] == f"{base}.summary.de.md"
+    assert arts["summary_fr"] == f"{base}.summary.fr.md"
+    # The real transcript json wins over frontmatter/autoid sidecars.
+    assert arts["json"] == f"{base}.json"

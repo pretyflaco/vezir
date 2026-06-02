@@ -1351,3 +1351,51 @@ async def test_label_screen_play_button_resolves_named_speaker(
         await pilot.click(play_btn)
         await pilot.pause(0.1)
         assert requested == ["Juan Pablo"]
+
+
+# ─── retry-summary preset + language picker (additional-language summaries) ──
+
+
+async def test_preset_picker_returns_preset_and_language(app, mock_server):
+    """PresetPickerScreen confirms with (preset, language); the language
+    Select offers Auto + the 6 localized languages."""
+    from textual.widgets import Button, Select
+
+    from vezir.client.tui.detail_screen import (
+        _SUMMARY_LANGUAGES,
+        PresetPickerScreen,
+    )
+
+    # The curated language set (Auto + 6 with localized section headers).
+    assert [code for _, code in _SUMMARY_LANGUAGES] == [
+        "auto", "en", "de", "fr", "es", "tr", "fa",
+    ]
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(PresetPickerScreen("high-quality"), _capture)
+        await pilot.pause(0.1)
+        screen = app.screen
+        screen.query_one("#language-select", Select).value = "de"
+        await pilot.pause(0.1)
+        screen.query_one("#confirm-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] == ("high-quality", "de")
+
+
+async def test_preset_picker_cancel_returns_none(app, mock_server):
+    from textual.widgets import Button
+
+    from vezir.client.tui.detail_screen import PresetPickerScreen
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(PresetPickerScreen("high-quality"), _capture)
+        await pilot.pause(0.1)
+        app.screen.query_one("#cancel-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] is None

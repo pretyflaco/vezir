@@ -303,6 +303,33 @@ def test_retry_summary_without_preset_sends_empty_object(mocked_client):
     assert seen["body"] == b"{}"
 
 
+def test_retry_summary_with_language_includes_body(mocked_client):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"ok": True})
+
+    client = mocked_client(handler)
+    client.retry_summary("01X", language="de").unwrap()
+    assert '"language"' in seen["body"]
+    assert "de" in seen["body"]
+
+
+def test_retry_summary_auto_language_omitted(mocked_client):
+    """language='auto' means 'use detected' — don't send it (server keeps
+    the primary summary)."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        return httpx.Response(200, json={"ok": True})
+
+    client = mocked_client(handler)
+    client.retry_summary("01X", language="auto").unwrap()
+    assert seen["body"] == b"{}"
+
+
 def test_submit_labels_sends_labels_dict(mocked_client):
     seen: dict = {}
 

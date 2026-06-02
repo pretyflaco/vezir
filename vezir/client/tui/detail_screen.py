@@ -47,6 +47,19 @@ _PRESETS = [
     ("Alternative (Kimi)", "alternative"),
 ]
 
+# Summary languages with localized section headers in millet.  "auto" keeps
+# the transcript's detected language (rewrites the primary summary); any other
+# choice generates an ADDITIONAL <name>.summary.<lang>.md alongside it.
+_SUMMARY_LANGUAGES = [
+    ("Auto (detected)", "auto"),
+    ("English", "en"),
+    ("German", "de"),
+    ("French", "fr"),
+    ("Spanish", "es"),
+    ("Turkish", "tr"),
+    ("Persian (Farsi)", "fa"),
+]
+
 
 @dataclass
 class DetailLoaded(Message):
@@ -65,8 +78,14 @@ class ActionDone(Message):
     detail: str = ""
 
 
-class PresetPickerScreen(ModalScreen[str | None]):
-    """Modal: pick a summary preset for retry-summary, or cancel."""
+class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
+    """Modal: pick a summary preset + language for retry-summary, or cancel.
+
+    Dismisses with ``(preset, language)`` on confirm, or ``None`` on cancel.
+    ``language`` is ``"auto"`` (use the transcript's detected language and
+    rewrite the primary summary) or a language code (generate an ADDITIONAL
+    ``*.summary.<lang>.md`` artifact).
+    """
 
     BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
 
@@ -80,6 +99,7 @@ class PresetPickerScreen(ModalScreen[str | None]):
         padding: 1 2;
         background: $surface;
     }
+    #preset-box Label { margin-top: 1; }
     """
 
     def __init__(self, current: str | None) -> None:
@@ -95,6 +115,13 @@ class PresetPickerScreen(ModalScreen[str | None]):
                 allow_blank=False,
                 id="preset-select",
             )
+            yield Label("Summary language:")
+            yield Select(
+                options=_SUMMARY_LANGUAGES,
+                value="auto",
+                allow_blank=False,
+                id="language-select",
+            )
             with Horizontal():
                 yield Button("Cancel", id="cancel-btn")
                 yield Button("Retry", id="confirm-btn", variant="primary")
@@ -103,8 +130,12 @@ class PresetPickerScreen(ModalScreen[str | None]):
         if event.button.id == "cancel-btn":
             self.dismiss(None)
         elif event.button.id == "confirm-btn":
-            value = self.query_one("#preset-select", Select).value
-            self.dismiss(str(value) if value is not None else None)
+            preset = self.query_one("#preset-select", Select).value
+            language = self.query_one("#language-select", Select).value
+            if preset is None:
+                self.dismiss(None)
+                return
+            self.dismiss((str(preset), str(language or "auto")))
 
 
 class DetailScreen(Screen):
@@ -212,10 +243,14 @@ class DetailScreen(Screen):
             self._on_preset_picked,
         )
 
-    def _on_preset_picked(self, preset: str | None) -> None:
-        if preset is None:
+    def _on_preset_picked(self, choice: tuple[str, str] | None) -> None:
+        if choice is None:
             return
-        self._action_worker("retry summary", "retry_summary", preset=preset)
+        preset, language = choice
+        self._action_worker(
+            "retry summary", "retry_summary",
+            preset=preset, language=language,
+        )
 
     def action_sync_now(self) -> None:
         self._action_worker("sync", "sync_now")

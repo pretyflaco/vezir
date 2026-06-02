@@ -165,14 +165,33 @@ def _find_artifacts(session_dir: Path) -> dict:
     for p in sorted(session_dir.glob("*.srt")):
         out["srt"] = p.name
         break
+    # Primary auto-detected summary: <base>.summary.md (a language-tagged
+    # <base>.summary.<lang>.md does NOT match this glob — the ".md" must
+    # directly follow ".summary").
     for p in sorted(session_dir.glob("*.summary.md")):
         out["summary"] = p.name
         break
+    # Additional per-language summaries: <base>.summary.<lang>.md.  Exposed as
+    # separate artifact keys (e.g. "summary_de") so the original is preserved.
+    for p in sorted(session_dir.glob("*.summary.*.md")):
+        if p.name.endswith(".meta.json"):  # defensive; .md glob can't match
+            continue
+        # Extract the language code between ".summary." and ".md".
+        stem = p.name[: -len(".md")]           # <base>.summary.<lang>
+        lang = stem.rsplit(".summary.", 1)[-1]  # <lang>
+        if lang and "." not in lang:
+            out[f"summary_{lang}"] = p.name
     for p in sorted(session_dir.glob("*.pdf")):
         out["pdf"] = p.name
         break
     for p in sorted(session_dir.glob("*.json")):
-        if ".session." in p.name or ".summary." in p.name or ".translation." in p.name:
+        if any(
+            marker in p.name
+            for marker in (
+                ".session.", ".summary.", ".translation.",
+                ".frontmatter.", ".autoid.",
+            )
+        ):
             continue
         out["json"] = p.name
         break
@@ -475,7 +494,12 @@ def stop_background_worker() -> None:
     _stop_flag.set()
 
 
-def retry_summary_for_session(session_id: str, *, preset_override: str | None = None) -> None:
+def retry_summary_for_session(
+    session_id: str,
+    *,
+    preset_override: str | None = None,
+    language_override: str | None = None,
+) -> None:
     """Re-run summary generation for a completed session.
 
     Called when the user requests a summary retry (e.g. after a transient
@@ -484,6 +508,10 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
     ``regenerate_summary=True``.  This avoids the interactive-prompt bug
     that made the previous subprocess approach (``millet label --auto``)
     abort on unrecognized speakers.
+
+    ``language_override`` (e.g. "de") regenerates the summary in that language
+    and saves it as an ADDITIONAL ``*.summary.<lang>.md`` artifact, preserving
+    the primary auto-detected summary.
     """
     sd = _session_dir(session_id)
     log_path = _job_log_path(session_id)
@@ -512,6 +540,11 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
                 "retry-summary %s: using override preset '%s' (original: '%s')",
                 session_id, preset_override, job.get("summary_preset"),
             )
+        if language_override:
+            log.info(
+                "retry-summary %s: additional-language summary '%s'",
+                session_id, language_override,
+            )
         queue.update_status(
             session_id, "summarizing",
             summary_error=None,  # clear previous summary error
@@ -534,10 +567,18 @@ def retry_summary_for_session(session_id: str, *, preset_override: str | None = 
                 label_map={},
                 regenerate_summary=True,
                 summary_preset=requested_preset,
+                summary_language=language_override,
                 progress_callback=_progress,
             )
-            # Belt-and-suspenders: verify the summary file actually appeared.
-            if requested_preset and not list(sd.glob("*.summary.md")):
+            # Belt-and-suspenders: verify the expected summary file appeared.
+            if language_override:
+                if not list(sd.glob(f"*.summary.{language_override}.md")):
+                    summary_err = (
+                        f"summary retry produced no "
+                        f".summary.{language_override}.md"
+                    )
+                    log.warning("retry-summary %s: %s", session_id, summary_err)
+            elif requested_preset and not list(sd.glob("*.summary.md")):
                 summary_err = (
                     f"summary retry produced no .summary.md for preset "
                     f"'{requested_preset}'"

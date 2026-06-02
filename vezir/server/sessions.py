@@ -24,9 +24,17 @@ router = APIRouter()
 
 class _RetrySummaryBody(BaseModel):
     preset: str | None = None
+    # Optional summary-language override.  When set, the summary is regenerated
+    # in this language and saved as an ADDITIONAL artifact (the primary
+    # auto-detected summary is preserved).  "auto"/None = use the transcript's
+    # own language (rewrites the primary summary).
+    language: str | None = None
 
 
 _VALID_PRESETS = {"high-quality", "confidential", "alternative"}
+# Languages with localized section headers in millet (millet.languages).
+# "auto" means "use the transcript's detected language".
+_VALID_SUMMARY_LANGUAGES = {"auto", "en", "de", "fr", "es", "tr", "fa"}
 
 
 def _decorate(row: dict) -> dict:
@@ -212,10 +220,24 @@ def retry_summary(
             f"session status '{row['status']}' does not admit summary retry; "
             "session must be in 'done' status",
         )
-    if not row.get("summary_error"):
+
+    # Validate optional language override.
+    language_override: str | None = None
+    if body and body.language:
+        if body.language not in _VALID_SUMMARY_LANGUAGES:
+            raise HTTPException(400, f"invalid language: {body.language}")
+        if body.language != "auto":
+            language_override = body.language
+
+    # The summary_error guard only applies to a plain retry (fixing a failed
+    # summary).  A language override is an intentional re-summary of a
+    # *successful* session in another language, so we allow it even when the
+    # summary already succeeded.
+    if not language_override and not row.get("summary_error"):
         raise HTTPException(
             409,
-            "session has no summary_error; summary already succeeded",
+            "session has no summary_error; summary already succeeded "
+            "(pass a 'language' to generate an additional-language summary)",
         )
 
     preset_override = None
@@ -225,13 +247,17 @@ def retry_summary(
         preset_override = body.preset
 
     log.info(
-        "session=%s summary retry requested by %s", session_id, github,
+        "session=%s summary retry requested by %s (language=%s)",
+        session_id, github, language_override or "auto",
     )
 
     threading.Thread(
         target=worker.retry_summary_for_session,
         args=(session_id,),
-        kwargs={"preset_override": preset_override},
+        kwargs={
+            "preset_override": preset_override,
+            "language_override": language_override,
+        },
         name=f"retry-summary-{session_id}",
         daemon=True,
     ).start()
