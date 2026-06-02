@@ -633,6 +633,10 @@ def retry_summary_for_session(
                         session_id, failure,
                     )
 
+        # Summary-retry is a SUMMARY path (not an explicit sync).  Per the
+        # status rule, a properly-completed session whose later re-sync failed
+        # stays `done` with a sync-err badge (only the explicit Sync now /
+        # post-label path uses `sync_failed`).
         queue.update_status(
             session_id, "done",
             artifacts=artifacts,
@@ -710,8 +714,12 @@ def finalize_after_labeling(session_id: str) -> None:
                     )
         artifacts = _find_artifacts(sd)
         _delete_audio(sd)
+        # Explicit sync intent (post-label finalize / Sync now): a failed push
+        # is the headline outcome -> `sync_failed`.  (The main transcribe
+        # pipeline keeps `done` + a sync-err badge instead.)
+        final_status = "sync_failed" if sync_err_msg else "done"
         queue.update_status(
-            session_id, "done", artifacts=artifacts,
+            session_id, final_status, artifacts=artifacts,
             sync_error=sync_err_msg,
         )
     except Exception as exc:

@@ -267,7 +267,33 @@ def run_meet(
     return proc.returncode
 
 
-def build_transcribe_args(session_dir: Path, *, summary_preset: str | None = None) -> list[str]:
+def _team_default_language(team_id: str | None) -> str | None:
+    """Per-team soft default-language for transcription.
+
+    Reads ``default_language`` from the team's
+    ``~/vezir-data/teams/<team_id>/sync_config.json`` (per-team), falling back
+    to the global ``VEZIR_MILLET_DEFAULT_LANGUAGE`` env.  Returns None when
+    unset.
+    """
+    if team_id:
+        try:
+            path = config.team_sync_config_path(team_id)
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                lang = (data.get("default_language") or "").strip()
+                if lang:
+                    return lang
+        except Exception:
+            pass
+    return config.meet_default_language()
+
+
+def build_transcribe_args(
+    session_dir: Path,
+    *,
+    summary_preset: str | None = None,
+    team_id: str | None = None,
+) -> list[str]:
     """Build the `millet transcribe` argument list for a session directory."""
     device = config.meet_device()
     compute_type = config.meet_compute_type(device)
@@ -289,6 +315,9 @@ def build_transcribe_args(session_dir: Path, *, summary_preset: str | None = Non
         args.extend(["--torch-device", torch_device])
     if summary_preset:
         args.extend(["--summary-preset", summary_preset])
+    default_language = _team_default_language(team_id)
+    if default_language and config.meet_supports_option("--default-language"):
+        args.extend(["--default-language", default_language])
     args.append(str(session_dir))
     return args
 
@@ -306,7 +335,9 @@ def transcribe(session_dir: Path, job_id: str, team_id: str, log_path: Path,
     # `millet transcribe` accepts either a .wav path or a session dir. We
     # pass the dir to keep the layout compatible with `millet sync` later.
     return run_meet(
-        build_transcribe_args(session_dir, summary_preset=summary_preset),
+        build_transcribe_args(
+            session_dir, summary_preset=summary_preset, team_id=team_id,
+        ),
         job_id=job_id,
         team_id=team_id,
         log_path=log_path,
@@ -501,7 +532,20 @@ def sync(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:
         log.info("job %s: schedule-matched sync succeeded", job_id)
         return 0
 
-    # Step 2: no schedule match (or failed).  Retry with title-based name.
+    # Distinguish "no schedule match" (legitimately force a title-based folder)
+    # from "schedule matched but the git op failed" (a transient/real error).
+    # Only the former should fall through to --force --meeting-type; forcing
+    # after a *matched* sync that merely failed to push created a DUPLICATE
+    # folder on the remote (e.g. blink-sync-151630Z next to blink-sync-weekly).
+    if not _sync_log_shows_skipped(log_path):
+        log.warning(
+            "job %s: schedule-matched sync did not push and was not skipped "
+            "(likely a git error); not force-creating a duplicate folder",
+            job_id,
+        )
+        return rc1 if rc1 != 0 else 1
+
+    # Step 2: no schedule match.  Retry with a title-based folder name.
     title = _get_job_title(job_id)
     base = _title_slug_for_sync(title) or _meeting_type_base_for_team(team_id)
     meeting_type = _meeting_type_for(job_id, base=base)
@@ -546,6 +590,26 @@ def _sync_log_shows_push(log_path: Path) -> bool:
         return False
     # Positive markers from millet's sync CLI output.
     return "Pushed" in tail or "Done:" in tail
+
+
+def _sync_log_shows_skipped(log_path: Path) -> bool:
+    """True if the last ``millet sync`` block was SKIPPED (no schedule match).
+
+    millet prints "Skipped: not a scheduled meeting" when the session time
+    doesn't match any configured meeting and ``--force`` wasn't given.  This
+    is the ONLY case where retrying with ``--force --meeting-type`` is correct;
+    a schedule match that failed to push must not be force-retried (it would
+    create a duplicate folder under a different name).
+    """
+    if not log_path or not log_path.exists():
+        return False
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    idx = text.rfind("millet sync")
+    tail = text[idx:] if idx >= 0 else ""
+    return "Skipped:" in tail
 
 
 def _get_job_title(job_id: str) -> str | None:

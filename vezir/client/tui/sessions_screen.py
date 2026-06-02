@@ -33,6 +33,7 @@ _STATUS_TAGS = {
     "syncing": "[cyan]syncing[/cyan]",
     "needs_labeling": "[yellow][b]needs labeling[/b][/yellow]",
     "done": "[green]done[/green]",
+    "sync_failed": "[red][b]sync failed[/b][/red]",
     "error": "[red][b]error[/b][/red]",
 }
 

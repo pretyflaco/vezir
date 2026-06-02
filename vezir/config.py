@@ -541,6 +541,19 @@ def meet_mlx_model(asr_backend: str | None = None) -> str | None:
     return explicit
 
 
+def meet_default_language() -> str | None:
+    """Global soft default-language bias passed to ``millet transcribe``.
+
+    When set, millet keeps this language for auto-detected meetings unless a
+    channel confidently detects another language — preventing drift to a
+    low-confidence minority detection (e.g. an opening "Gracias" mislabeling
+    an English meeting as Spanish).  A per-team override in the team's
+    ``sync_config.json`` (``default_language``) takes precedence; see
+    ``meet_runner.build_transcribe_args``.
+    """
+    return _read_millet_env("VEZIR_MILLET_DEFAULT_LANGUAGE") or None
+
+
 def summary_preset() -> str | None:
     """Return the configured summarization preset, or None for the default."""
     return os.environ.get("VEZIR_SUMMARY_PRESET")

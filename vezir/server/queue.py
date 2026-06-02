@@ -135,6 +135,7 @@ VALID_STATUSES = {
     "needs_labeling",
     "syncing",
     "done",
+    "sync_failed",
     "error",
 }
 

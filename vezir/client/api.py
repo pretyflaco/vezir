@@ -170,7 +170,7 @@ class Session:
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in ("done", "error")
+        return self.status in ("done", "error", "sync_failed")
 
     @property
     def is_active(self) -> bool:

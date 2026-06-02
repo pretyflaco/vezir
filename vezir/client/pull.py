@@ -202,8 +202,13 @@ def pull_team_sessions(
             return 0
         sessions = result.ok
 
-    # Filter to completed sessions with artifacts.
-    pullable = [s for s in sessions if s.status == "done" and s.artifacts]
+    # Filter to completed sessions with artifacts.  `sync_failed` sessions
+    # finished transcription/summary (only the git push failed) and have
+    # artifacts, so they're pullable too.
+    pullable = [
+        s for s in sessions
+        if s.status in ("done", "sync_failed") and s.artifacts
+    ]
     if not pullable:
         print("vezir pull: no completed sessions to pull", flush=True)
         return 0

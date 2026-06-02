@@ -405,3 +405,73 @@ def test_find_artifacts_exposes_per_language_summaries(tmp_path):
     assert arts["summary_fr"] == f"{base}.summary.fr.md"
     # The real transcript json wins over frontmatter/autoid sidecars.
     assert arts["json"] == f"{base}.json"
+
+
+# ── sync_failed status: vocabulary + endpoint admission ──────────────────────
+
+
+def test_sync_failed_is_a_valid_status():
+    from vezir.server.queue import VALID_STATUSES
+    assert "sync_failed" in VALID_STATUSES
+
+
+def test_sync_now_admits_sync_failed(client_and_token, tmp_data):
+    """A sync_failed session can be re-synced via Sync now."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    from vezir.server import queue
+    queue.update_status("01TEST", "sync_failed", sync_error="git push rejected")
+    with patch("vezir.server.worker.finalize_after_labeling"):
+        resp = client.post("/session/01TEST/sync", headers=_bearer(token))
+    assert resp.status_code == 200
+
+
+def test_retry_summary_admits_sync_failed(client_and_token, tmp_data):
+    """A sync_failed session admits a summary retry (with a language)."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    from vezir.server import queue
+    queue.update_status("01TEST", "sync_failed", sync_error="boom")
+    with patch("vezir.server.worker.retry_summary_for_session"):
+        resp = client.post(
+            "/api/sessions/01TEST/retry-summary",
+            headers=_bearer(token),
+            json={"language": "de"},
+        )
+    assert resp.status_code == 200
+
+
+def test_finalize_after_labeling_sets_sync_failed_on_push_failure(tmp_data):
+    """The explicit sync path (post-label / Sync now) sets status=sync_failed
+    when the git push fails."""
+    from vezir.server import queue, worker
+    _seed_session(tmp_data, "01SYNCFAIL", status="needs_labeling")
+    sd = tmp_data / "sessions" / "01SYNCFAIL"
+    sd.mkdir(parents=True, exist_ok=True)
+
+    with patch("vezir.server.meet_runner.sync", return_value=1), \
+         patch("vezir.server.meet_runner.cleanup_home_shim"), \
+         patch("vezir.server.worker._delete_audio"), \
+         patch("vezir.server.worker._find_artifacts", return_value={}):
+        worker.finalize_after_labeling("01SYNCFAIL")
+
+    row = queue.get("01SYNCFAIL")
+    assert row["status"] == "sync_failed"
+    assert row["sync_error"]
+
+
+def test_finalize_after_labeling_done_on_success(tmp_data):
+    from vezir.server import queue, worker
+    _seed_session(tmp_data, "01SYNCOK", status="needs_labeling")
+    sd = tmp_data / "sessions" / "01SYNCOK"
+    sd.mkdir(parents=True, exist_ok=True)
+
+    with patch("vezir.server.meet_runner.sync", return_value=0), \
+         patch("vezir.server.meet_runner.cleanup_home_shim"), \
+         patch("vezir.server.worker._delete_audio"), \
+         patch("vezir.server.worker._sync_log_indicates_failure", return_value=None), \
+         patch("vezir.server.worker._find_artifacts", return_value={}):
+        worker.finalize_after_labeling("01SYNCOK")
+
+    row = queue.get("01SYNCOK")
+    assert row["status"] == "done"

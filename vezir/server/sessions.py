@@ -166,7 +166,7 @@ def sync_now(
     if not row:
         raise HTTPException(404, "session not found")
     _enforce_team_visibility(row, team_id)
-    if row["status"] not in ("done", "syncing"):
+    if row["status"] not in ("done", "syncing", "sync_failed"):
         raise HTTPException(
             409,
             f"session status '{row['status']}' does not admit retroactive sync; "
@@ -214,11 +214,11 @@ def retry_summary(
     if not row:
         raise HTTPException(404, "session not found")
     _enforce_team_visibility(row, team_id)
-    if row["status"] != "done":
+    if row["status"] not in ("done", "sync_failed"):
         raise HTTPException(
             409,
             f"session status '{row['status']}' does not admit summary retry; "
-            "session must be in 'done' status",
+            "session must be in 'done' or 'sync_failed' status",
         )
 
     # Validate optional language override.

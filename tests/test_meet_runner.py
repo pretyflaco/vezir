@@ -217,3 +217,114 @@ def test_build_transcribe_args_uses_mlx_asr_backend(monkeypatch, tmp_path):
         "mps",
         str(tmp_path / "session"),
     ]
+
+
+# ── default-language passthrough ─────────────────────────────────────────────
+
+
+def test_build_transcribe_args_adds_default_language(monkeypatch, tmp_path):
+    _patch_transcribe_config(monkeypatch, device="cpu", compute_type="int8")
+    monkeypatch.setattr(meet_runner.config, "meet_default_language", lambda: "en")
+    monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda opt: True)
+    monkeypatch.setattr(meet_runner.config, "team_sync_config_path",
+                        lambda team_id: tmp_path / "nonexistent.json")
+    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="blink")
+    assert "--default-language" in args
+    assert args[args.index("--default-language") + 1] == "en"
+
+
+def test_build_transcribe_args_per_team_overrides_global(monkeypatch, tmp_path):
+    import json as _json
+    _patch_transcribe_config(monkeypatch, device="cpu", compute_type="int8")
+    monkeypatch.setattr(meet_runner.config, "meet_default_language", lambda: "en")
+    monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda opt: True)
+    cfg = tmp_path / "team_sync.json"
+    cfg.write_text(_json.dumps({"default_language": "de"}))
+    monkeypatch.setattr(meet_runner.config, "team_sync_config_path", lambda team_id: cfg)
+    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="t")
+    assert args[args.index("--default-language") + 1] == "de"
+
+
+def test_build_transcribe_args_no_default_language_when_unset(monkeypatch, tmp_path):
+    _patch_transcribe_config(monkeypatch, device="cpu", compute_type="int8")
+    monkeypatch.setattr(meet_runner.config, "meet_default_language", lambda: None)
+    monkeypatch.setattr(meet_runner.config, "team_sync_config_path",
+                        lambda team_id: tmp_path / "nope.json")
+    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="blink")
+    assert "--default-language" not in args
+
+
+# ── duplicate-folder guard: only force-retry when genuinely Skipped ──────────
+
+
+def _write_log(tmp_path: Path, text: str) -> Path:
+    p = tmp_path / "job.log"
+    p.write_text(text)
+    return p
+
+
+def test_sync_log_shows_skipped_true(tmp_path):
+    log = _write_log(
+        tmp_path,
+        "--- millet sync /x\nSyncing: 01X\n  Skipped: not a scheduled meeting\n",
+    )
+    assert meet_runner._sync_log_shows_skipped(log) is True
+
+
+def test_sync_log_shows_skipped_false_on_git_error(tmp_path):
+    log = _write_log(
+        tmp_path,
+        "--- millet sync /x\nSyncing: 01X\n  Staged: a\n"
+        "  Error: Command failed: git push\n",
+    )
+    assert meet_runner._sync_log_shows_skipped(log) is False
+
+
+def test_sync_does_not_force_on_git_error(monkeypatch, tmp_path):
+    """A schedule-matched sync that fails to push must NOT fall through to
+    --force --meeting-type (which created duplicate folders)."""
+    sd = _session_dir(tmp_path)
+    log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
+    calls = []
+
+    def fake_run_meet(args, **kwargs):
+        calls.append(args)
+        # Simulate millet sync: matched a schedule, staged, then push failed.
+        log_path.write_text(
+            "--- millet sync /x\nSyncing: 01X\n  Staged: a\n"
+            "  Error: Command failed: git push\n"
+        )
+        return 1
+
+    monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
+    rc = meet_runner.sync(sd, "01X", "blink", log_path)
+    assert rc != 0
+    # Only ONE invocation (no --force retry).
+    assert len(calls) == 1
+    assert "--force" not in calls[0]
+
+
+def test_sync_forces_when_skipped(monkeypatch, tmp_path):
+    """When step-1 is genuinely Skipped (no schedule match), force-retry."""
+    sd = _session_dir(tmp_path)
+    log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
+    monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: "Dev Sync")
+    calls = []
+
+    def fake_run_meet(args, **kwargs):
+        calls.append(args)
+        if "--force" not in args:
+            log_path.write_text(
+                "--- millet sync /x\nSyncing: 01X\n  Skipped: not a scheduled meeting\n"
+            )
+            return 0
+        log_path.write_text("--- millet sync --force /x\n  Pushed 5 file(s).\n  Done: 5\n")
+        return 0
+
+    monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
+    rc = meet_runner.sync(sd, "01X", "blink", log_path)
+    assert rc == 0
+    assert len(calls) == 2
+    assert "--force" in calls[1]

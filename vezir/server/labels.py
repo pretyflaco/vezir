@@ -293,7 +293,7 @@ def _apply_and_finalize(
     ).start()
 
 
-_LABELABLE_STATUSES = ("needs_labeling", "done", "error")
+_LABELABLE_STATUSES = ("needs_labeling", "done", "error", "sync_failed")
 
 
 @router.get(

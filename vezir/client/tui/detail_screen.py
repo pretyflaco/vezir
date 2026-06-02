@@ -487,5 +487,5 @@ class DetailScreen(Screen):
         # Action availability
         self.query_one("#share-btn", Button).disabled = not s.is_personal
         self.query_one("#label-btn", Button).disabled = s.status not in (
-            "needs_labeling", "done", "error",
+            "needs_labeling", "done", "error", "sync_failed",
         )
