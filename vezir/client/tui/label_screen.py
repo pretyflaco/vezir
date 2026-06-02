@@ -15,6 +15,7 @@ Layout:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import tempfile
@@ -38,6 +39,19 @@ log = logging.getLogger("vezir.client.tui.label")
 # transcription engine.  Anything else has been resolved by auto-labeling
 # and should be prefilled in the input widget.
 _UNRESOLVED_RE = re.compile(r"^(YOU|REMOTE(_\d+)?|SPEAKER_\d+)$")
+
+
+def _safe_clip_filename(speaker_id: str) -> str:
+    """Path-safe ``.wav`` filename for a speaker id.
+
+    Mirrors ``vezir.server.labels._safe_clip_filename`` so the client temp
+    clip never breaks on names containing spaces or punctuation (e.g.
+    "Juan Pablo").  The clip is keyed back to the real speaker id in
+    ``_clip_paths``; only the on-disk filename is sanitized.
+    """
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", speaker_id).strip("_") or "speaker"
+    digest = hashlib.sha1(speaker_id.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}.wav"
 
 
 @dataclass
@@ -119,6 +133,11 @@ class LabelScreen(Screen):
         self._info: LabelInfo | None = None
         # speaker_id -> Input widget
         self._inputs: dict[str, Input] = {}
+        # row-index token -> speaker_id.  Widget ids are built from the row
+        # index (always a valid Textual identifier) rather than the raw
+        # speaker id, which may now contain spaces (e.g. "Juan Pablo") after
+        # voiceprint auto-labeling.  This map recovers the real id on click.
+        self._row_sid: dict[str, str] = {}
         # speaker_id -> cached clip Path
         self._clip_paths: dict[str, Path] = {}
         # Shared ffplay player
@@ -161,7 +180,7 @@ class LabelScreen(Screen):
 
     @work(thread=True, exclusive=False, group="label-clip")
     def _clip_worker(self, speaker_id: str) -> None:
-        dest = self._tmpdir / f"{speaker_id}.wav"
+        dest = self._tmpdir / _safe_clip_filename(speaker_id)
         if dest.exists():
             self.post_message(ClipReady(speaker_id=speaker_id, path=dest))
             return
@@ -248,9 +267,12 @@ class LabelScreen(Screen):
         if bid == "submit-btn":
             self._do_submit()
             return
-        # Play buttons have id "play-<speaker_id>"
+        # Play buttons have id "play-<row-index>"; recover the real speaker
+        # id (which may contain spaces) from the row map.
         if bid and bid.startswith("play-"):
-            speaker_id = bid[len("play-"):]
+            speaker_id = self._row_sid.get(bid[len("play-"):])
+            if speaker_id is None:
+                return
             if (self._player.is_playing
                     and self._player.current_path == self._clip_paths.get(speaker_id)):
                 self._player.stop()
@@ -289,6 +311,7 @@ class LabelScreen(Screen):
         container = self.query_one("#speakers-container", Vertical)
         container.remove_children()
         self._inputs.clear()
+        self._row_sid.clear()
 
         if not info.speakers:
             self.query_one("#status-line", Static).update(
@@ -302,8 +325,13 @@ class LabelScreen(Screen):
             f"clips: {'available' if play_available else 'unavailable'}",
         )
 
-        for sp in info.speakers:
+        for idx, sp in enumerate(info.speakers):
             sid = str(sp.get("id", "?"))
+            # Widget ids are built from the row index (always a valid Textual
+            # identifier).  The raw sid may contain spaces after auto-labeling
+            # (e.g. "Juan Pablo"), which Textual rejects as a widget id.
+            tok = str(idx)
+            self._row_sid[tok] = sid
             sample = (sp.get("sample_text") or "")[:80]
             suggested = sp.get("suggested_name")
             confidence = sp.get("confidence")
@@ -317,7 +345,7 @@ class LabelScreen(Screen):
             row.mount(Label(sample, classes="sample"))
             play_btn = Button(
                 "▶ Play",
-                id=f"play-{sid}",
+                id=f"play-{tok}",
                 classes="play-btn",
                 # PR8: variant="primary" gives the button a colored
                 # background (theme $primary) so it's clearly visible
@@ -345,7 +373,7 @@ class LabelScreen(Screen):
             inp = Input(
                 value=prefill,
                 placeholder=sid if not prefill else "name",
-                id=f"input-{sid}",
+                id=f"input-{tok}",
                 classes="name-input",
             )
             try:

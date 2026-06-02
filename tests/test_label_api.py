@@ -216,3 +216,96 @@ def test_api_label_get_works_for_done_sessions(mock_get_speakers, client_and_tok
 
     resp = client.get("/api/label/01TEST", headers=_bearer(token))
     assert resp.status_code == 200
+
+
+# ── GET /label/{session_id}/clip/{speaker_id} ───────────────────────────────
+# Regression: once voiceprint auto-labeling persists matches into the
+# transcript, speaker ids reaching the clip endpoint can be real names with
+# spaces (e.g. "Juan Pablo").  The old ``^[A-Za-z0-9_]+$`` guard rejected
+# these with 400; the cache filename must also stay path-safe.
+
+
+def test_safe_clip_id_accepts_names_with_spaces():
+    from vezir.server.labels import _is_safe_clip_id
+
+    assert _is_safe_clip_id("Juan Pablo")
+    assert _is_safe_clip_id("O'Brien")
+    assert _is_safe_clip_id("SPEAKER_08")
+    assert _is_safe_clip_id("Anne-Marie")
+
+
+def test_safe_clip_id_rejects_traversal_and_separators():
+    from vezir.server.labels import _is_safe_clip_id
+
+    assert not _is_safe_clip_id("../etc/passwd")
+    assert not _is_safe_clip_id("a/b")
+    assert not _is_safe_clip_id("a\\b")
+    assert not _is_safe_clip_id("bad\x00id")
+    assert not _is_safe_clip_id("")
+
+
+def test_safe_clip_filename_is_path_safe_and_unique():
+    from vezir.server.labels import _safe_clip_filename
+
+    fn = _safe_clip_filename("Juan Pablo")
+    assert "/" not in fn and "\\" not in fn and " " not in fn
+    assert fn.endswith(".wav")
+    # Distinct ids that slugify alike must not collide (hash suffix differs).
+    assert _safe_clip_filename("Juan Pablo") != _safe_clip_filename("Juan-Pablo")
+
+
+def test_label_clip_rejects_unsafe_speaker_id(client_and_token, tmp_data):
+    """A ``..`` traversal id that reaches the handler is rejected with 400.
+
+    (URL-encoded slashes like ``a%2Fb`` are normalized away by Starlette's
+    router and 404 before reaching us; ``%2e%2e`` decodes to a bare ``..``
+    segment that *does* reach the handler, where ``_is_safe_clip_id`` blocks
+    it.)
+    """
+    client, token = client_and_token
+    resp = client.get(
+        "/label/01TEST/clip/%2e%2e",
+        headers=_bearer(token),
+    )
+    assert resp.status_code == 400
+
+
+@patch("vezir.server.labels.shutil.move")
+@patch("vezir.server.labels._get_speakers")
+def test_label_clip_accepts_named_speaker(
+    mock_get_speakers, mock_move, client_and_token, tmp_data,
+):
+    """A speaker named "Juan Pablo" gets past validation and is cached under
+    a path-safe filename (no 400, no traversal)."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+
+    sdir = tmp_data / "sessions" / "01TEST"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / "01TEST.wav").write_bytes(b"RIFF" + b"\x00" * 100)
+
+    sp = MagicMock()
+    sp.id = "Juan Pablo"
+    mock_get_speakers.return_value = [sp]
+
+    from vezir.server.labels import _safe_clip_filename
+
+    def _fake_move(src, dst):
+        Path(dst).write_bytes(b"RIFF" + b"\x00" * 10)
+
+    mock_move.side_effect = _fake_move
+
+    with patch(
+        "millet.label.extract_speaker_clip",
+        return_value=sdir / "tmp_clip.wav",
+    ):
+        (sdir / "tmp_clip.wav").write_bytes(b"RIFF" + b"\x00" * 10)
+        resp = client.get(
+            "/label/01TEST/clip/Juan%20Pablo",
+            headers=_bearer(token),
+        )
+
+    assert resp.status_code == 200
+    # Cached under the slugified filename, within the clips dir (no escape).
+    cached = sdir / "clips" / _safe_clip_filename("Juan Pablo")
+    assert cached.exists()

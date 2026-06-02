@@ -14,6 +14,7 @@ then transitions the job to `syncing` → `done`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -29,6 +30,40 @@ from . import auth, meet_runner, queue, ratelimit, worker
 
 log = logging.getLogger("vezir.labels")
 router = APIRouter()
+
+# Speaker ids may now be real names (e.g. "Juan Pablo") once voiceprint
+# auto-labeling persists matches into the transcript.  Reject only ids that
+# could escape the clips cache directory or contain control characters; allow
+# spaces and the common punctuation found in names.
+_UNSAFE_CLIP_ID_RE = re.compile(r"[\x00-\x1f/\\]")
+
+
+def _is_safe_clip_id(speaker_id: str) -> bool:
+    """True if ``speaker_id`` is safe to resolve against the transcript.
+
+    Blocks path separators, ``..`` traversal and control characters; allows
+    letters, numbers, spaces and name punctuation (apostrophes, hyphens, dots).
+    The on-disk cache filename is derived via ``_safe_clip_filename`` so the
+    raw id is never used directly as a path component.
+    """
+    if not speaker_id or len(speaker_id) > 128:
+        return False
+    if ".." in speaker_id:
+        return False
+    return not _UNSAFE_CLIP_ID_RE.search(speaker_id)
+
+
+def _safe_clip_filename(speaker_id: str) -> str:
+    """Derive a path-safe ``.wav`` filename from a speaker id.
+
+    Slugifies the id (alnum runs joined by underscores) and appends a short
+    sha1 suffix so distinct ids never collide even after slugification.  Used
+    for both the server-side cache and the client temp clip so playback maps
+    back to the right speaker regardless of name punctuation.
+    """
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", speaker_id).strip("_") or "speaker"
+    digest = hashlib.sha1(speaker_id.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}.wav"
 
 
 def _team_handles(team_id: str | None = None) -> list[str]:
@@ -136,7 +171,7 @@ def label_clip(
 ):
     """Return an audio clip for a speaker. Generates and caches on first hit."""
     _github, team_id, _admin = auth_triple
-    if not re.match(r"^[A-Za-z0-9_]+$", speaker_id):
+    if not _is_safe_clip_id(speaker_id):
         raise HTTPException(400, "invalid speaker id")
 
     row = queue.get(session_id)
@@ -149,7 +184,7 @@ def label_clip(
         raise HTTPException(404, "session not found")
 
     cache_dir = _ensure_clips_dir(session_id)
-    cached = cache_dir / f"{speaker_id}.wav"
+    cached = cache_dir / _safe_clip_filename(speaker_id)
     if cached.exists():
         return FileResponse(cached, media_type="audio/wav")
 
