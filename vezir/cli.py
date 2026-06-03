@@ -1247,6 +1247,124 @@ def voiceprints_list(team_id):
         click.echo(f"  {n}")
 
 
+# ── relabel ───────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option(
+    "--team", "team_id", default=None,
+    help="Team slug/uuid to scope to.  Required when more than one team "
+         "exists; defaults to the only team otherwise.",
+)
+@click.option(
+    "--session", "session_ids", multiple=True,
+    help="Re-label this specific session id.  Repeatable.  Mutually "
+         "exclusive with --all-needs-labeling.",
+)
+@click.option(
+    "--all-needs-labeling", "all_needs", is_flag=True, default=False,
+    help="Re-label every session in the team currently in needs_labeling.",
+)
+@click.option(
+    "--sync/--no-sync", "do_sync", default=False,
+    help="When a session fully resolves, sync it to the team repo.  Default "
+         "--no-sync: update labels/artifacts/status only.",
+)
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Show which sessions would be re-labeled, then exit without changes.",
+)
+def relabel(team_id, session_ids, all_needs, do_sync, dry_run):
+    """Re-run auto-labeling on already-transcribed sessions.
+
+    Use after (re)seeding a team's voiceprint DB to recover sessions that
+    landed in needs_labeling because the DB was empty at processing time.
+    Recognized speakers get auto-applied; unrecognized ones stay raw and the
+    session remains needs_labeling (now with the known speakers pre-filled).
+    """
+    from .server import queue as _queue
+    from .server import worker
+
+    team_id = _resolve_team_arg(team_id)
+
+    if session_ids and all_needs:
+        click.echo(
+            "error: pass either --session or --all-needs-labeling, not both",
+            err=True,
+        )
+        sys.exit(2)
+    if not session_ids and not all_needs:
+        click.echo(
+            "error: specify --session <id> (repeatable) or "
+            "--all-needs-labeling",
+            err=True,
+        )
+        sys.exit(2)
+
+    # Resolve the target session ids, all scoped to this team.
+    targets: list[str] = []
+    if all_needs:
+        rows = [
+            j for j in _queue.list_recent(limit=10000, team_id=team_id)
+            if j.get("status") == "needs_labeling"
+        ]
+        targets = [j["id"] for j in rows]
+    else:
+        for sid in session_ids:
+            row = _queue.get(sid)
+            if not row:
+                click.echo(f"  skip {sid}: not found", err=True)
+                continue
+            if (row.get("team_id") or "") != team_id:
+                click.echo(
+                    f"  skip {sid}: belongs to a different team", err=True,
+                )
+                continue
+            targets.append(sid)
+
+    if not targets:
+        click.echo(f"No sessions to re-label for team {team_id!r}.")
+        return
+
+    click.echo(
+        f"Re-labeling {len(targets)} session(s) for team {team_id!r} "
+        f"(sync={'on' if do_sync else 'off'}):"
+    )
+    if dry_run:
+        for sid in targets:
+            row = _queue.get(sid) or {}
+            click.echo(f"  [dry-run] {sid}  {row.get('title')!r}")
+        return
+
+    done = nl = errs = 0
+    for sid in targets:
+        res = worker.reauto_label_session(sid, sync=do_sync)
+        status_ = res.get("status")
+        matched = res.get("matched") or []
+        unresolved = res.get("unresolved") or []
+        err = res.get("error")
+        line = (
+            f"  {sid}: {status_ or 'error'} | "
+            f"matched={len(matched)} unresolved={len(unresolved)}"
+        )
+        if matched:
+            line += f" | names: {', '.join(sorted(set(matched)))}"
+        if res.get("synced"):
+            line += " | synced"
+        if err:
+            line += f" | note: {err}"
+        click.echo(line)
+        if err and status_ is None:
+            errs += 1
+        elif status_ == "done":
+            done += 1
+        elif status_ == "needs_labeling":
+            nl += 1
+
+    click.echo(
+        f"Done: {done} resolved, {nl} still need labeling, {errs} error(s)."
+    )
+
+
 # ── status ────────────────────────────────────────────────────────────────────
 
 @main.command()

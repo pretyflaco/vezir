@@ -3,6 +3,22 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.17 — re-run auto-labeling after voiceprint (re)seeding (vezir relabel)
+
+### Added
+
+* **`vezir relabel` — re-run auto-labeling on already-transcribed sessions.**
+  After (re)seeding a team's voiceprint DB, sessions that were processed while
+  the DB was empty stay stuck in `needs_labeling` with raw speaker ids (auto-
+  labeling only runs once, during the original pipeline).  `vezir relabel
+  --team <slug> --all-needs-labeling` (or `--session <id>`, repeatable) re-runs
+  `millet label --auto` against the now-populated per-team DB and re-routes
+  status: recognized speakers are auto-applied to the artifacts; unrecognized
+  ones stay raw so the session remains `needs_labeling` with the known speakers
+  pre-filled.  `--no-sync` (default) updates labels/artifacts/status only;
+  `--sync` pushes fully-resolved sessions like the main pipeline.  Backed by
+  `worker.reauto_label_session(session_id, sync=...)`.
+
 ## 0.7.16 — inject meeting title + explicit "sync as" folder override
 
 ### Added

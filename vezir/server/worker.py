@@ -235,6 +235,36 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
     return False
 
 
+def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
+    """Return (matched_names, unresolved_ids) from the transcript.
+
+    ``matched_names`` are confirmed human labels; ``unresolved_ids`` are the
+    raw placeholders (``YOU``/``REMOTE``/``SPEAKER_N``) still needing a name.
+    Used by :func:`reauto_label_session` for per-session CLI reporting.
+    """
+    import json as _json
+
+    tj = session_dir / f"{session_dir.name}.json"
+    if not tj.exists():
+        return [], []
+    try:
+        data = _json.loads(tj.read_text(encoding="utf-8"))
+    except Exception:
+        return [], []
+
+    matched: list[str] = []
+    unresolved: list[str] = []
+    for sp in data.get("speakers", []) or []:
+        sid = sp.get("id") or ""
+        label = sp.get("label") or ""
+        effective = label if label else sid
+        if _UNRESOLVED_RE.match(effective):
+            unresolved.append(effective)
+        elif effective:
+            matched.append(effective)
+    return matched, unresolved
+
+
 def _delete_audio(session_dir: Path) -> None:
     """Optionally delete audio (.wav, .ogg) after artifacts are produced.
 
@@ -647,6 +677,133 @@ def retry_summary_for_session(
     except Exception as exc:
         log.exception("retry-summary %s failed", session_id)
         queue.update_status(session_id, "error", error=str(exc))
+    finally:
+        meet_runner.cleanup_home_shim(session_id)
+
+
+def reauto_label_session(session_id: str, *, sync: bool = False) -> dict:
+    """Re-run ``millet label --auto`` for an already-transcribed session.
+
+    Use case: a session was processed while its team's voiceprint DB was
+    empty (or sparse), so every speaker landed as a raw placeholder and the
+    session is stuck in ``needs_labeling``.  After the DB is (re)seeded, this
+    re-runs auto-labeling against the now-populated per-team DB and re-routes
+    the session's status, applying any confident matches to the artifacts.
+
+    This mirrors the label->status stage of the main pipeline
+    (:func:`process_session`) but starts from an existing transcript — it does
+    NOT re-transcribe.  Partial matches are expected: speakers the DB can't
+    recognize stay raw and the session remains ``needs_labeling`` (with the
+    known speakers now pre-filled).
+
+    ``sync`` (default False): when True and the session fully resolves, sync to
+    the team repo exactly like the main pipeline.  For controlled recovery runs
+    leave it False — labels/artifacts/status are updated but nothing is pushed.
+
+    Returns a small result dict for CLI reporting:
+    ``{"session_id", "team_id", "status", "matched", "unresolved", "synced",
+    "error"}``.
+    """
+    sd = _session_dir(session_id)
+    log_path = _job_log_path(session_id)
+    result: dict = {
+        "session_id": session_id,
+        "team_id": None,
+        "status": None,
+        "matched": [],
+        "unresolved": [],
+        "synced": False,
+        "error": None,
+    }
+
+    try:
+        job = queue.get(session_id)
+        if not job:
+            result["error"] = "session not found"
+            log.error("relabel: session %s not found", session_id)
+            return result
+
+        team_id = job.get("team_id") or ""
+        result["team_id"] = team_id
+        if not team_id:
+            result["error"] = "empty team_id"
+            log.error("relabel: session %s has empty team_id; aborting", session_id)
+            return result
+
+        if not bool(job.get("auto_label_enabled", 1)):
+            # Respect the per-job opt-out: don't auto-label a session the
+            # uploader explicitly wanted human-only.
+            result["error"] = "auto_label_enabled=0 (skipped)"
+            result["status"] = job.get("status")
+            log.info("relabel: job %s auto_label_enabled=0; skipping", session_id)
+            return result
+
+        tj = sd / f"{session_id}.json"
+        if not tj.exists():
+            result["error"] = "no transcript on disk"
+            result["status"] = job.get("status")
+            log.warning("relabel: job %s has no transcript at %s", session_id, tj)
+            return result
+
+        # Re-run auto-labeling against the team's (now-seeded) voiceprint DB.
+        rc = meet_runner.label_auto(sd, session_id, team_id, log_path)
+        if rc != 0:
+            log.warning("relabel: label --auto returned %s for %s; continuing", rc, session_id)
+
+        # Report which speakers got resolved vs. remain raw.
+        matched, unresolved = _speaker_resolution(sd)
+        result["matched"] = matched
+        result["unresolved"] = unresolved
+
+        artifacts = _find_artifacts(sd)
+
+        if _has_unresolved_speakers(sd):
+            queue.update_status(session_id, "needs_labeling", artifacts=artifacts)
+            result["status"] = "needs_labeling"
+            log.info(
+                "relabel: job %s still needs labeling (%d matched, %d unresolved)",
+                session_id, len(matched), len(unresolved),
+            )
+            return result
+
+        # Fully resolved.
+        if not sync:
+            queue.update_status(session_id, "done", artifacts=artifacts)
+            result["status"] = "done"
+            log.info("relabel: job %s fully resolved (no sync requested)", session_id)
+            return result
+
+        # sync=True: mirror the main pipeline's sync gates.
+        sync_err_msg: str | None = None
+        sync_enabled = bool(job.get("sync_enabled", 1))
+        if _skip_sync():
+            log.info("relabel: job %s VEZIR_SKIP_SYNC set; not syncing", session_id)
+        elif not sync_enabled:
+            log.info("relabel: job %s sync_enabled=0; not syncing", session_id)
+        else:
+            queue.update_status(session_id, "syncing", artifacts=artifacts)
+            rc = meet_runner.sync(sd, session_id, team_id, log_path)
+            if rc != 0:
+                sync_err_msg = _error_with_tail(f"millet sync exited {rc}", log_path)
+            else:
+                failure = _sync_log_indicates_failure(log_path)
+                if failure:
+                    sync_err_msg = _error_with_tail(
+                        f"millet sync failed silently: {failure}", log_path,
+                    )
+            result["synced"] = sync_err_msg is None
+
+        queue.update_status(
+            session_id, "done", artifacts=artifacts, sync_error=sync_err_msg,
+        )
+        result["status"] = "done"
+        result["error"] = sync_err_msg
+        log.info("relabel: job %s done (synced=%s)", session_id, result["synced"])
+        return result
+    except Exception as exc:
+        log.exception("relabel: %s failed", session_id)
+        result["error"] = str(exc)
+        return result
     finally:
         meet_runner.cleanup_home_shim(session_id)
 

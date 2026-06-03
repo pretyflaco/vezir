@@ -555,3 +555,116 @@ def test_finalize_after_labeling_passes_meeting_type_override(tmp_data):
     # Called as sync(sd, session_id, team_id, log_path, meeting_type=...)
     _, kwargs = mock_sync.call_args
     assert kwargs.get("meeting_type") == "post-scrum"
+
+
+# ── reauto_label_session (vezir relabel) ─────────────────────────────────────
+
+
+def _write_transcript(sd, session_id, speakers):
+    """Write a minimal millet-style transcript JSON with the given speakers."""
+    import json
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / f"{session_id}.json").write_text(json.dumps({
+        "segments": [],
+        "speakers": [{"id": s, "label": s} for s in speakers],
+    }))
+
+
+def test_reauto_label_partial_stays_needs_labeling(tmp_data):
+    """When some speakers remain raw after re-auto, status stays
+    needs_labeling (and we don't sync by default)."""
+    from vezir.server import worker
+    _seed_session(tmp_data, "01RELBL", status="needs_labeling")
+    sd = tmp_data / "sessions" / "01RELBL"
+    # Pre-existing transcript with raw placeholders (as left by transcription).
+    _write_transcript(sd, "01RELBL", ["SPEAKER_00", "SPEAKER_01"])
+
+    def fake_label_auto(session_dir, job_id, team_id, log_path):
+        # Simulate millet applying a confident match for one speaker only.
+        _write_transcript(sd, "01RELBL", ["Lukas", "SPEAKER_01"])
+        return 0
+
+    with patch("vezir.server.meet_runner.label_auto", side_effect=fake_label_auto), \
+         patch("vezir.server.meet_runner.cleanup_home_shim"), \
+         patch("vezir.server.meet_runner.sync") as mock_sync, \
+         patch("vezir.server.worker._find_artifacts", return_value={}):
+        res = worker.reauto_label_session("01RELBL", sync=False)
+
+    assert res["status"] == "needs_labeling"
+    assert "Lukas" in res["matched"]
+    assert "SPEAKER_01" in res["unresolved"]
+    mock_sync.assert_not_called()
+
+
+def test_reauto_label_fully_resolved_no_sync_marks_done(tmp_data):
+    """All speakers resolved + sync=False → done, no sync attempted."""
+    from vezir.server import queue, worker
+    _seed_session(tmp_data, "01RELOK", status="needs_labeling")
+    sd = tmp_data / "sessions" / "01RELOK"
+    _write_transcript(sd, "01RELOK", ["SPEAKER_00", "SPEAKER_01"])
+
+    def fake_label_auto(session_dir, job_id, team_id, log_path):
+        _write_transcript(sd, "01RELOK", ["Lukas", "Kemal"])
+        return 0
+
+    with patch("vezir.server.meet_runner.label_auto", side_effect=fake_label_auto), \
+         patch("vezir.server.meet_runner.cleanup_home_shim"), \
+         patch("vezir.server.meet_runner.sync") as mock_sync, \
+         patch("vezir.server.worker._find_artifacts", return_value={}):
+        res = worker.reauto_label_session("01RELOK", sync=False)
+
+    assert res["status"] == "done"
+    assert res["synced"] is False
+    mock_sync.assert_not_called()
+    assert queue.get("01RELOK")["status"] == "done"
+
+
+def test_reauto_label_fully_resolved_with_sync(tmp_data):
+    """All speakers resolved + sync=True → meet_runner.sync is invoked."""
+    from vezir.server import worker
+    _seed_session(tmp_data, "01RELSYNC", status="needs_labeling")
+    sd = tmp_data / "sessions" / "01RELSYNC"
+    _write_transcript(sd, "01RELSYNC", ["SPEAKER_00", "SPEAKER_01"])
+
+    def fake_label_auto(session_dir, job_id, team_id, log_path):
+        _write_transcript(sd, "01RELSYNC", ["Lukas", "Kemal"])
+        return 0
+
+    with patch("vezir.server.meet_runner.label_auto", side_effect=fake_label_auto), \
+         patch("vezir.server.meet_runner.cleanup_home_shim"), \
+         patch("vezir.server.meet_runner.sync", return_value=0) as mock_sync, \
+         patch("vezir.server.worker._sync_log_indicates_failure", return_value=None), \
+         patch("vezir.server.worker._find_artifacts", return_value={}):
+        res = worker.reauto_label_session("01RELSYNC", sync=True)
+
+    assert res["status"] == "done"
+    assert res["synced"] is True
+    mock_sync.assert_called_once()
+
+
+def test_reauto_label_respects_auto_label_opt_out(tmp_data):
+    """auto_label_enabled=0 → skip, don't re-label."""
+    from vezir.server import queue, worker
+    queue.enqueue("01RELOPT", "alice", "m", team_id="blink", auto_label_enabled=False)
+    queue.update_status("01RELOPT", "needs_labeling")
+
+    with patch("vezir.server.meet_runner.label_auto") as mock_la, \
+         patch("vezir.server.meet_runner.cleanup_home_shim"):
+        res = worker.reauto_label_session("01RELOPT")
+
+    mock_la.assert_not_called()
+    assert "auto_label_enabled=0" in (res["error"] or "")
+
+
+def test_reauto_label_missing_transcript(tmp_data):
+    """No transcript on disk → reported error, no crash."""
+    from vezir.server import worker
+    _seed_session(tmp_data, "01RELNOJSON", status="needs_labeling")
+    (tmp_data / "sessions" / "01RELNOJSON").mkdir(parents=True, exist_ok=True)
+
+    with patch("vezir.server.meet_runner.label_auto") as mock_la, \
+         patch("vezir.server.meet_runner.cleanup_home_shim"):
+        res = worker.reauto_label_session("01RELNOJSON")
+
+    mock_la.assert_not_called()
+    assert res["error"] == "no transcript on disk"
