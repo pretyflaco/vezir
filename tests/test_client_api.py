@@ -316,6 +316,35 @@ def test_retry_summary_with_language_includes_body(mocked_client):
     assert "de" in seen["body"]
 
 
+def test_sync_now_without_meeting_type_sends_empty_object(mocked_client):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/session/01X/sync"
+        seen["body"] = request.content
+        return httpx.Response(200, json={"queued": True})
+
+    client = mocked_client(handler)
+    client.sync_now("01X").unwrap()
+    # No override → empty {} body (auto-detect on the server).
+    assert seen["body"] == b"{}"
+
+
+def test_sync_now_with_meeting_type_includes_body(mocked_client):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/session/01X/sync"
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"queued": True})
+
+    client = mocked_client(handler)
+    client.sync_now("01X", meeting_type="post-scrum").unwrap()
+    assert '"meeting_type"' in seen["body"]
+    assert "post-scrum" in seen["body"]
+
+
 def test_retry_summary_auto_language_omitted(mocked_client):
     """language='auto' means 'use detected' — don't send it (server keeps
     the primary summary)."""

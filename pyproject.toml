@@ -76,10 +76,11 @@ server = [
     # v0.7.0: jinja2 dropped along with the HTML dashboard.
     # vezir 0.4.0's worker shells out to `millet transcribe --summary-preset
     # <id>` and relies on apply_labels() accepting the summary_preset kwarg.
-    # Pin to >= 0.9.0 (the rename release of meetscribe-offline) so a
-    # fresh `pip install vezir[server]` gets the renamed pipeline that
-    # matches the rest of the vezir 0.4.0 stack.
-    "millet-pipeline>=0.9.0",
+    # Pin to >= 0.12.5: vezir 0.7.16 injects the session title into
+    # session.json and relies on millet's title-aware schedule matching +
+    # collision guard (millet v0.12.5) to file ad-hoc titled meetings into
+    # their own folders instead of overwriting scheduled ones.
+    "millet-pipeline>=0.12.5",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
@@ -102,6 +103,10 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's parameter markers are intended to be called in argument defaults.
+extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.Query"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B", "RUF"]

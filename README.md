@@ -86,9 +86,11 @@ Android thin client lives at
 On Apple Silicon the server auto-selects MLX Whisper ASR + PyTorch MPS
 when available, falling back to CPU/MPS-split mode otherwise.
 
-Requires **`millet-pipeline >= 0.9.0`** (pinned via the `[server]`
-extra).  0.9.x is the millet-rename release of the transcription
-pipeline (formerly `meetscribe-offline`).
+Requires **`millet-pipeline >= 0.12.5`** (pinned via the `[server]`
+extra).  0.12.5 adds title-aware schedule matching + the sync collision
+guard that vezir 0.7.16's title injection and "sync as" override rely on.
+(0.9.x was the millet-rename release of the transcription pipeline,
+formerly `meetscribe-offline`.)
 
 ## Architecture
 

@@ -31,6 +31,7 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     Label,
     Select,
     Static,
@@ -59,6 +60,18 @@ _SUMMARY_LANGUAGES = [
     ("Turkish", "tr"),
     ("Persian (Farsi)", "fa"),
 ]
+
+
+def _slugify(text: str) -> str:
+    """Client-side folder slug, mirroring server ``config.sync_slug``.
+
+    Lowercase, non-alphanumerics collapsed to hyphens, trimmed, capped at 60.
+    The server re-slugifies (and validates) the value, so this is just a UX
+    pre-fill / preview.
+    """
+    import re
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").strip()).strip("-").lower()
+    return slug[:60]
 
 
 @dataclass
@@ -136,6 +149,84 @@ class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
                 self.dismiss(None)
                 return
             self.dismiss((str(preset), str(language or "auto")))
+
+
+class SyncAsScreen(ModalScreen[str | None | object]):
+    """Modal: choose the target folder for a "sync as" override, or cancel.
+
+    Dismisses with:
+      * ``""`` — auto-detect (current behavior: schedule/title detection),
+      * ``"<slug>"`` — force this folder,
+      * ``None`` — cancel (no sync).
+
+    The free-text input is pre-filled with the session's title slug.  A
+    ``Select`` offers quick choices: "Auto-detect" plus the title slug.  (The
+    client can't see the team's full schedule list, so existing scheduled
+    folders aren't enumerated here; the operator can type any slug.)
+    """
+
+    # Sentinel distinct from both "" (auto) and None (cancel) is unnecessary:
+    # "" means auto, None means cancel.
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+    CSS = """
+    SyncAsScreen { align: center middle; }
+    #syncas-box {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        border: solid $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    #syncas-box Label { margin-top: 1; }
+    #syncas-box Input { margin-top: 1; }
+    """
+
+    _AUTO = "\x00auto"  # Select value standing in for auto-detect ("")
+
+    def __init__(self, title: str | None) -> None:
+        super().__init__()
+        self._title_slug = _slugify(title or "")
+
+    def compose(self) -> ComposeResult:
+        options = [("Auto-detect (schedule / title)", self._AUTO)]
+        if self._title_slug:
+            options.append((f"Title: {self._title_slug}", self._title_slug))
+        with Vertical(id="syncas-box"):
+            yield Label("[b]Sync to which folder?[/b]")
+            yield Select(
+                options=options,
+                value=self._AUTO,
+                allow_blank=False,
+                id="syncas-select",
+            )
+            yield Label("Or type a custom folder slug:")
+            yield Input(
+                value="",
+                placeholder=self._title_slug or "e.g. weekly-sync",
+                id="syncas-input",
+            )
+            with Horizontal():
+                yield Button("Cancel", id="cancel-btn")
+                yield Button("Sync", id="confirm-btn", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel-btn":
+            self.dismiss(None)
+            return
+        if event.button.id != "confirm-btn":
+            return
+        # A non-empty custom input wins over the Select.
+        custom = self.query_one("#syncas-input", Input).value.strip()
+        if custom:
+            self.dismiss(_slugify(custom))
+            return
+        sel = self.query_one("#syncas-select", Select).value
+        if sel is None or sel == self._AUTO:
+            self.dismiss("")  # auto-detect
+        else:
+            self.dismiss(str(sel))
 
 
 class DetailScreen(Screen):
@@ -253,7 +344,23 @@ class DetailScreen(Screen):
         )
 
     def action_sync_now(self) -> None:
-        self._action_worker("sync", "sync_now")
+        title = self.session.title if self.session else None
+        self.app.push_screen(
+            SyncAsScreen(title),
+            self._on_sync_as_picked,
+        )
+
+    def _on_sync_as_picked(self, choice: str | None | object) -> None:
+        # None = cancelled; "" = auto-detect; "<slug>" = explicit folder.
+        if choice is None:
+            return
+        meeting_type = str(choice)
+        if meeting_type:
+            self._action_worker(
+                "sync", "sync_now", meeting_type=meeting_type,
+            )
+        else:
+            self._action_worker("sync", "sync_now")
 
     def action_share_with_team(self) -> None:
         if self.session is None or not self.session.is_personal:

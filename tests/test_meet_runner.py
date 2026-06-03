@@ -328,3 +328,88 @@ def test_sync_forces_when_skipped(monkeypatch, tmp_path):
     assert rc == 0
     assert len(calls) == 2
     assert "--force" in calls[1]
+
+
+# ── explicit meeting_type override (v0.7.16 "sync as") ───────────────────────
+
+
+def test_sync_override_skips_detection_and_forces_folder(monkeypatch, tmp_path):
+    """An explicit meeting_type forces --force --meeting-type <slug> and does
+    NOT attempt schedule detection (no plain `sync` call first)."""
+    sd = _session_dir(tmp_path)
+    log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
+    monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: None)
+    calls = []
+
+    def fake_run_meet(args, **kwargs):
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
+    rc = meet_runner.sync(
+        sd, "01X", "blink", log_path, meeting_type="Post Scrum"
+    )
+    assert rc == 0
+    # Exactly one invocation: the forced override (no detection step).
+    assert len(calls) == 1
+    args = calls[0]
+    assert "--force" in args
+    i = args.index("--meeting-type")
+    # Slugified for path safety.
+    assert args[i + 1] == "post-scrum"
+
+
+def test_sync_passes_title_to_ensure_session_json(monkeypatch, tmp_path):
+    """sync() fetches the job title and forwards it to ensure_session_json."""
+    sd = _session_dir(tmp_path)
+    log_path = tmp_path / "job.log"
+    captured = {}
+
+    def fake_ensure(session_dir, session_id, title=None):
+        captured["title"] = title
+        return None
+
+    monkeypatch.setattr(meet_runner, "ensure_session_json", fake_ensure)
+    monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: "Weekly Sync")
+    monkeypatch.setattr(meet_runner, "run_meet", lambda *a, **k: 0)
+    meet_runner.sync(sd, "01X", "blink", log_path, meeting_type="x")
+    assert captured["title"] == "Weekly Sync"
+
+
+# ── title injection into session.json ────────────────────────────────────────
+
+
+def test_ensure_session_json_injects_title(monkeypatch, tmp_path):
+    import json
+    sd = _session_dir(tmp_path)
+    # Real ULID-ish id (26 chars) so the timestamp parse path runs.
+    sid = "01KT6BHZCM0000000000000000"
+    sj = meet_runner.ensure_session_json(sd, sid, title="Post Scrum")
+    data = json.loads(sj.read_text())
+    assert data["title"] == "Post Scrum"
+    assert data["session_id"] == sid
+
+
+def test_ensure_session_json_backfills_missing_title(tmp_path):
+    import json
+    sd = _session_dir(tmp_path)
+    sid = "01KT6BHZCM0000000000000000"
+    sj = sd / f"{sid}.session.json"
+    sj.write_text(json.dumps({"started_at": "2026-06-03T08:01:00+00:00",
+                              "source": "vezir", "session_id": sid}))
+    meet_runner.ensure_session_json(sd, sid, title="Dev Sync")
+    data = json.loads(sj.read_text())
+    assert data["title"] == "Dev Sync"
+
+
+def test_ensure_session_json_preserves_existing_title(tmp_path):
+    import json
+    sd = _session_dir(tmp_path)
+    sid = "01KT6BHZCM0000000000000000"
+    sj = sd / f"{sid}.session.json"
+    sj.write_text(json.dumps({"started_at": "2026-06-03T08:01:00+00:00",
+                              "title": "Original", "session_id": sid}))
+    meet_runner.ensure_session_json(sd, sid, title="Should Not Override")
+    data = json.loads(sj.read_text())
+    assert data["title"] == "Original"

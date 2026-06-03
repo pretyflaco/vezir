@@ -400,9 +400,15 @@ class VezirClient:
             json=body,
         )
 
-    def sync_now(self, session_id: str) -> ApiResult:
+    def sync_now(
+        self, session_id: str, meeting_type: str | None = None
+    ) -> ApiResult:
         # Legacy URL (no /api prefix); the Android client uses the same.
-        return self._post(f"/session/{quote(session_id, safe='')}/sync")
+        # ``meeting_type`` is the optional "sync as" folder override.
+        body = {"meeting_type": meeting_type} if meeting_type else None
+        return self._post(
+            f"/session/{quote(session_id, safe='')}/sync", json=body
+        )
 
     # ── artifacts ──
 

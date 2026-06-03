@@ -651,11 +651,17 @@ def retry_summary_for_session(
         meet_runner.cleanup_home_shim(session_id)
 
 
-def finalize_after_labeling(session_id: str) -> None:
+def finalize_after_labeling(
+    session_id: str, meeting_type_override: str | None = None
+) -> None:
     """Called when the web UI saves human labels.
 
     Re-runs `millet label` (with summary regeneration) via subprocess so the
     artifacts reflect the new names, then syncs, deletes audio, marks done.
+
+    ``meeting_type_override`` (from the "sync as" dialog / sync endpoint) is
+    threaded into :func:`meet_runner.sync` so the operator can force the
+    target folder instead of relying on schedule/title auto-detection.
     """
     sd = _session_dir(session_id)
     log_path = _job_log_path(session_id)
@@ -693,7 +699,10 @@ def finalize_after_labeling(session_id: str) -> None:
             )
         else:
             queue.update_status(session_id, "syncing")
-            rc = meet_runner.sync(sd, session_id, team_id, log_path)
+            rc = meet_runner.sync(
+                sd, session_id, team_id, log_path,
+                meeting_type=meeting_type_override,
+            )
             if rc != 0:
                 sync_err_msg = _error_with_tail(
                     f"millet sync exited {rc}", log_path,

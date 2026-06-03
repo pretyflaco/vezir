@@ -418,7 +418,9 @@ def _read_session_duration_seconds(session_dir: Path) -> float | None:
     return None
 
 
-def ensure_session_json(session_dir: Path, session_id: str) -> Path:
+def ensure_session_json(
+    session_dir: Path, session_id: str, title: str | None = None
+) -> Path:
     """Inject a `<session_id>.session.json` if one is not present.
 
     Meetscribe's `_date_from_session` (meet/sync.py:321) checks first the
@@ -436,10 +438,34 @@ def ensure_session_json(session_dir: Path, session_id: str) -> Path:
     the time sync runs).  Falls back to the ULID time when duration is
     unavailable.
 
+    When ``title`` is given it is injected as ``title`` so millet's
+    title-aware schedule matching (v0.12.5+) can decide whether an ad-hoc
+    titled meeting belongs in a scheduled folder or its own.  If the file
+    already exists but lacks a title, the title is merged in.
+
     Returns the session.json path, creating it from the ULID if needed.
     """
+    import json as _json
+
     sj = session_dir / f"{session_id}.session.json"
+    title = (title or "").strip() or None
     if sj.exists():
+        # Back-fill the title into a previously-injected file so the
+        # title-aware matching can engage on re-sync.
+        if title:
+            try:
+                existing = _json.loads(sj.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and not (
+                    existing.get("title") or ""
+                ).strip():
+                    existing["title"] = title
+                    config.secure_write_text(
+                        sj, _json.dumps(existing, indent=2)
+                    )
+            except Exception as exc:  # non-fatal back-fill
+                log.warning(
+                    "could not back-fill title into %s: %s", sj, exc
+                )
         return sj
 
     from datetime import datetime, timedelta, timezone
@@ -469,7 +495,8 @@ def ensure_session_json(session_dir: Path, session_id: str) -> Path:
         "session_id": session_id,
         "_note": note,
     }
-    import json as _json
+    if title:
+        payload["title"] = title
     config.secure_write_text(sj, _json.dumps(payload, indent=2))
     return sj
 
@@ -498,7 +525,13 @@ def _meeting_type_for(session_id: str, base: str = "sandbox") -> str:
     return f"{base}-{hms}Z-{rand}"
 
 
-def sync(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:
+def sync(
+    session_dir: Path,
+    job_id: str,
+    team_id: str,
+    log_path: Path,
+    meeting_type: str | None = None,
+) -> int:
     """Push session to the team's configured millet sync target.
 
     v0.7.0 hybrid approach (Option C):
@@ -516,10 +549,31 @@ def sync(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:
        ``sync_meeting_type`` column (default ``meeting``) for untitled
        sessions.
 
+    **Explicit override (v0.7.16):** when ``meeting_type`` is given (e.g.
+    from the "sync as" dialog or the ``/session/{id}/sync`` body), schedule
+    detection is skipped entirely and the session is force-synced straight
+    into ``meetings/<date>_<slug>/``.  The override is slugified for path
+    safety.
+
     The sync remote is wired through the HOME shim — see
     :func:`_resolve_team_sync_config`.
     """
-    ensure_session_json(session_dir, job_id)
+    title = _get_job_title(job_id)
+    ensure_session_json(session_dir, job_id, title=title)
+
+    # Explicit override: skip schedule detection, force the chosen folder.
+    if meeting_type:
+        slug = config.sync_slug(meeting_type) or meeting_type
+        log.info(
+            "job %s: explicit sync override; forcing --meeting-type %s",
+            job_id, slug,
+        )
+        return run_meet(
+            ["sync", "--force", "--meeting-type", slug, str(session_dir)],
+            job_id=job_id,
+            team_id=team_id,
+            log_path=log_path,
+        )
 
     # Step 1: try schedule-matched sync.
     rc1 = run_meet(
@@ -546,19 +600,19 @@ def sync(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:
         return rc1 if rc1 != 0 else 1
 
     # Step 2: no schedule match.  Retry with a title-based folder name.
-    title = _get_job_title(job_id)
+    # (``title`` was already fetched above for session.json injection.)
     base = _title_slug_for_sync(title) or _meeting_type_base_for_team(team_id)
-    meeting_type = _meeting_type_for(job_id, base=base)
+    fallback_type = _meeting_type_for(job_id, base=base)
     log.info(
         "job %s: no schedule match; retrying with --force "
         "--meeting-type %s",
-        job_id, meeting_type,
+        job_id, fallback_type,
     )
     return run_meet(
         [
             "sync",
             "--force",
-            "--meeting-type", meeting_type,
+            "--meeting-type", fallback_type,
             str(session_dir),
         ],
         job_id=job_id,

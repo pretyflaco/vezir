@@ -426,6 +426,67 @@ def test_sync_now_admits_sync_failed(client_and_token, tmp_data):
     assert resp.status_code == 200
 
 
+def test_sync_now_threads_meeting_type_override(client_and_token, tmp_data):
+    """A valid meeting_type body is slugified and threaded to the worker."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    captured = {}
+
+    def fake_thread(target, args, name, daemon):
+        captured["target"] = target
+        captured["args"] = args
+
+        class _T:
+            def start(self_inner):
+                pass
+        return _T()
+
+    with patch("vezir.server.sessions.threading.Thread", side_effect=fake_thread):
+        resp = client.post(
+            "/session/01TEST/sync",
+            headers=_bearer(token),
+            json={"meeting_type": "Post Scrum"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["meeting_type"] == "post-scrum"
+    # worker.finalize_after_labeling(session_id, meeting_type)
+    assert captured["args"] == ("01TEST", "post-scrum")
+
+
+def test_sync_now_rejects_unslugifiable_meeting_type(client_and_token, tmp_data):
+    """A meeting_type that slugifies to empty is a 422."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    with patch("vezir.server.worker.finalize_after_labeling"):
+        resp = client.post(
+            "/session/01TEST/sync",
+            headers=_bearer(token),
+            json={"meeting_type": "///"},
+        )
+    assert resp.status_code == 422
+
+
+def test_sync_now_no_body_is_auto(client_and_token, tmp_data):
+    """No body → meeting_type=None (auto-detect, current behavior)."""
+    client, token = client_and_token
+    _seed_session(tmp_data, "01TEST", status="done")
+    captured = {}
+
+    def fake_thread(target, args, name, daemon):
+        captured["args"] = args
+
+        class _T:
+            def start(self_inner):
+                pass
+        return _T()
+
+    with patch("vezir.server.sessions.threading.Thread", side_effect=fake_thread):
+        resp = client.post("/session/01TEST/sync", headers=_bearer(token))
+    assert resp.status_code == 200
+    assert resp.json()["meeting_type"] is None
+    assert captured["args"] == ("01TEST", None)
+
+
 def test_retry_summary_admits_sync_failed(client_and_token, tmp_data):
     """A sync_failed session admits a summary retry (with a language)."""
     client, token = client_and_token
@@ -475,3 +536,22 @@ def test_finalize_after_labeling_done_on_success(tmp_data):
 
     row = queue.get("01SYNCOK")
     assert row["status"] == "done"
+
+
+def test_finalize_after_labeling_passes_meeting_type_override(tmp_data):
+    """The meeting_type override is forwarded to meet_runner.sync."""
+    from vezir.server import worker
+    _seed_session(tmp_data, "01OVR", status="needs_labeling")
+    sd = tmp_data / "sessions" / "01OVR"
+    sd.mkdir(parents=True, exist_ok=True)
+
+    with patch("vezir.server.meet_runner.sync", return_value=0) as mock_sync, \
+         patch("vezir.server.meet_runner.cleanup_home_shim"), \
+         patch("vezir.server.worker._delete_audio"), \
+         patch("vezir.server.worker._sync_log_indicates_failure", return_value=None), \
+         patch("vezir.server.worker._find_artifacts", return_value={}):
+        worker.finalize_after_labeling("01OVR", meeting_type_override="post-scrum")
+
+    # Called as sync(sd, session_id, team_id, log_path, meeting_type=...)
+    _, kwargs = mock_sync.call_args
+    assert kwargs.get("meeting_type") == "post-scrum"

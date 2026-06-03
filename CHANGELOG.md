@@ -3,6 +3,36 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.16 — inject meeting title + explicit "sync as" folder override
+
+### Added
+
+* **Session `title` is now injected into `*.session.json`.**
+  `ensure_session_json` writes the meeting `title` (read from the job queue)
+  so millet v0.12.5's title-aware schedule matching can engage.  Previously
+  millet only saw `started_at`, so an ad-hoc titled meeting recorded *inside*
+  a schedule window (e.g. a "post-scrum" at 09:03 inside the 06:30–09:30
+  standup window) was misfiled as the scheduled meeting — and could overwrite
+  the genuine one in the shared folder.  A pre-existing session.json missing a
+  title is back-filled on (re-)sync.
+
+* **Explicit "sync as" folder override (end-to-end).**
+  * `POST /session/{id}/sync` accepts an optional JSON body
+    `{"meeting_type": "<slug>"}`; the value is slugified/validated server-side
+    (empty-after-slug → HTTP 422).
+  * `meet_runner.sync(..., meeting_type=...)` skips schedule/title detection
+    and force-syncs straight into `meetings/<date>_<slug>/`.
+  * `worker.finalize_after_labeling(session_id, meeting_type_override=...)`
+    threads the override through.
+  * Client `api.sync_now(session_id, meeting_type=None)` sends the body.
+  * TUI: the **Sync now** action now opens a `SyncAsScreen` dialog
+    (pre-filled with the title slug, plus an Auto-detect option and a custom
+    folder input).  Empty selection = current auto behavior (back-compat).
+
+### Notes
+
+* Requires millet **v0.12.5** (title-aware matching + collision guard).
+
 ## 0.7.11 — pre-fill recognized speaker names in the labeling screen
 
 ### Added

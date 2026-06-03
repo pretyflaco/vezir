@@ -1409,3 +1409,78 @@ async def test_preset_picker_cancel_returns_none(app, mock_server):
         app.screen.query_one("#cancel-btn", Button).press()
         await pilot.pause(0.1)
     assert result["value"] is None
+
+
+# ─── "sync as" folder-override dialog (v0.7.16) ──────────────────────────────
+
+
+async def test_sync_as_default_returns_empty_auto(app, mock_server):
+    """Confirming with the prefilled selection (Auto) returns '' (auto-detect)."""
+    from textual.widgets import Button
+
+    from vezir.client.tui.detail_screen import SyncAsScreen
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(SyncAsScreen("Post Scrum"), _capture)
+        await pilot.pause(0.1)
+        # Don't touch the input → Select stays on Auto-detect.
+        app.screen.query_one("#confirm-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] == ""
+
+
+async def test_sync_as_custom_input_returns_slug(app, mock_server):
+    """A typed custom folder is slugified and returned, overriding the Select."""
+    from textual.widgets import Button, Input
+
+    from vezir.client.tui.detail_screen import SyncAsScreen
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(SyncAsScreen("Post Scrum"), _capture)
+        await pilot.pause(0.1)
+        app.screen.query_one("#syncas-input", Input).value = "Weekly Sync"
+        await pilot.pause(0.1)
+        app.screen.query_one("#confirm-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] == "weekly-sync"
+
+
+async def test_sync_as_select_title_returns_title_slug(app, mock_server):
+    """Choosing the Title option (no custom input) returns the title slug."""
+    from textual.widgets import Button, Select
+
+    from vezir.client.tui.detail_screen import SyncAsScreen
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(SyncAsScreen("Post Scrum"), _capture)
+        await pilot.pause(0.1)
+        app.screen.query_one("#syncas-select", Select).value = "post-scrum"
+        await pilot.pause(0.1)
+        app.screen.query_one("#confirm-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] == "post-scrum"
+
+
+async def test_sync_as_cancel_returns_none(app, mock_server):
+    from textual.widgets import Button
+
+    from vezir.client.tui.detail_screen import SyncAsScreen
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(SyncAsScreen("Post Scrum"), _capture)
+        await pilot.pause(0.1)
+        app.screen.query_one("#cancel-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] is None

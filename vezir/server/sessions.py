@@ -11,7 +11,7 @@ import json
 import logging
 import threading
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -141,9 +141,17 @@ def artifact(
     return FileResponse(p, filename=name)
 
 
+class _SyncBody(BaseModel):
+    # Optional explicit folder override ("sync as").  When set, schedule/title
+    # auto-detection is skipped and the session is force-synced into
+    # meetings/<date>_<slug>/.  Slugified server-side for path safety.
+    meeting_type: str | None = None
+
+
 @router.post("/session/{session_id}/sync")
 def sync_now(
     session_id: str,
+    body: _SyncBody | None = Body(default=None),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Retroactively sync a previously local-only session to git.
@@ -155,6 +163,10 @@ def sync_now(
       1. Sets the queue row's `sync_enabled = 1`
       2. Runs `millet sync` via the existing worker.finalize_after_labeling
          flow (in a background thread, like the labeling submit handler)
+
+    Optional JSON body ``{"meeting_type": "<slug>"}`` forces the target
+    folder (the "sync as" override).  It is validated/slugified server-side;
+    a value that slugifies to empty is rejected (422).
 
     Refuses if the session is in a status that doesn't admit retroactive
     sync (e.g. `error`, `transcribing`, `needs_labeling`).  Re-syncing a
@@ -173,17 +185,35 @@ def sync_now(
             "wait for transcription/labeling to complete first",
         )
 
+    meeting_type: str | None = None
+    if body is not None and body.meeting_type is not None:
+        raw = body.meeting_type.strip()
+        if raw:
+            meeting_type = config.sync_slug(raw)
+            if not meeting_type:
+                raise HTTPException(
+                    422,
+                    f"meeting_type '{raw}' is not a valid folder name",
+                )
+
     queue.set_sync_enabled(session_id, True)
-    log.info("session=%s retroactive sync requested by %s", session_id, github)
+    log.info(
+        "session=%s retroactive sync requested by %s (meeting_type=%s)",
+        session_id, github, meeting_type,
+    )
 
     threading.Thread(
         target=worker.finalize_after_labeling,
-        args=(session_id,),
+        args=(session_id, meeting_type),
         name=f"sync-now-{session_id}",
         daemon=True,
     ).start()
 
-    return {"session_id": session_id, "queued": True}
+    return {
+        "session_id": session_id,
+        "queued": True,
+        "meeting_type": meeting_type,
+    }
 
 
 # ── retry summary ────────────────────────────────────────────────────────────
