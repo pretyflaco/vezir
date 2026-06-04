@@ -89,9 +89,21 @@ def download_session_artifacts(
                 session.id, server_name, result.error_message(),
             )
 
-    # Write session metadata so the directory is self-describing.
+    # Write session metadata so the directory is self-describing.  Upgrade a
+    # minimal upload-time stub ("created_by": "vezir-upload") to the full
+    # record, since auto-download has the richer server-side fields.
     meta_path = dest_dir / "session.json"
-    if not meta_path.exists() or overwrite:
+    is_upload_stub = False
+    if meta_path.exists():
+        try:
+            _existing = json.loads(meta_path.read_text(encoding="utf-8"))
+            is_upload_stub = (
+                isinstance(_existing, dict)
+                and _existing.get("created_by") == "vezir-upload"
+            )
+        except Exception:
+            is_upload_stub = False
+    if not meta_path.exists() or overwrite or is_upload_stub:
         meta = {
             "session_id": session.id,
             "title": session.title,

@@ -252,6 +252,107 @@ def test_find_local_team_specific_takes_precedence(tmp_path, monkeypatch):
     assert result == right
 
 
+# ── pull.record_uploaded_session (upload-time bridge) ────────────────────────
+
+
+def test_record_uploaded_session_writes_session_json_and_manifest(tmp_path):
+    from vezir.client.pull import find_local_session_dir, record_uploaded_session
+
+    team_dir = tmp_path / "blink"
+    rec = team_dir / "meeting-20260604-153156_STABLESATS_BRAINSTORM"
+    rec.mkdir(parents=True)
+    # Simulate a fresh recording dir: audio only, no session.json.
+    (rec / "meeting-20260604-153156.ogg").write_bytes(b"\x00")
+
+    record_uploaded_session(rec, "01UPLOAD", title="Stablesats Brainstorm",
+                            team_id="blink")
+
+    meta = json.loads((rec / "session.json").read_text())
+    assert meta["session_id"] == "01UPLOAD"
+    assert meta["created_by"] == "vezir-upload"
+    # Manifest in the parent (team) dir maps session -> this dir.
+    manifest = json.loads((team_dir / ".pull-manifest.json").read_text())
+    assert manifest["01UPLOAD"] == rec.name
+
+    # And the dir is now discoverable -> no duplicate pull later.
+    from vezir import config
+
+    def _rec_dir(team_id=None):
+        return team_dir
+    config_recordings_dir = config.recordings_dir
+    try:
+        config.recordings_dir = _rec_dir  # type: ignore[assignment]
+        assert find_local_session_dir("01UPLOAD", "blink") == rec
+    finally:
+        config.recordings_dir = config_recordings_dir  # type: ignore[assignment]
+
+
+def test_record_uploaded_session_idempotent_and_nonclobbering(tmp_path):
+    from vezir.client.pull import record_uploaded_session
+
+    rec = tmp_path / "blink" / "meeting-20260604-153156_X"
+    rec.mkdir(parents=True)
+    # A pre-existing (richer) session.json must NOT be clobbered.
+    (rec / "session.json").write_text(json.dumps({
+        "session_id": "01UPLOAD", "title": "X", "created_by": "vezir",
+        "status": "done",
+    }))
+    record_uploaded_session(rec, "01UPLOAD", title="X", team_id="blink")
+    meta = json.loads((rec / "session.json").read_text())
+    # Existing file preserved (still has the richer 'status' field).
+    assert meta["status"] == "done"
+    assert meta["created_by"] == "vezir"
+
+
+def test_record_uploaded_session_noops_on_missing_dir(tmp_path):
+    from vezir.client.pull import record_uploaded_session
+    # Should not raise when the dir doesn't exist or id is empty.
+    record_uploaded_session(tmp_path / "nope", "01X")
+    record_uploaded_session(tmp_path, "")
+
+
+# ── artifacts.download_session_artifacts upgrades upload stub ─────────────────
+
+
+def test_download_artifacts_upgrades_upload_stub(tmp_path, monkeypatch):
+    """An upload-time stub session.json is upgraded to the full record on
+    auto-download; a non-stub user file is left alone."""
+    from vezir.client.artifacts import download_session_artifacts
+
+    class _FakeResult:
+        def is_ok(self):
+            return True
+
+    class _FakeApi:
+        def save_artifact(self, sid, name, dest):
+            Path(dest).write_text("x")
+            return _FakeResult()
+
+    class _S:
+        id = "01UPLOAD"
+        title = "Stablesats"
+        status = "done"
+        github = "alice"
+        created_at = "2026-06-04T15:31:00Z"
+        team_id = "blink"
+        artifacts = {"summary": "x.summary.md"}
+
+    dest = tmp_path / "rec"
+    dest.mkdir()
+    # Pre-existing upload stub.
+    (dest / "session.json").write_text(json.dumps({
+        "session_id": "01UPLOAD", "created_by": "vezir-upload",
+    }))
+    download_session_artifacts(_FakeApi(), _S(), dest)
+    meta = json.loads((dest / "session.json").read_text())
+    # Upgraded: the stub is replaced by the full record (server-side fields
+    # present, and "created_by: vezir-upload" is gone — now "pulled_by").
+    assert meta["status"] == "done"
+    assert meta["github"] == "alice"
+    assert meta.get("pulled_by") == "vezir"
+    assert "created_by" not in meta
+
+
 # ── meet_runner._sync_log_shows_push ─────────────────────────────────────────
 
 

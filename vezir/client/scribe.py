@@ -512,7 +512,10 @@ def run_scribe(
     if compress and audio.suffix.lower() == ".wav":
         before = audio.stat().st_size
         print("vezir: compressing WAV to OGG/Opus before upload ...", flush=True)
-        audio = uploader.compress_wav_for_upload(audio, keep_wav=True)
+        # keep_wav=False: the OGG (opus 48k) is the local audio archive and
+        # the upload artifact; the raw WAV is never reused, so don't persist
+        # it (it is ~10x larger than the OGG).
+        audio = uploader.compress_wav_for_upload(audio, keep_wav=False)
         after = audio.stat().st_size
         ratio = before / after if after else 0
         print(
@@ -567,6 +570,16 @@ def run_scribe(
         raise
     print(flush=True)
     print(f"vezir: uploaded as session {result['session_id']}", flush=True)
+    # Bridge the local recording dir to the server session immediately so a
+    # later `vezir pull` / "open folder" reuses THIS folder rather than
+    # creating a differently-timestamped duplicate.
+    try:
+        from .pull import record_uploaded_session
+        record_uploaded_session(
+            session_dir, result["session_id"], title=title, team_id=team_id,
+        )
+    except Exception as exc:
+        log.warning("could not write upload session.json: %s", exc)
     # v0.7.0: no dashboard URL.  Print a TUI hint instead so users
     # know how to track the session.
     print(

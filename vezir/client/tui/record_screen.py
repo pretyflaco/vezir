@@ -869,8 +869,11 @@ class RecordBody(Vertical):
 
         try:
             if audio_path.suffix.lower() == ".wav":
+                # keep_wav=False: drop the raw PCM once compressed.  The OGG
+                # (opus 48k, transparent for speech) is the local audio
+                # archive and the upload artifact; the WAV is never reused.
                 audio_path = uploader.compress_wav_for_upload(
-                    audio_path, keep_wav=True,
+                    audio_path, keep_wav=False,
                 )
         except Exception as exc:
             self.post_message(UploadFailed(
@@ -924,8 +927,23 @@ class RecordBody(Vertical):
             ))
             return
 
+        session_id = result.get("session_id", "")
+        # Bridge the local recording dir to the server session immediately:
+        # write a minimal session.json so a later "open folder" (which calls
+        # find_local_session_dir) reuses THIS folder instead of pulling the
+        # artifacts into a new, differently-timestamped duplicate folder.
+        if session_id:
+            try:
+                from ..pull import record_uploaded_session
+                record_uploaded_session(
+                    audio_path.parent, session_id, title=title,
+                    team_id=team_id,
+                )
+            except Exception as exc:
+                log.warning("could not write upload session.json: %s", exc)
+
         self.post_message(UploadFinished(
-            session_id=result.get("session_id", ""),
+            session_id=session_id,
             gen=gen,
         ))
 

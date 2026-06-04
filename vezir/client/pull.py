@@ -56,6 +56,53 @@ def _save_manifest(output_dir: Path, manifest: dict) -> None:
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
+def record_uploaded_session(
+    session_dir: Path,
+    session_id: str,
+    *,
+    title: str | None = None,
+    team_id: str | None = None,
+) -> None:
+    """Bridge a just-uploaded local recording dir to its server session.
+
+    Writes a minimal ``session.json`` into ``session_dir`` (if one isn't
+    already there) and registers the session in the team's pull manifest.
+    This is what lets a later ``find_local_session_dir`` / "open folder"
+    reuse the existing recording folder instead of pulling the artifacts
+    into a new, differently-timestamped duplicate folder.
+
+    Best-effort and idempotent; failures are swallowed by the caller.
+    """
+    if not session_id or session_dir is None:
+        return
+    session_dir = Path(session_dir)
+    if not session_dir.is_dir():
+        return
+
+    meta_path = session_dir / "session.json"
+    if not meta_path.exists():
+        meta = {
+            "session_id": session_id,
+            "title": title,
+            "team_id": team_id,
+            "created_by": "vezir-upload",
+        }
+        meta_path.write_text(
+            json.dumps(meta, indent=2, default=str), encoding="utf-8",
+        )
+
+    # Register in the team's pull manifest (keyed by the parent dir) so the
+    # pull path also treats this session as already-local.
+    try:
+        output_dir = session_dir.parent
+        manifest = _load_manifest(output_dir)
+        if manifest.get(session_id) != session_dir.name:
+            manifest[session_id] = session_dir.name
+            _save_manifest(output_dir, manifest)
+    except Exception as exc:  # non-fatal: session.json alone is enough
+        log.debug("could not update pull manifest for %s: %s", session_id, exc)
+
+
 def _dirname_for_session(session: Session) -> str:
     """Derive a ``meeting-YYYYMMDD-HHMMSS_TITLE`` directory name from session metadata."""
     # Parse created_at (ISO 8601 UTC) -> local-ish timestamp for the dirname.

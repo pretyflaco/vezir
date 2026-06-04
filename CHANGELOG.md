@@ -3,6 +3,36 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.18 — stop persisting raw WAVs; no more duplicate folders on "open folder"
+
+### Changed
+
+* **Raw WAV is no longer kept after compression.**  `vezir scribe` and the
+  TUI recorder now compress to OGG/Opus with `keep_wav=False`.  The OGG (opus
+  48k, transparent for speech) is the local audio archive and the upload
+  artifact; the raw PCM WAV — ~10x larger — was never reused and is dropped
+  once the OGG exists.  (Use `millet record` directly if you need raw PCM.)
+
+### Fixed
+
+* **"Open folder" (`f`) no longer creates a duplicate meeting folder.**  A
+  local recording was only linked to its server session by a `session.json`
+  written at auto-download time; if that never happened (session went to
+  `needs_labeling`, or the TUI moved off the Record tab), pressing `f` later
+  found no local folder and pulled the artifacts into a *new*,
+  differently-timestamped folder (the pull uses the server `created_at`, the
+  recording uses the local start time).  Now a minimal `session.json` (plus a
+  `.pull-manifest.json` entry) is written into the recording dir **at upload
+  time**, so the folder is found and reused.  Auto-download upgrades that stub
+  to the full record.  New helper: `pull.record_uploaded_session`.
+
+### Notes
+
+* Operator cleanup performed on muscle alongside this release: 10 pre-existing
+  duplicate folders merged (artifacts folded into the recording dir, pulled
+  copy removed), and 3.8 GB of stale raw WAVs + ffmpeg logs reclaimed across
+  all team meeting dirs.
+
 ## 0.7.17 — re-run auto-labeling after voiceprint (re)seeding (vezir relabel)
 
 ### Added
