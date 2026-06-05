@@ -403,11 +403,38 @@ class DetailScreen(Screen):
         return find_local_session_dir(self.session_id, team_id)
 
     def action_open_folder(self) -> None:
-        """Open the local meeting artifacts folder in the OS file manager."""
+        """Open the local meeting artifacts folder in the OS file manager.
+
+        If the folder exists but is missing artifacts the server has (e.g. a
+        local recording whose auto-download never completed because the TUI
+        was closed mid-processing), download them first so the folder opens
+        complete.  This makes "open folder" self-healing again — the
+        upload-time session.json bridge (0.7.18) otherwise let an
+        artifact-less recording folder be "found" and opened as-is.
+        """
         local = self._resolve_local_dir()
         if local is None:
             self._offer_pull()
             return
+        # Self-heal: fetch any artifacts the server has but the folder lacks,
+        # then open.  Done in a worker so the UI doesn't block on the network.
+        if self.session is not None:
+            from ..pull import missing_server_artifacts
+            try:
+                missing = missing_server_artifacts(self.session, local)
+            except Exception:
+                missing = []
+            if missing:
+                self.notify(
+                    f"Folder incomplete — downloading {len(missing)} "
+                    "artifact(s)...",
+                    severity="information", timeout=4,
+                )
+                self._heal_and_open_worker(local)
+                return
+        self._open_in_file_manager(local)
+
+    def _open_in_file_manager(self, local: Path) -> None:
         import shutil
         import subprocess
         import sys
@@ -429,6 +456,20 @@ class DetailScreen(Screen):
             self.notify(f"Opened {local.name}", severity="information", timeout=4)
         except Exception as exc:
             self.notify(f"Could not open folder: {exc}", severity="error")
+
+    @work(thread=True, exclusive=True, group="pull")
+    def _heal_and_open_worker(self, local: Path) -> None:
+        """Download missing artifacts into an existing folder, then open it."""
+        from ..artifacts import download_session_artifacts
+        try:
+            download_session_artifacts(self.app.api, self.session, local)
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.notify, f"Artifact download failed: {exc}",
+                severity="error",
+            )
+            return
+        self.app.call_from_thread(self._open_in_file_manager, local)
 
     def action_copy_path(self) -> None:
         """Copy the local meeting artifacts path to the clipboard."""

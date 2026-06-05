@@ -3,6 +3,28 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.19 — fix incomplete folder on "open folder" (0.7.18 regression)
+
+### Fixed
+
+* **"Open folder" (`f`) could open an artifact-less folder.**  0.7.18 wrote a
+  `session.json` stub into the recording dir at upload time so the folder is
+  found (no duplicate) — but if the Record-tab auto-download never completed
+  (TUI closed or moved off the tab during the minutes the server takes to
+  process), the folder was *found but empty of artifacts*, and pressing `f`
+  opened it as-is.  Three changes fix this:
+  * **`open folder` now self-heals.**  When the found folder is missing
+    artifacts the server has, they're downloaded into it (in a worker) before
+    it opens — so the folder always opens complete.
+  * **`record_uploaded_session` no longer writes the pull manifest.**  The
+    manifest means "artifacts downloaded here"; writing it at upload time made
+    `vezir pull` skip the session and leave the folder permanently empty.  The
+    `session.json` stub (which prevents duplicates) is still written.
+  * **`vezir pull` re-pulls incomplete folders.**  A manifest entry pointing
+    at a folder that lacks artifacts no longer blocks the download; the
+    artifacts are fetched into the existing folder (no duplicate).
+* New helpers: `pull.missing_server_artifacts`, `pull._dir_has_artifacts`.
+
 ## 0.7.18 — stop persisting raw WAVs; no more duplicate folders on "open folder"
 
 ### Changed

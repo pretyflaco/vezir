@@ -32,7 +32,7 @@ from pathlib import Path
 
 from .. import config
 from .api import Session, VezirClient
-from .artifacts import download_session_artifacts
+from .artifacts import _friendly_name, download_session_artifacts
 
 log = logging.getLogger("vezir.client.pull")
 
@@ -66,10 +66,16 @@ def record_uploaded_session(
     """Bridge a just-uploaded local recording dir to its server session.
 
     Writes a minimal ``session.json`` into ``session_dir`` (if one isn't
-    already there) and registers the session in the team's pull manifest.
-    This is what lets a later ``find_local_session_dir`` / "open folder"
-    reuse the existing recording folder instead of pulling the artifacts
-    into a new, differently-timestamped duplicate folder.
+    already there).  This is what lets a later ``find_local_session_dir`` /
+    "open folder" reuse the existing recording folder instead of pulling the
+    artifacts into a new, differently-timestamped duplicate folder.
+
+    It deliberately does NOT touch ``.pull-manifest.json``: the manifest means
+    "artifacts have been downloaded here", which is not yet true at upload
+    time (only the stub exists).  Marking it pulled here would make ``vezir
+    pull`` skip the session and leave the folder permanently artifact-less.
+    The manifest is written by the actual download path (auto-download in the
+    Record tab, ``vezir pull``, or the "open folder" self-heal).
 
     Best-effort and idempotent; failures are swallowed by the caller.
     """
@@ -91,16 +97,32 @@ def record_uploaded_session(
             json.dumps(meta, indent=2, default=str), encoding="utf-8",
         )
 
-    # Register in the team's pull manifest (keyed by the parent dir) so the
-    # pull path also treats this session as already-local.
-    try:
-        output_dir = session_dir.parent
-        manifest = _load_manifest(output_dir)
-        if manifest.get(session_id) != session_dir.name:
-            manifest[session_id] = session_dir.name
-            _save_manifest(output_dir, manifest)
-    except Exception as exc:  # non-fatal: session.json alone is enough
-        log.debug("could not update pull manifest for %s: %s", session_id, exc)
+
+def _dir_has_artifacts(session_dir: Path) -> bool:
+    """True if the folder contains downloaded meeting artifacts.
+
+    Artifacts are saved under friendly names (``summary.md``,
+    ``transcript.{txt,srt,pdf,json}``).  A folder with only the audio +
+    ``session.json`` stub (written at upload time) does NOT count — the
+    artifacts still need downloading.
+    """
+    if not session_dir.is_dir():
+        return False
+    if (session_dir / "summary.md").exists():
+        return True
+    return any(session_dir.glob("transcript.*"))
+
+
+def missing_server_artifacts(session: Session, session_dir: Path) -> list[str]:
+    """Return the friendly artifact filenames the server has but disk lacks."""
+    if not session_dir.is_dir():
+        return [_friendly_name(n) for n in (session.artifacts or {}).values()]
+    missing = []
+    for server_name in (session.artifacts or {}).values():
+        friendly = _friendly_name(server_name)
+        if not (session_dir / friendly).exists():
+            missing.append(friendly)
+    return missing
 
 
 def _dirname_for_session(session: Session) -> str:
@@ -264,15 +286,17 @@ def pull_team_sessions(
     pulled = 0
 
     for session in pullable:
-        # Already pulled?
+        # Already pulled?  Only skip when the mapped folder actually holds
+        # artifacts — a manifest entry for an artifact-less folder (or a stale
+        # entry) must NOT block re-downloading the missing files.
         if session.id in manifest:
             existing = output_dir / manifest[session.id]
-            if existing.is_dir():
+            if existing.is_dir() and _dir_has_artifacts(existing):
                 log.debug("skip already-pulled %s", session.id)
                 continue
 
         # Check if a directory for this session already exists on disk
-        # (e.g. local recording that already has a session.json).
+        # (e.g. local recording that already has a session.json stub).
         existing_dir = _find_existing_dir(output_dir, session)
         if existing_dir is not None:
             dest_dir = existing_dir

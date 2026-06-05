@@ -255,7 +255,7 @@ def test_find_local_team_specific_takes_precedence(tmp_path, monkeypatch):
 # ── pull.record_uploaded_session (upload-time bridge) ────────────────────────
 
 
-def test_record_uploaded_session_writes_session_json_and_manifest(tmp_path):
+def test_record_uploaded_session_writes_stub_not_manifest(tmp_path, monkeypatch):
     from vezir.client.pull import find_local_session_dir, record_uploaded_session
 
     team_dir = tmp_path / "blink"
@@ -270,21 +270,14 @@ def test_record_uploaded_session_writes_session_json_and_manifest(tmp_path):
     meta = json.loads((rec / "session.json").read_text())
     assert meta["session_id"] == "01UPLOAD"
     assert meta["created_by"] == "vezir-upload"
-    # Manifest in the parent (team) dir maps session -> this dir.
-    manifest = json.loads((team_dir / ".pull-manifest.json").read_text())
-    assert manifest["01UPLOAD"] == rec.name
+    # The manifest must NOT be written at upload time — it means "artifacts
+    # downloaded", which isn't true yet (only the stub exists).
+    assert not (team_dir / ".pull-manifest.json").exists()
 
-    # And the dir is now discoverable -> no duplicate pull later.
+    # The dir is still discoverable via session.json -> no duplicate pull.
     from vezir import config
-
-    def _rec_dir(team_id=None):
-        return team_dir
-    config_recordings_dir = config.recordings_dir
-    try:
-        config.recordings_dir = _rec_dir  # type: ignore[assignment]
-        assert find_local_session_dir("01UPLOAD", "blink") == rec
-    finally:
-        config.recordings_dir = config_recordings_dir  # type: ignore[assignment]
+    monkeypatch.setattr(config, "recordings_dir", lambda team_id=None: team_dir)
+    assert find_local_session_dir("01UPLOAD", "blink") == rec
 
 
 def test_record_uploaded_session_idempotent_and_nonclobbering(tmp_path):
@@ -309,6 +302,100 @@ def test_record_uploaded_session_noops_on_missing_dir(tmp_path):
     # Should not raise when the dir doesn't exist or id is empty.
     record_uploaded_session(tmp_path / "nope", "01X")
     record_uploaded_session(tmp_path, "")
+
+
+# ── artifact-completeness helpers (0.7.19) ───────────────────────────────────
+
+
+def test_dir_has_artifacts(tmp_path):
+    from vezir.client.pull import _dir_has_artifacts
+
+    # Stub-only recording dir (audio + session.json, no artifacts).
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "meeting-x.ogg").write_bytes(b"\x00")
+    (rec / "session.json").write_text("{}")
+    assert _dir_has_artifacts(rec) is False
+
+    (rec / "summary.md").write_text("# summary")
+    assert _dir_has_artifacts(rec) is True
+
+    # transcript.* alone also counts.
+    rec2 = tmp_path / "rec2"
+    rec2.mkdir()
+    (rec2 / "transcript.txt").write_text("hi")
+    assert _dir_has_artifacts(rec2) is True
+
+
+def test_missing_server_artifacts(tmp_path):
+    from vezir.client.pull import missing_server_artifacts
+
+    class _S:
+        artifacts = {
+            "summary": "01X.summary.md",
+            "txt": "01X.txt",
+            "pdf": "01X.pdf",
+        }
+
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "summary.md").write_text("x")  # only summary present locally
+    missing = missing_server_artifacts(_S(), rec)
+    assert "summary.md" not in missing
+    assert "transcript.txt" in missing
+    assert "transcript.pdf" in missing
+
+
+def test_pull_repulls_when_manifest_folder_lacks_artifacts(tmp_path, monkeypatch):
+    """A manifest entry pointing at an artifact-less folder must NOT block the
+    download — the regression that left upload-bridged folders empty."""
+    from vezir import config
+    from vezir.client import pull as pull_mod
+
+    team_dir = tmp_path / "blink"
+    rec = team_dir / "meeting-20260605-123757_STARTUPS_ORG"
+    rec.mkdir(parents=True)
+    (rec / "meeting-x.ogg").write_bytes(b"\x00")
+    (rec / "session.json").write_text(json.dumps({"session_id": "01INCOMPLETE"}))
+    # Stale manifest entry says "pulled" though no artifacts are on disk.
+    (team_dir / ".pull-manifest.json").write_text(
+        json.dumps({"01INCOMPLETE": rec.name})
+    )
+
+    class _S:
+        id = "01INCOMPLETE"
+        status = "done"
+        title = "Startups Org"
+        github = "alice"
+        created_at = "2026-06-05T10:22:18Z"
+        team_id = "blink"
+        artifacts = {"summary": "01INCOMPLETE.summary.md"}
+
+    class _Result:
+        def is_ok(self):
+            return True
+        ok = _S()
+
+    class _Api:
+        def get_session(self, sid):
+            return _Result()
+
+    monkeypatch.setattr(config, "recordings_dir", lambda team_id=None: team_dir)
+
+    downloaded = {}
+
+    def fake_download(api, session, dest_dir, *, overwrite=False):
+        (dest_dir / "summary.md").write_text("# summary")
+        downloaded["dest"] = dest_dir
+        return [dest_dir / "summary.md"]
+
+    monkeypatch.setattr(pull_mod, "download_session_artifacts", fake_download)
+
+    n = pull_mod.pull_team_sessions(_Api(), session_id="01INCOMPLETE")
+    assert n == 1
+    # Downloaded INTO the existing recording folder (no duplicate).
+    assert downloaded["dest"] == rec
+    assert (rec / "summary.md").exists()
 
 
 # ── artifacts.download_session_artifacts upgrades upload stub ─────────────────
