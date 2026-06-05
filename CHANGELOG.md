@@ -101,6 +101,78 @@ Notable changes per release. Format loosely follows
 
 * Requires millet **v0.12.5** (title-aware matching + collision guard).
 
+## 0.7.15 — default-language passthrough + sync-flow hardening
+
+Pairs with millet 0.12.4.
+
+### Added
+
+* **Per-team default language.**  `build_transcribe_args` passes
+  `--default-language` from the team's `sync_config.json`
+  (`default_language`) or the global `VEZIR_MILLET_DEFAULT_LANGUAGE`,
+  preventing summary-language drift for single-language teams (blink set to
+  `en`).
+
+### Fixed
+
+* **Duplicate-folder guard.**  `meet_runner.sync` only falls through to
+  `--force --meeting-type` when step 1 was genuinely *Skipped* (no schedule
+  match).  A schedule match that merely failed to push no longer
+  force-creates a duplicate folder (`_sync_log_shows_skipped`).
+* **`sync_failed` status.**  The explicit sync paths (Sync now / post-label
+  finalize) set `status=sync_failed` when the push fails — surfaced as a red
+  badge — while the main transcribe pipeline keeps `done` + a sync-error
+  note.
+
+## 0.7.14 — choose summary language in retry-summary
+
+Pairs with millet 0.12.3.  Lets a user regenerate a session's summary in a
+chosen language, saved **alongside** the original auto-detected summary.
+
+### Added
+
+* `POST /api/sessions/{id}/retry-summary` accepts an optional `language`
+  (Auto + en/de/fr/es/tr/fa).  The "summary already succeeded" guard is
+  relaxed ONLY when a real language override is supplied, so a completed
+  session can get an additional-language summary (`auto` is not an override).
+* `worker.retry_summary_for_session` passes `language_override` →
+  `apply_labels(summary_language=...)`; language-aware success check.
+* `_find_artifacts` exposes per-language summaries as `summary_<lang>` and
+  resolves the real transcript JSON over frontmatter/autoid sidecars.
+* TUI `PresetPickerScreen` gains a language selector; returns
+  `(preset, language)`.
+
+## 0.7.13 — fix 'Open folder' for recorded sessions (slug/UUID mismatch)
+
+### Fixed
+
+* Recordings are written under the team **slug**
+  (`~/vezir-meetings/<slug>/`), but the TUI looked them up by the server
+  team **UUID**, building a nonexistent `~/vezir-meetings/<uuid>/` and
+  reporting "No artifacts available".
+  * `find_local_session_dir`: global-scan fallback across all team subdirs
+    for a `session.json` matching the id (robust to the slug/UUID split).
+  * `app.team_slug_for()`: map a server UUID → on-disk slug via cached
+    `/api/me` memberships.
+  * `detail_screen._resolve_local_dir`: translate `session.team_id`
+    UUID→slug before lookup (fixes both `f` open-folder and `d` copy-path).
+
+## 0.7.12 — fix Label Speakers crash + clip fetch for named speakers
+
+Once voiceprint auto-labeling persists matched names into the transcript,
+the labeling screen receives real names (e.g. "Juan Pablo") instead of
+placeholder ids — which exposed three latent bugs.
+
+### Fixed
+
+* **TUI `BadIdentifier` crash**: widget ids built as `play-{sid}` /
+  `input-{sid}` broke on names with spaces.  Now index-based ids with a
+  `_row_sid` map.
+* **Clip endpoint 400**: `^[A-Za-z0-9_]+$` rejected spaced names.  Now a
+  path-safety guard (`_is_safe_clip_id`) + slugified cache filename
+  (`_safe_clip_filename`).
+* **Fragile clip filenames**: temp/cache names now slug+sha1 derived.
+
 ## 0.7.11 — pre-fill recognized speaker names in the labeling screen
 
 ### Added
