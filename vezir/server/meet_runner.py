@@ -232,6 +232,13 @@ def _env_for_meet(home: Path, team_id: str) -> dict:
     # lives, in addition to the symlink in the HOME shim.  The env var is
     # respected by millet >=0.8.2's _default_profiles_path().
     env["MEET_PROFILES_PATH"] = str(config.team_speaker_profiles_path(team_id))
+    # Force offline use of the locally-cached HuggingFace models (the pyannote
+    # diarization model is downloaded once and cached under ~/.cache).  Without
+    # this, every diarization load makes a network HEAD request to
+    # huggingface.co to check freshness; on a host with flaky DNS that adds
+    # latency and noisy retries (and could stall).  The model is always cached
+    # by the time transcription runs, so offline mode is safe and faster.
+    env["HF_HUB_OFFLINE"] = "1"
     return env
 
 

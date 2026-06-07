@@ -3,6 +3,21 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.20 — offline HF models; require millet 0.12.6 (in-room speaker fix)
+
+### Changed
+
+* **Force `HF_HUB_OFFLINE=1` for the millet subprocess.**  The pyannote
+  diarization model is cached locally after first download, but each load
+  otherwise makes a network HEAD request to huggingface.co to check
+  freshness — which adds latency and noisy retries on a host with flaky DNS.
+  The worker now runs millet with `HF_HUB_OFFLINE=1` so it uses the cached
+  model directly (faster, no network dependency at diarization time).
+* **Requires millet-pipeline >= 0.12.6**, which fixes in-room multi-speaker
+  collapse: a stereo recording where several people share the mic (system
+  channel silent/duplicate) now falls back to mono diarization and splits the
+  in-room speakers instead of merging them into one.
+
 ## 0.7.19 — fix incomplete folder on "open folder" (0.7.18 regression)
 
 ### Fixed

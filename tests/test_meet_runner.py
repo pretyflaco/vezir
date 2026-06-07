@@ -5,6 +5,19 @@ from pathlib import Path
 from vezir.server import meet_runner
 
 
+def test_env_for_meet_sets_hf_hub_offline(tmp_path, monkeypatch):
+    """The millet subprocess env forces offline HF model use so diarization
+    doesn't make a network HEAD request on every load."""
+    monkeypatch.setattr(
+        meet_runner.config, "team_speaker_profiles_path",
+        lambda team_id: tmp_path / f"{team_id}.json",
+    )
+    env = meet_runner._env_for_meet(tmp_path / "HOME", "blink")
+    assert env["HF_HUB_OFFLINE"] == "1"
+    assert env["HOME"] == str(tmp_path / "HOME")
+    assert "XDG_CONFIG_HOME" not in env
+
+
 def _session_dir(tmp_path: Path) -> Path:
     session_dir = tmp_path / "session"
     session_dir.mkdir()
