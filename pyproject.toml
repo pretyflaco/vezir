@@ -76,11 +76,12 @@ server = [
     # v0.7.0: jinja2 dropped along with the HTML dashboard.
     # vezir 0.4.0's worker shells out to `millet transcribe --summary-preset
     # <id>` and relies on apply_labels() accepting the summary_preset kwarg.
-    # Pin to >= 0.12.6: vezir 0.7.16 injects the session title into
+    # Pin to >= 0.12.7: vezir 0.7.16 injects the session title into
     # session.json and relies on millet's title-aware schedule matching +
-    # collision guard (v0.12.5); v0.12.6 fixes in-room multi-speaker collapse
-    # (single-source-stereo fallback to mono diarization).
-    "millet-pipeline>=0.12.6",
+    # collision guard (v0.12.5); v0.12.6 + v0.12.7 fix in-room multi-speaker
+    # collapse (single-source-stereo fallback to mono diarization, keeping the
+    # diarized in-room speakers).
+    "millet-pipeline>=0.12.7",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

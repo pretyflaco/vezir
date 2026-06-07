@@ -3,6 +3,16 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.21 — require millet 0.12.7 (complete in-room speaker fix)
+
+### Changed
+
+* **Requires millet-pipeline >= 0.12.7.**  v0.12.6 began the in-room
+  multi-speaker fix but a follow-up (v0.12.7) was needed so the single-source
+  path keeps the diarized in-room speakers instead of collapsing them back
+  onto YOU/REMOTE by channel energy.  Bump the pin so a fresh install gets the
+  complete fix.
+
 ## 0.7.20 — offline HF models; require millet 0.12.6 (in-room speaker fix)
 
 ### Changed
