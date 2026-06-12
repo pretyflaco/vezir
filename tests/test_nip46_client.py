@@ -22,6 +22,7 @@ from coincurve import PrivateKey  # noqa: E402
 
 from vezir.client.nostr import event as nostr_event  # noqa: E402
 from vezir.client.nostr import (
+    nip04,  # noqa: E402
     nip44,  # noqa: E402
     nip46,  # noqa: E402
 )
@@ -82,19 +83,33 @@ def test_connect_uri_shape():
 
 
 class FakeSigner:
-    """Minimal NIP-46 remote signer for the in-process round-trip."""
+    """Minimal NIP-46 remote signer for the in-process round-trip.
 
-    def __init__(self):
+    ``scheme`` selects the encryption used for BOTH decrypting the
+    client's requests and encrypting responses: "nip44" (newer signers)
+    or "nip04" (Amber).  This lets tests prove interop with each.
+    """
+
+    def __init__(self, scheme: str = "nip44"):
         self._priv = PrivateKey()
         self.pubkey = self._priv.public_key_xonly.format().hex()
         # the "user" key the signer controls (same as signer key here)
         self._user_priv = self._priv
+        self.scheme = scheme
+
+    def _decrypt(self, ciphertext: str, client_pubkey: str) -> str:
+        if self.scheme == "nip04":
+            return nip04.decrypt(ciphertext, self._priv.to_hex(), client_pubkey)
+        return nip44.decrypt_from(ciphertext, self._priv.to_hex(), client_pubkey)
+
+    def _encrypt(self, plaintext: str, client_pubkey: str) -> str:
+        if self.scheme == "nip04":
+            return nip04.encrypt(plaintext, self._priv.to_hex(), client_pubkey)
+        return nip44.encrypt_for(plaintext, self._priv.to_hex(), client_pubkey)
 
     def handle_request(self, client_pubkey: str, ciphertext: str) -> dict:
         """Decrypt a client request, return the encrypted response event dict."""
-        req = json.loads(
-            nip44.decrypt_from(ciphertext, self._priv.to_hex(), client_pubkey)
-        )
+        req = json.loads(self._decrypt(ciphertext, client_pubkey))
         method = req["method"]
         if method == "get_public_key":
             result = self._user_priv.public_key_xonly.format().hex()
@@ -112,7 +127,7 @@ class FakeSigner:
         else:
             result = "ack"
         resp = json.dumps({"id": req["id"], "result": result})
-        ct = nip44.encrypt_for(resp, self._priv.to_hex(), client_pubkey)
+        ct = self._encrypt(resp, client_pubkey)
         return {"pubkey": self.pubkey, "kind": 24133, "content": ct,
                 "tags": [["p", client_pubkey]], "created_at": int(time.time())}
 
@@ -150,9 +165,7 @@ class FakeWS:
                 else self._connect_result
             )
             resp = json.dumps({"id": "connect", "result": result})
-            ct = nip44.encrypt_for(
-                resp, self._signer._priv.to_hex(), self._client.client_pubkey
-            )
+            ct = self._signer._encrypt(resp, self._client.client_pubkey)
             return json.dumps(["EVENT", self._client._sub_id, {
                 "pubkey": self._signer.pubkey, "kind": 24133, "content": ct,
                 "tags": [["p", self._client.client_pubkey]],
@@ -238,3 +251,25 @@ def test_connect_accepts_ack():
         timeout=5,
     )
     assert nostr_event.verify_event(signed)
+
+
+def test_amber_nip04_interop():
+    """Amber encrypts NIP-46 with NIP-04 (?iv=). The client must auto-detect
+    it, connect, learn the scheme, and reply NIP-04 for get_public_key /
+    sign_event. A NIP-44-only client would silently time out here."""
+    signer = FakeSigner(scheme="nip04")
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="ack")
+
+    user_pubkey = client.wait_for_connection(timeout=5)
+    assert user_pubkey == signer.pubkey
+    # The client must have learned the peer speaks NIP-04.
+    assert client._peer_scheme == "nip04"
+
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=5,
+    )
+    assert nostr_event.verify_event(signed)
+    assert signed["pubkey"] == signer.pubkey

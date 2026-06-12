@@ -1220,7 +1220,12 @@ def team_config_remove(team_id):
     "--timeout", "timeout", type=int, default=180, show_default=True,
     help="Seconds to wait for you to approve in your signer.",
 )
-def login(url, team_id, relay, timeout):
+@click.option(
+    "--verbose", "verbose", is_flag=True, default=False,
+    help="Print NIP-46 handshake debug logs (which relay events arrive, "
+         "their encryption scheme, and why any are skipped).",
+)
+def login(url, team_id, relay, timeout, verbose):
     """Log in with your nostr key via a remote signer (Amber / nsec.app).
 
     Generates a ``nostrconnect://`` request (shown as a URI + QR).  Open
@@ -1231,7 +1236,12 @@ def login(url, team_id, relay, timeout):
     Your npub must be authorized server-side first
     (``vezir npub add --npub … --github …``).
     """
+    import logging
     import os
+
+    if verbose:
+        logging.getLogger("vezir.nip46").setLevel(logging.DEBUG)
+        logging.getLogger("vezir.nip46").addHandler(logging.StreamHandler())
 
     from .client import config as client_config
 

@@ -57,7 +57,7 @@ from urllib.parse import quote, urlencode
 from coincurve import PrivateKey
 
 from . import event as nostr_event
-from . import nip44
+from . import nip04, nip44
 
 log = logging.getLogger("vezir.nip46")
 
@@ -112,7 +112,15 @@ class Nip46Client:
 
         self._ws = None
         self._sub_id = "vezir-" + secrets.token_hex(4)
-        self._since = int(time.time())
+        # Small negative margin: nostrconnect.org notes some relays replay
+        # ephemeral events and signer clocks can be slightly behind, so a
+        # `since` of exactly now can drop a valid connect response.
+        self._since = int(time.time()) - 30
+        # Which encryption the peer (signer) uses for kind-24133 — learned
+        # from the first response we decrypt.  Amber uses "nip04"; newer
+        # signers use "nip44".  We reply in the same scheme.  Default to
+        # nip44 for our first outgoing message; corrected once we know.
+        self._peer_scheme: str = "nip44"
         # Track request ids we've already resolved to ignore duplicates.
         self._handled: set[str] = set()
         # Track which request ids have already surfaced an auth_url.
@@ -155,11 +163,42 @@ class Nip46Client:
         ])
         self._ws.send(req)
 
+    def _encrypt_for_peer(self, plaintext: str, target_pubkey: str) -> str:
+        """Encrypt a request payload in the scheme the peer signer uses."""
+        if self._peer_scheme == "nip04":
+            return nip04.encrypt(plaintext, self._client_priv_hex, target_pubkey)
+        return nip44.encrypt_for(plaintext, self._client_priv_hex, target_pubkey)
+
+    def _decrypt_any(self, content: str, sender_pubkey: str) -> tuple[str, str]:
+        """Decrypt a kind-24133 content, auto-detecting NIP-04 vs NIP-44.
+
+        Returns ``(plaintext, scheme)``.  Detects NIP-04 by the ``?iv=``
+        marker (as NDK/nostr-tools do); tries the detected scheme first
+        and falls back to the other.  Raises on total failure.
+        """
+        prefer_04 = nip04.is_nip04(content)
+        order = (("nip04", "nip44") if prefer_04 else ("nip44", "nip04"))
+        last_exc: Exception | None = None
+        for scheme in order:
+            try:
+                if scheme == "nip04":
+                    return (
+                        nip04.decrypt(content, self._client_priv_hex, sender_pubkey),
+                        "nip04",
+                    )
+                return (
+                    nip44.decrypt_from(content, self._client_priv_hex, sender_pubkey),
+                    "nip44",
+                )
+            except Exception as exc:  # try the other scheme
+                last_exc = exc
+        raise last_exc if last_exc else ValueError("undecryptable content")
+
     def _send_request(self, method: str, params: list, target_pubkey: str) -> str:
         """Encrypt + sign a kind-24133 request event, publish it, return req id."""
         req_id = secrets.token_hex(8)
         payload = json.dumps({"id": req_id, "method": method, "params": params})
-        ciphertext = nip44.encrypt_for(payload, self._client_priv_hex, target_pubkey)
+        ciphertext = self._encrypt_for_peer(payload, target_pubkey)
         ev = nostr_event.finalize_event(
             private_key_hex=self._client_priv_hex,
             kind=NIP46_KIND,
@@ -199,15 +238,19 @@ class Nip46Client:
             ev = msg[2]
             author = ev.get("pubkey")
             try:
-                plaintext = nip44.decrypt_from(
-                    ev.get("content", ""), self._client_priv_hex, author
-                )
+                plaintext, scheme = self._decrypt_any(ev.get("content", ""), author)
+                self._peer_scheme = scheme
                 resp = json.loads(plaintext)
-            except Exception:
-                # Not for us / undecryptable -- skip.
+            except Exception as exc:
+                # Not for us / undecryptable -- skip (logged for --verbose).
+                log.debug(
+                    "skip event from %s: undecryptable (%s)",
+                    (author or "?")[:8], exc,
+                )
                 continue
             rid = resp.get("id")
             if rid != expect_id:
+                log.debug("skip event from %s: id %s != %s", (author or "?")[:8], rid, expect_id)
                 continue
 
             result = resp.get("result")
@@ -268,12 +311,21 @@ class Nip46Client:
             ev = msg[2]
             author = ev.get("pubkey")
             try:
-                plaintext = nip44.decrypt_from(
-                    ev.get("content", ""), self._client_priv_hex, author
-                )
+                plaintext, scheme = self._decrypt_any(ev.get("content", ""), author)
                 resp = json.loads(plaintext)
-            except Exception:
+            except Exception as exc:
+                log.debug(
+                    "connect: skip event from %s: undecryptable (%s)",
+                    (author or "?")[:8], exc,
+                )
                 continue
+            # Learn the signer's encryption scheme so our subsequent
+            # requests (get_public_key, sign_event) speak the same one.
+            self._peer_scheme = scheme
+            log.debug(
+                "connect: decrypted %s response from %s: result=%r",
+                scheme, (author or "?")[:8], resp.get("result"),
+            )
             result = resp.get("result")
             # SECURITY — Mike Dilger attack (see pretyflaco/BBTV2 #3):
             # that mitigation requires the *connection token to carry a
