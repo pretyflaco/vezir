@@ -249,12 +249,24 @@ class Nip46Client:
                 )
                 continue
             rid = resp.get("id")
-            if rid != expect_id:
-                log.debug("skip event from %s: id %s != %s", (author or "?")[:8], rid, expect_id)
-                continue
-
             result = resp.get("result")
             error = resp.get("error")
+            log.debug(
+                "recv from %s: id=%s (want %s) result=%r error=%r",
+                (author or "?")[:8], rid, expect_id,
+                (result[:40] if isinstance(result, str) else result), error,
+            )
+            # Accept the response even if the id doesn't match ours.
+            # Some signers (certain Amber versions) mint their own
+            # response id instead of echoing the request id, and may
+            # reply from the user-key rather than the signer-key.  Since
+            # we keep exactly ONE request in flight at a time, any
+            # decryptable kind-24133 message addressed to us that carries
+            # a ``result`` or ``error`` is the reply we're waiting for.
+            if rid != expect_id and result is None and not error:
+                # No result and no error and not our id -> not a reply
+                # (e.g. a stray/unrelated event); keep waiting.
+                continue
 
             # Auth challenge: result == "auth_url", error == URL to open.
             if result == "auth_url":
@@ -346,8 +358,21 @@ class Nip46Client:
             if result == self.secret or result == "ack":
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
-                self.user_pubkey = self._get_public_key(timeout=deadline - time.time())
-                return self.user_pubkey
+                # Try get_public_key, but don't hard-fail the whole login
+                # if the signer's reply is awkward (non-echoed id / replies
+                # from a different key).  The authoritative user-pubkey is
+                # the ``pubkey`` field of the signed login event, which we
+                # resolve in sign_event().  We return a best-effort value
+                # here (may be empty) and let the caller rely on the signed
+                # event.
+                try:
+                    self.user_pubkey = self._get_public_key(
+                        timeout=min(30, max(10, deadline - time.time()))
+                    )
+                except Nip46Error as exc:
+                    log.debug("get_public_key failed (non-fatal): %s", exc)
+                    self.user_pubkey = None
+                return self.user_pubkey or ""
             if result == "auth_url":
                 url = resp.get("error")
                 if url and self.on_auth_url and resp.get("id") not in self._auth_url_seen:
@@ -385,6 +410,9 @@ class Nip46Client:
             raise Nip46Error(f"signer returned non-JSON signed event: {exc}") from exc
         if not nostr_event.verify_event(signed):
             raise Nip46Error("signed event failed local verification")
+        # The signed event's pubkey IS the authoritative user pubkey —
+        # record it (get_public_key may have been skipped/unreliable).
+        self.user_pubkey = signed.get("pubkey") or self.user_pubkey
         return signed
 
     def close(self) -> None:

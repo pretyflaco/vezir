@@ -90,12 +90,15 @@ class FakeSigner:
     or "nip04" (Amber).  This lets tests prove interop with each.
     """
 
-    def __init__(self, scheme: str = "nip44"):
+    def __init__(self, scheme: str = "nip44", echo_id: bool = True):
         self._priv = PrivateKey()
         self.pubkey = self._priv.public_key_xonly.format().hex()
         # the "user" key the signer controls (same as signer key here)
         self._user_priv = self._priv
         self.scheme = scheme
+        # Some signers (certain Amber versions) mint their own response id
+        # instead of echoing the request id.  echo_id=False simulates that.
+        self.echo_id = echo_id
 
     def _decrypt(self, ciphertext: str, client_pubkey: str) -> str:
         if self.scheme == "nip04":
@@ -126,7 +129,9 @@ class FakeSigner:
             )
         else:
             result = "ack"
-        resp = json.dumps({"id": req["id"], "result": result})
+        import uuid as _uuid
+        resp_id = req["id"] if self.echo_id else str(_uuid.uuid4())
+        resp = json.dumps({"id": resp_id, "result": result})
         ct = self._encrypt(resp, client_pubkey)
         return {"pubkey": self.pubkey, "kind": 24133, "content": ct,
                 "tags": [["p", client_pubkey]], "created_at": int(time.time())}
@@ -273,3 +278,23 @@ def test_amber_nip04_interop():
     )
     assert nostr_event.verify_event(signed)
     assert signed["pubkey"] == signer.pubkey
+
+
+def test_signer_non_echoed_id():
+    """Some Amber versions reply with their own (UUID) id instead of echoing
+    our request id. With one request in flight, a decryptable result-bearing
+    response must still be accepted (else login times out)."""
+    signer = FakeSigner(echo_id=False)
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="ack")
+
+    client.wait_for_connection(timeout=5)
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=5,
+    )
+    assert nostr_event.verify_event(signed)
+    assert signed["pubkey"] == signer.pubkey
+    # The signed event's pubkey is recorded as the authoritative user key.
+    assert client.user_pubkey == signer.pubkey
