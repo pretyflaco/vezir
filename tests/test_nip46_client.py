@@ -141,7 +141,8 @@ class FakeWS:
     """A fake websocket wiring the client to a FakeSigner synchronously."""
 
     def __init__(self, client: nip46.Nip46Client, signer: FakeSigner,
-                 *, send_connect: bool = True, connect_result: str = "secret"):
+                 *, send_connect: bool = True, connect_result: str = "secret",
+                 inject_noise: bool = False):
         self._client = client
         self._signer = signer
         self._outbox = []
@@ -150,7 +151,26 @@ class FakeWS:
         # "secret" (echo our secret), "ack" (Amber-style), or any other
         # literal string (treated as a spoof/wrong response).
         self._connect_result = connect_result
+        # If set, prepend a stray kind-24133 event from an UNRELATED key
+        # (with a non-echoed UUID id) before each real response, to verify
+        # the client ignores relay noise (the f99a269e/UUID case observed
+        # with Amber).
+        self._inject_noise = inject_noise
+        self._noise_priv = PrivateKey()
         self._connect_sent = False
+
+    def _noise_event(self):
+        import uuid as _uuid
+        resp = json.dumps({"id": str(_uuid.uuid4()),
+                           "result": "f" * 64})  # bogus pubkey-looking result
+        ct = nip44.encrypt_for(
+            resp, self._noise_priv.to_hex(), self._client.client_pubkey
+        )
+        return ["EVENT", self._client._sub_id, {
+            "pubkey": self._noise_priv.public_key_xonly.format().hex(),
+            "kind": 24133, "content": ct,
+            "tags": [["p", self._client.client_pubkey]],
+            "created_at": int(time.time())}]
 
     def send(self, raw):
         msg = json.loads(raw)
@@ -159,6 +179,8 @@ class FakeWS:
             resp = self._signer.handle_request(
                 self._client.client_pubkey, ev["content"]
             )
+            if self._inject_noise:
+                self._outbox.append(self._noise_event())
             self._outbox.append(["EVENT", self._client._sub_id, resp])
 
     def recv(self):
@@ -280,11 +302,12 @@ def test_amber_nip04_interop():
     assert signed["pubkey"] == signer.pubkey
 
 
-def test_signer_non_echoed_id():
-    """Some Amber versions reply with their own (UUID) id instead of echoing
-    our request id. With one request in flight, a decryptable result-bearing
-    response must still be accepted (else login times out)."""
-    signer = FakeSigner(echo_id=False)
+def test_responses_filtered_to_signer():
+    """Responses must be matched to the signer (the connect author) and by
+    the echoed request id, mirroring nostr-tools setupSubscription
+    (authors=[signer]) + listeners[id]. The signed event's pubkey is the
+    authoritative user key."""
+    signer = FakeSigner()
     client = nip46.Nip46Client(relay="wss://relay.example")
     client._ws = FakeWS(client, signer, connect_result="ack")
 
@@ -296,5 +319,22 @@ def test_signer_non_echoed_id():
     )
     assert nostr_event.verify_event(signed)
     assert signed["pubkey"] == signer.pubkey
-    # The signed event's pubkey is recorded as the authoritative user key.
     assert client.user_pubkey == signer.pubkey
+
+
+def test_ignores_relay_noise_from_other_authors():
+    """The real-world failure: a stray kind-24133 event from an UNRELATED
+    key (UUID id) arrives on the relay. The client must ignore it (it's not
+    the signer) and still complete via the signer's real response."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="secret", inject_noise=True)
+
+    client.wait_for_connection(timeout=5)
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=5,
+    )
+    assert signed["pubkey"] == signer.pubkey
+    assert client.remote_signer_pubkey == signer.pubkey

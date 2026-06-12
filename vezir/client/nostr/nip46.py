@@ -112,10 +112,11 @@ class Nip46Client:
 
         self._ws = None
         self._sub_id = "vezir-" + secrets.token_hex(4)
-        # Small negative margin: nostrconnect.org notes some relays replay
-        # ephemeral events and signer clocks can be slightly behind, so a
-        # `since` of exactly now can drop a valid connect response.
-        self._since = int(time.time()) - 30
+        # 60s negative margin: relays replay ephemeral events and signer
+        # clocks can be behind, so a `since` of exactly now can drop a
+        # valid response.  60s is the value nostr-tools uses (see its
+        # nip46 `since: now - 60` fix).
+        self._since = int(time.time()) - 60
         # Which encryption the peer (signer) uses for kind-24133 — learned
         # from the first response we decrypt.  Amber uses "nip04"; newer
         # signers use "nip44".  We reply in the same scheme.  Default to
@@ -155,13 +156,29 @@ class Nip46Client:
             self._ws = websocket.create_connection(self.relay, timeout=30)
         except Exception as exc:
             raise Nip46Error(f"failed to connect to relay {self.relay}: {exc}") from exc
-        # Subscribe to responses addressed to us, fresh only.
-        req = json.dumps([
-            "REQ",
-            self._sub_id,
-            {"kinds": [NIP46_KIND], "#p": [self.client_pubkey], "since": self._since},
-        ])
-        self._ws.send(req)
+        # Initial subscription (pre-connect): we don't yet know the signer
+        # pubkey, so we can only filter by #p (events addressed to us).
+        # After connect we re-subscribe with authors=[signer] to drop noise.
+        self._send_req(authors=None)
+
+    def _send_req(self, *, authors: list[str] | None) -> None:
+        """(Re)issue the REQ subscription.  When ``authors`` is given, the
+        relay only delivers events from those pubkeys (the signer), which
+        is how nostr-tools avoids unrelated relay noise on the response
+        path.  Closes any prior sub with the same id first."""
+        filt: dict = {
+            "kinds": [NIP46_KIND],
+            "#p": [self.client_pubkey],
+            "since": self._since,
+        }
+        if authors:
+            filt["authors"] = authors
+        # Close the previous subscription so the relay replaces it cleanly.
+        try:
+            self._ws.send(json.dumps(["CLOSE", self._sub_id]))
+        except Exception:
+            pass
+        self._ws.send(json.dumps(["REQ", self._sub_id, filt]))
 
     def _encrypt_for_peer(self, plaintext: str, target_pubkey: str) -> str:
         """Encrypt a request payload in the scheme the peer signer uses."""
@@ -237,8 +254,16 @@ class Nip46Client:
                 continue
             ev = msg[2]
             author = ev.get("pubkey")
+            # Only the signer's responses matter here.  The relay is
+            # already filtered to authors=[signer] post-connect, but
+            # double-check and always decrypt with the SIGNER's key (the
+            # fixed conversation peer), exactly like nostr-tools.
+            if self.remote_signer_pubkey and author != self.remote_signer_pubkey:
+                log.debug("skip event from %s: not the signer", (author or "?")[:8])
+                continue
+            peer = self.remote_signer_pubkey or author
             try:
-                plaintext, scheme = self._decrypt_any(ev.get("content", ""), author)
+                plaintext, scheme = self._decrypt_any(ev.get("content", ""), peer)
                 self._peer_scheme = scheme
                 resp = json.loads(plaintext)
             except Exception as exc:
@@ -256,16 +281,11 @@ class Nip46Client:
                 (author or "?")[:8], rid, expect_id,
                 (result[:40] if isinstance(result, str) else result), error,
             )
-            # Accept the response even if the id doesn't match ours.
-            # Some signers (certain Amber versions) mint their own
-            # response id instead of echoing the request id, and may
-            # reply from the user-key rather than the signer-key.  Since
-            # we keep exactly ONE request in flight at a time, any
-            # decryptable kind-24133 message addressed to us that carries
-            # a ``result`` or ``error`` is the reply we're waiting for.
-            if rid != expect_id and result is None and not error:
-                # No result and no error and not our id -> not a reply
-                # (e.g. a stray/unrelated event); keep waiting.
+            # Strict id match (nostr-tools semantics: listeners[id]).  With
+            # the authors=[signer] filter, the signer's id-echoed reply is
+            # the only thing that reaches us, so an exact match is both
+            # correct and unambiguous.
+            if rid != expect_id:
                 continue
 
             # Auth challenge: result == "auth_url", error == URL to open.
@@ -358,13 +378,16 @@ class Nip46Client:
             if result == self.secret or result == "ack":
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
+                # Re-subscribe filtered to the signer's pubkey so the relay
+                # only delivers ITS responses (mirrors nostr-tools'
+                # setupSubscription authors=[signer]).  Without this the
+                # relay streams unrelated kind-24133 traffic and we can't
+                # cleanly match the get_public_key / sign_event reply.
+                self._send_req(authors=[author])
                 # Try get_public_key, but don't hard-fail the whole login
-                # if the signer's reply is awkward (non-echoed id / replies
-                # from a different key).  The authoritative user-pubkey is
-                # the ``pubkey`` field of the signed login event, which we
-                # resolve in sign_event().  We return a best-effort value
-                # here (may be empty) and let the caller rely on the signed
-                # event.
+                # if the signer's reply is awkward.  The authoritative
+                # user-pubkey is the ``pubkey`` field of the signed login
+                # event, resolved in sign_event().
                 try:
                     self.user_pubkey = self._get_public_key(
                         timeout=min(30, max(10, deadline - time.time()))
