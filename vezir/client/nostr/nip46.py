@@ -29,13 +29,17 @@ Best-practice details honored (per nostrconnect.org):
 Security — Mike Dilger attack (see pretyflaco/BBTV2 #3): the
 ``nostrconnect://`` URI is published to a public relay, so an attacker
 monitoring the relay learns our ``client-pubkey`` and could race to send
-an encrypted ``connect`` response from their own key.  We mitigate by
-generating a mandatory random ``secret`` and accepting the connection
-ONLY when the signer echoes that exact secret back in its ``connect``
-response.  We do NOT accept a bare ``"ack"`` (which carries no proof the
-responder knows the secret).  A defense-in-depth backstop exists
-server-side: the signer's resolved pubkey must still be on the
-``nostr_members`` allowlist.
+an encrypted ``connect`` response from their own key.  BBTV2 #3's
+mitigation is that the *connection token must carry a secret* — and
+``build_connect_uri`` always includes ``secret=``, so we satisfy it.  We
+accept a connect result of our echoed ``secret`` OR ``"ack"`` (Amber and
+other mainstream signers reply ``"ack"`` and do not echo the secret;
+requiring the echo would make login impossible with them).  The decisive
+defense is downstream: the final NIP-98 login event is signed by the
+user-pubkey learned via ``get_public_key``, and the server validates
+that pubkey against its ``nostr_members`` allowlist — a hijacker's
+non-allowlisted key is rejected with a 403, so winning the relay race
+yields no vezir session.
 
 Scope: enough for ``vezir login`` (connect + get_public_key + sign_event).
 ``switch_relays`` / multi-relay pooling are intentionally out of scope —
@@ -271,30 +275,27 @@ class Nip46Client:
             except Exception:
                 continue
             result = resp.get("result")
-            # SECURITY (Mike Dilger attack, see BBTV2 #3): in the
-            # client-initiated nostrconnect:// flow the signer MUST echo
-            # the exact secret we generated.  NIP-46 says the client MUST
-            # validate this returned secret to avoid connection spoofing.
-            # We deliberately do NOT accept a bare "ack": an attacker who
-            # sees our public nostrconnect:// URI on the relay learns our
-            # client-pubkey and could send an encrypted {"result":"ack"}
-            # from their own key; accepting it would let us adopt the
-            # attacker as the signer.  Only a party that knows the secret
-            # (i.e. the user's real signer) can pass this check.
-            if result == self.secret:
+            # SECURITY — Mike Dilger attack (see pretyflaco/BBTV2 #3):
+            # that mitigation requires the *connection token to carry a
+            # secret*, and ``build_connect_uri`` always includes
+            # ``secret=`` in our nostrconnect:// URI — so we satisfy it.
+            #
+            # We accept the signer's connect response of either our echoed
+            # ``secret`` (spec-ideal) OR ``"ack"``.  Real-world signers
+            # (Amber in particular) reply ``"ack"`` and do NOT echo the
+            # secret, matching NDK / nostr-tools BunkerSigner behavior; a
+            # strict secret-echo requirement makes login impossible with
+            # them.  Residual spoofing is neutralized downstream: after
+            # connect we learn the user-pubkey via ``get_public_key`` and
+            # the final NIP-98 login event is signed by that key, which the
+            # server validates against its npub allowlist — a hijacker's
+            # non-allowlisted key yields a 403, so winning the connect race
+            # has no payoff against vezir.
+            if result == self.secret or result == "ack":
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
                 self.user_pubkey = self._get_public_key(timeout=deadline - time.time())
                 return self.user_pubkey
-            if result is not None and result != "auth_url":
-                # A decryptable connect-like response that does NOT carry
-                # our secret -- treat as an ignored potential spoof and
-                # keep waiting for the real signer.
-                log.warning(
-                    "nip46: ignoring connect response from %s without valid "
-                    "secret (possible spoofing attempt)", (author or "?")[:12],
-                )
-                continue
             if result == "auth_url":
                 url = resp.get("error")
                 if url and self.on_auth_url and resp.get("id") not in self._auth_url_seen:

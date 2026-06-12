@@ -121,11 +121,15 @@ class FakeWS:
     """A fake websocket wiring the client to a FakeSigner synchronously."""
 
     def __init__(self, client: nip46.Nip46Client, signer: FakeSigner,
-                 *, send_connect: bool = True):
+                 *, send_connect: bool = True, connect_result: str = "secret"):
         self._client = client
         self._signer = signer
         self._outbox = []
         self._send_connect = send_connect
+        # What the simulated signer returns as the connect result:
+        # "secret" (echo our secret), "ack" (Amber-style), or any other
+        # literal string (treated as a spoof/wrong response).
+        self._connect_result = connect_result
         self._connect_sent = False
 
     def send(self, raw):
@@ -141,7 +145,11 @@ class FakeWS:
         # On first recv, deliver the unsolicited connect response.
         if self._send_connect and not self._connect_sent:
             self._connect_sent = True
-            resp = json.dumps({"id": "connect", "result": self._client.secret})
+            result = (
+                self._client.secret if self._connect_result == "secret"
+                else self._connect_result
+            )
+            resp = json.dumps({"id": "connect", "result": result})
             ct = nip44.encrypt_for(
                 resp, self._signer._priv.to_hex(), self._client.client_pubkey
             )
@@ -210,30 +218,23 @@ def test_connect_rejects_wrong_secret():
         client.wait_for_connection(timeout=2)
 
 
-def test_connect_rejects_bare_ack():
-    """SECURITY (Dilger, BBTV2 #3): a bare 'ack' without our secret must NOT
-    be accepted -- only a signer echoing the exact secret may connect."""
+def test_connect_accepts_ack():
+    """Amber (and NDK/nostr-tools) reply to ``connect`` with ``"ack"`` and do
+    NOT echo the secret. We MUST accept ``"ack"`` or login is impossible
+    with the primary signer. The Dilger mitigation lives downstream (the
+    server's npub allowlist rejects a non-authorized signed login event)."""
     signer = FakeSigner()
     client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="ack")
 
-    class BareAckWS(FakeWS):
-        def recv(self):
-            if not self._connect_sent:
-                self._connect_sent = True
-                # Attacker-style response: decryptable, addressed to us, but
-                # carries only "ack" -- no proof of knowing the secret.
-                resp = json.dumps({"id": "connect", "result": "ack"})
-                ct = nip44.encrypt_for(
-                    resp, self._signer._priv.to_hex(), self._client.client_pubkey
-                )
-                return json.dumps(["EVENT", self._client._sub_id, {
-                    "pubkey": self._signer.pubkey, "kind": 24133, "content": ct,
-                    "tags": [["p", self._client.client_pubkey]],
-                    "created_at": int(time.time())}])
-            raise TimeoutError("no message")
+    user_pubkey = client.wait_for_connection(timeout=5)
+    assert user_pubkey == signer.pubkey
+    assert client.remote_signer_pubkey == signer.pubkey
 
-    client._ws = BareAckWS(client, signer)
-    with pytest.raises(nip46.Nip46Error, match="timed out"):
-        client.wait_for_connection(timeout=2)
-    # And we must NOT have adopted the responder as the signer.
-    assert client.remote_signer_pubkey is None
+    # And a full sign still works after an ack-based connect.
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=5,
+    )
+    assert nostr_event.verify_event(signed)
