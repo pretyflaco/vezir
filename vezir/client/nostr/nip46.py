@@ -32,18 +32,20 @@ monitoring the relay learns our ``client-pubkey`` and could race to send
 an encrypted ``connect`` response from their own key.  BBTV2 #3's
 mitigation is that the *connection token must carry a secret* — and
 ``build_connect_uri`` always includes ``secret=``, so we satisfy it.  We
-accept a connect result of our echoed ``secret`` OR ``"ack"`` (Amber and
-other mainstream signers reply ``"ack"`` and do not echo the secret;
-requiring the echo would make login impossible with them).  The decisive
-defense is downstream: the final NIP-98 login event is signed by the
-user-pubkey learned via ``get_public_key``, and the server validates
-that pubkey against its ``nostr_members`` allowlist — a hijacker's
-non-allowlisted key is rejected with a 403, so winning the relay race
-yields no vezir session.
+accept a connect result of our echoed ``secret`` OR ``"ack"``: real Amber
+(observed live, 2026-06-13) actually *echoes the secret*, while NDK /
+nostr-tools-based signers reply ``"ack"`` — accepting both keeps login
+working across signers.  The decisive defense is downstream: the final
+NIP-98 login event is signed by the user-pubkey learned via
+``get_public_key``, and the server validates that pubkey against its
+``nostr_members`` allowlist — a hijacker's non-allowlisted key is
+rejected with a 403, so winning the relay race yields no vezir session.
 
 Scope: enough for ``vezir login`` (connect + get_public_key + sign_event).
-``switch_relays`` / multi-relay pooling are intentionally out of scope —
-a single user-chosen relay is sufficient for a one-shot terminal login.
+We fan out across several relays (``DEFAULT_RELAYS``, blink's proven set)
+for redundant delivery of the signer's ephemeral kind-24133 responses;
+``switch_relays`` (signer asking us to move relays) is still out of scope
+for a one-shot terminal login.
 """
 from __future__ import annotations
 
@@ -63,8 +65,30 @@ log = logging.getLogger("vezir.nip46")
 
 NIP46_KIND = 24133
 
-# A relay known to handle NIP-46 ephemeral events well.  Overridable.
-DEFAULT_RELAY = "wss://relay.nsec.app"
+# Relays known to handle NIP-46 ephemeral events well.  This is blink
+# POS / blink-terminal's exact set (NostrConnectService.ts
+# DEFAULT_NIP46_RELAYS), which is proven to work reliably with Amber.
+#
+# WHY MULTIPLE RELAYS MATTERS (root cause of the old single-relay hang):
+# Amber publishes each response (connect ack, get_public_key, sign_event)
+# to the relays it parsed from our nostrconnect:// URI and stored against
+# the connection (Amber BunkerRequestUtils.kt -> application.relays;
+# EventNotificationConsumer.kt sends responses there).  kind-24133 events
+# are ephemeral, so if the single relay drops/evicts a response we never
+# see it and time out right after connect.  Advertising several relays
+# gives the response redundant delivery paths — exactly why blink "always
+# works".  We fan out: open all relays, broadcast each request to all, and
+# accept the first copy of each response (de-duped by event id).
+DEFAULT_RELAYS: list[str] = [
+    "wss://relay.nsec.app",      # Popular NIP-46 relay
+    "wss://relay.damus.io",      # Very reliable general relay
+    "wss://nos.lol",             # Good uptime backup
+    "wss://relay.getportal.cc",  # Portal relay
+    "wss://offchain.pub",        # Offchain relay
+]
+
+# Back-compat alias: some callers/tests still pass a single ``relay=``.
+DEFAULT_RELAY = DEFAULT_RELAYS[0]
 
 # Default permissions we request: sign a NIP-98 HTTP-auth event (kind
 # 27235) and read the pubkey.  Comma-separated method[:params] per spec.
@@ -76,28 +100,40 @@ class Nip46Error(Exception):
 
 
 class Nip46Client:
-    """A one-connection NIP-46 client over a single relay websocket.
+    """A NIP-46 client fanned out across several relay websockets.
 
     Usage::
 
-        c = Nip46Client(relay="wss://relay.nsec.app",
-                        name="vezir", on_auth_url=print)
+        c = Nip46Client(name="vezir", on_auth_url=print)   # uses DEFAULT_RELAYS
         uri = c.build_connect_uri()
         # show `uri` (and/or its QR) to the user
         user_pubkey = c.wait_for_connection(timeout=120)
         signed = c.sign_event(unsigned_event_dict)
         c.close()
+
+    ``relays`` overrides the relay set; ``relay`` is accepted for
+    back-compat (single relay -> one-element list).
     """
 
     def __init__(
         self,
         *,
-        relay: str = DEFAULT_RELAY,
+        relays: list[str] | None = None,
+        relay: str | None = None,
         name: str = "vezir",
         perms: str = DEFAULT_PERMS,
         on_auth_url: Callable[[str], None] | None = None,
     ) -> None:
-        self.relay = relay
+        # Relay resolution precedence: explicit ``relays`` list, else a
+        # single back-compat ``relay``, else the proven default set.
+        if relays:
+            self.relays = list(relays)
+        elif relay:
+            self.relays = [relay]
+        else:
+            self.relays = list(DEFAULT_RELAYS)
+        # Back-compat attribute some callers/tests read.
+        self.relay = self.relays[0]
         self.name = name
         self.perms = perms
         self.on_auth_url = on_auth_url
@@ -110,17 +146,28 @@ class Nip46Client:
         self.remote_signer_pubkey: str | None = None
         self.user_pubkey: str | None = None
 
+        # Open websocket per relay: {relay_url: ws}.  A request is
+        # broadcast to all; the first decryptable copy of each response
+        # wins (others are de-duped by event id via ``_seen_events``).
+        self._wss: dict[str, object] = {}
+        # Tests inject a single fake socket via ``client._ws``; honoring it
+        # keeps the existing in-process FakeWS tests working unchanged.
         self._ws = None
         self._sub_id = "vezir-" + secrets.token_hex(4)
+        # Event ids already processed, so the same response arriving on
+        # multiple relays is handled once.
+        self._seen_events: set[str] = set()
         # 60s negative margin: relays replay ephemeral events and signer
         # clocks can be behind, so a `since` of exactly now can drop a
         # valid response.  60s is the value nostr-tools uses (see its
         # nip46 `since: now - 60` fix).
         self._since = int(time.time()) - 60
         # Which encryption the peer (signer) uses for kind-24133 — learned
-        # from the first response we decrypt.  Amber uses "nip04"; newer
-        # signers use "nip44".  We reply in the same scheme.  Default to
-        # nip44 for our first outgoing message; corrected once we know.
+        # from the first response we decrypt.  Real Amber (observed live)
+        # uses "nip44"; some older signers/builds use "nip04".  We
+        # auto-detect (see _decrypt_any) and reply in the same scheme.
+        # Default to nip44 for our first outgoing message; corrected once
+        # we know.
         self._peer_scheme: str = "nip44"
         # Track request ids we've already resolved to ignore duplicates.
         self._handled: set[str] = set()
@@ -130,9 +177,15 @@ class Nip46Client:
     # ── connection token ─────────────────────────────────────────────────────
 
     def build_connect_uri(self) -> str:
-        """Return the ``nostrconnect://`` URI for the user's signer."""
-        params = [
-            ("relay", self.relay),
+        """Return the ``nostrconnect://`` URI for the user's signer.
+
+        Each relay is emitted as its own repeated ``relay=`` query param
+        (NIP-46 / nostr-tools ``getAll("relay")`` convention).  Amber
+        stores ALL of them and replies on each, which is what gives the
+        signer's responses redundant delivery paths.
+        """
+        params = [("relay", r) for r in self.relays]
+        params += [
             ("secret", self.secret),
             ("perms", self.perms),
             ("name", self.name),
@@ -142,8 +195,23 @@ class Nip46Client:
 
     # ── websocket plumbing ───────────────────────────────────────────────────
 
-    def _connect_ws(self):
+    def _sockets(self) -> list:
+        """All live sockets to broadcast over / read from.
+
+        When a test injects a single fake socket as ``self._ws`` we use
+        only that (the in-process FakeWS round-trip).  Otherwise we use the
+        per-relay connections opened by ``_connect_ws``.
+        """
         if self._ws is not None:
+            return [self._ws]
+        return list(self._wss.values())
+
+    def _connect_ws(self):
+        # A test-injected fake socket short-circuits real networking.
+        if self._ws is not None:
+            self._send_req(authors=None)
+            return
+        if self._wss:
             return
         try:
             import websocket  # websocket-client
@@ -152,20 +220,50 @@ class Nip46Client:
                 "websocket-client is required for nostr login "
                 "(install vezir[tui])"
             ) from exc
-        try:
-            self._ws = websocket.create_connection(self.relay, timeout=30)
-        except Exception as exc:
-            raise Nip46Error(f"failed to connect to relay {self.relay}: {exc}") from exc
+
+        # Open every relay concurrently; tolerate partial failure (blink
+        # behaves the same — one slow/dead relay must not block login).  We
+        # only hard-fail if NOT A SINGLE relay connects.
+        import threading
+
+        errors: dict[str, str] = {}
+        lock = threading.Lock()
+
+        def _open(url: str) -> None:
+            try:
+                ws = websocket.create_connection(url, timeout=30)
+            except Exception as exc:  # relay down / blocked — skip it
+                with lock:
+                    errors[url] = str(exc)
+                return
+            with lock:
+                self._wss[url] = ws
+
+        threads = [threading.Thread(target=_open, args=(u,)) for u in self.relays]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        if not self._wss:
+            detail = "; ".join(f"{u}: {e}" for u, e in errors.items())
+            raise Nip46Error(f"failed to connect to any relay ({detail})")
+        if errors:
+            for url, exc in errors.items():
+                log.debug("relay %s unavailable: %s", url, exc)
+        log.info(
+            "nip46: connected to %d/%d relays", len(self._wss), len(self.relays)
+        )
         # Initial subscription (pre-connect): we don't yet know the signer
         # pubkey, so we can only filter by #p (events addressed to us).
         # After connect we re-subscribe with authors=[signer] to drop noise.
         self._send_req(authors=None)
 
     def _send_req(self, *, authors: list[str] | None) -> None:
-        """(Re)issue the REQ subscription.  When ``authors`` is given, the
-        relay only delivers events from those pubkeys (the signer), which
-        is how nostr-tools avoids unrelated relay noise on the response
-        path.  Closes any prior sub with the same id first."""
+        """(Re)issue the REQ subscription on every relay.  When ``authors``
+        is given, relays only deliver events from those pubkeys (the
+        signer), mirroring nostr-tools' setupSubscription.  Closes any prior
+        sub with the same id first."""
         filt: dict = {
             "kinds": [NIP46_KIND],
             "#p": [self.client_pubkey],
@@ -173,12 +271,18 @@ class Nip46Client:
         }
         if authors:
             filt["authors"] = authors
-        # Close the previous subscription so the relay replaces it cleanly.
-        try:
-            self._ws.send(json.dumps(["CLOSE", self._sub_id]))
-        except Exception:
-            pass
-        self._ws.send(json.dumps(["REQ", self._sub_id, filt]))
+        close_msg = json.dumps(["CLOSE", self._sub_id])
+        req_msg = json.dumps(["REQ", self._sub_id, filt])
+        for ws in self._sockets():
+            # Close the previous subscription so the relay replaces it cleanly.
+            try:
+                ws.send(close_msg)
+            except Exception:
+                pass
+            try:
+                ws.send(req_msg)
+            except Exception as exc:
+                log.debug("REQ send failed on a relay: %s", exc)
 
     def _encrypt_for_peer(self, plaintext: str, target_pubkey: str) -> str:
         """Encrypt a request payload in the scheme the peer signer uses."""
@@ -222,8 +326,65 @@ class Nip46Client:
             tags=[["p", target_pubkey]],
             content=ciphertext,
         )
-        self._ws.send(json.dumps(["EVENT", ev]))
+        out = json.dumps(["EVENT", ev])
+        # Broadcast to every relay: the signer may be listening on any
+        # subset, and redundant publication is how the request reliably
+        # reaches it.
+        sent = 0
+        for ws in self._sockets():
+            try:
+                ws.send(out)
+                sent += 1
+            except Exception as exc:
+                log.debug("EVENT send failed on a relay: %s", exc)
+        if sent == 0:
+            raise Nip46Error("failed to publish request to any relay")
         return req_id
+
+    def _recv_raw(self, remaining: float) -> str | None:
+        """Return the next raw relay message across all sockets, or None.
+
+        Polls every live socket round-robin with a short per-socket
+        timeout so one quiet relay never starves the others (synchronous
+        ``websocket-client`` has no shared select).  De-dupes EVENTs by
+        event id, since the same kind-24133 response is delivered by each
+        relay that has it — we only want to process the first copy.
+        """
+        sockets = self._sockets()
+        if not sockets:
+            return None
+        # Short per-socket slice; with N relays a full sweep takes
+        # ~N*slice.  Keep slices small so we cycle quickly but don't busy-spin.
+        per_sock = max(0.05, min(remaining / max(len(sockets), 1), 1.0))
+        for ws in sockets:
+            try:
+                ws.settimeout(per_sock)
+            except Exception:
+                pass
+            try:
+                raw = ws.recv()
+            except Exception:
+                continue  # timeout/hiccup on this socket — try the next
+            if not raw:
+                continue
+            # Drop duplicate EVENTs (same id from another relay) early.
+            try:
+                msg = json.loads(raw)
+                if (
+                    isinstance(msg, list)
+                    and msg[0] == "EVENT"
+                    and len(msg) >= 3
+                    and isinstance(msg[2], dict)
+                ):
+                    eid = msg[2].get("id")
+                    if eid is not None:
+                        if eid in self._seen_events:
+                            continue
+                        self._seen_events.add(eid)
+            except Exception:
+                pass
+            return raw
+        return None
 
     def _read_response(
         self, expect_id: str, timeout: float, *, accept_any: bool = False
@@ -235,24 +396,20 @@ class Nip46Client:
         Raises ``Nip46Error`` on an ``error`` result or timeout.
 
         ``accept_any``: when True, accept the first result-bearing response
-        from the signer regardless of whether its ``id`` matches.  Amber
-        mints random UUID response ids instead of echoing ours, so with a
-        single request in flight (and the relay already filtered to the
-        signer via ``authors=[signer]``) we accept the signer's reply by
-        provenance rather than id.  We still skip pure connect echoes
-        (``"ack"`` / our secret), which are not method results.
+        from the signer regardless of whether its ``id`` matches.  This is
+        a defensive fallback for signer variants that mint a fresh response
+        id instead of echoing ours.  (Real Amber, observed live, DOES echo
+        the request id — so id-matching normally works — but keeping the
+        provenance fallback costs nothing and tolerates other signers.)
+        With a single request in flight and relays filtered to the signer
+        via ``authors=[signer]``, accepting by provenance is safe.  We
+        still skip pure connect echoes (``"ack"`` / our secret), which are
+        not method results.
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
             remaining = deadline - time.time()
-            try:
-                self._ws.settimeout(min(remaining, 30))
-                raw = self._ws.recv()
-            except Exception as exc:
-                if time.time() >= deadline:
-                    break
-                log.debug("relay recv hiccup: %s", exc)
-                continue
+            raw = self._recv_raw(remaining)
             if not raw:
                 continue
             try:
@@ -306,10 +463,11 @@ class Nip46Client:
                 log.debug("skip connect echo (result=%r) while awaiting reply", result)
                 continue
 
-            # Id matching: nostr-tools requires the echoed id; Amber mints
-            # random UUIDs.  With one request in flight and the relay
-            # filtered to the signer, accept the signer's first
-            # result/error reply by provenance when ``accept_any`` is set.
+            # Id matching: the spec (and real Amber, observed live) echoes
+            # the request id.  ``accept_any`` is a defensive fallback for
+            # signer variants that don't: with one request in flight and
+            # relays filtered to the signer, accept its first result/error
+            # reply by provenance.
             if rid != expect_id and not accept_any:
                 continue
 
@@ -343,11 +501,7 @@ class Nip46Client:
         # pubkey yet, so read raw until we see a decryptable response.
         while time.time() < deadline:
             remaining = deadline - time.time()
-            try:
-                self._ws.settimeout(min(remaining, 30))
-                raw = self._ws.recv()
-            except Exception:
-                continue
+            raw = self._recv_raw(remaining)
             if not raw:
                 continue
             try:
@@ -381,11 +535,11 @@ class Nip46Client:
             # ``secret=`` in our nostrconnect:// URI — so we satisfy it.
             #
             # We accept the signer's connect response of either our echoed
-            # ``secret`` (spec-ideal) OR ``"ack"``.  Real-world signers
-            # (Amber in particular) reply ``"ack"`` and do NOT echo the
-            # secret, matching NDK / nostr-tools BunkerSigner behavior; a
-            # strict secret-echo requirement makes login impossible with
-            # them.  Residual spoofing is neutralized downstream: after
+            # ``secret`` (spec-ideal) OR ``"ack"``.  Observed live: real
+            # Amber *echoes the secret*; NDK / nostr-tools BunkerSigner
+            # reply ``"ack"`` — accepting both keeps login working across
+            # signers (a strict secret-echo-only requirement would break
+            # the ack signers).  Residual spoofing is neutralized downstream: after
             # connect we learn the user-pubkey via ``get_public_key`` and
             # the final NIP-98 login event is signed by that key, which the
             # server validates against its npub allowlist — a hijacker's
@@ -394,19 +548,31 @@ class Nip46Client:
             if result == self.secret or result == "ack":
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
-                # Re-subscribe filtered to the signer's pubkey so the relay
-                # only delivers ITS responses (mirrors nostr-tools'
+                # Re-subscribe filtered to the signer's pubkey so relays
+                # only deliver ITS responses (mirrors nostr-tools'
                 # setupSubscription authors=[signer]).
                 self._send_req(authors=[author])
-                # NOTE: we deliberately do NOT call get_public_key here.
-                # Amber does not reliably answer it (and mints random UUID
-                # response ids rather than echoing ours), so a
-                # get_public_key round-trip just stalls.  The authoritative
-                # user-pubkey is the ``pubkey`` field of the signed login
-                # event itself, which we capture in sign_event().  Return
-                # the signer pubkey as a provisional value.
-                self.user_pubkey = None
-                return author
+                # Short stabilization delay before the first request, as
+                # blink-terminal does (POST_CONNECT_DELAY): gives the freshly
+                # (re)subscribed relays a moment to settle so the first
+                # get_public_key isn't raced against subscription setup.
+                time.sleep(0.5)
+                # Resolve the user pubkey via get_public_key — the proven
+                # blink flow (NostrConnectService getPublicKeyWithRetry).
+                # Now that responses fan out across several relays, this is
+                # reliable.  If it still fails (odd signer), we fall back to
+                # the pubkey on the signed login event in sign_event().
+                try:
+                    self.user_pubkey = self._get_public_key(deadline)
+                    log.info("nip46: user pubkey %s", (self.user_pubkey or "")[:12])
+                    return self.user_pubkey
+                except Nip46Error as exc:
+                    log.debug(
+                        "get_public_key failed (%s); will derive pubkey "
+                        "from the signed event instead", exc,
+                    )
+                    self.user_pubkey = None
+                    return author
             if result == "auth_url":
                 url = resp.get("error")
                 if url and self.on_auth_url and resp.get("id") not in self._auth_url_seen:
@@ -419,6 +585,45 @@ class Nip46Client:
             "the request in your signer app?"
         )
 
+    def _get_public_key(self, deadline: float, *, attempts: int = 3) -> str:
+        """Ask the signer for the user pubkey (NIP-46 ``get_public_key``).
+
+        Mirrors blink-terminal's ``getPublicKeyWithRetry``: retries a few
+        times with backoff, bounded by the overall connect ``deadline``.
+        Uses ``accept_any`` because Amber may answer with a fresh response
+        id rather than echoing ours.  Returns the 64-hex pubkey.
+        """
+        if not self.remote_signer_pubkey:
+            raise Nip46Error("not connected; cannot get_public_key")
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            # Per-attempt budget: split the remaining time but cap so a
+            # single stalled attempt doesn't eat the whole window.
+            budget = min(remaining, 20.0)
+            rid = self._send_request(
+                "get_public_key", [], self.remote_signer_pubkey
+            )
+            try:
+                result = self._read_response(rid, timeout=budget, accept_any=True)
+            except Nip46Error as exc:
+                last_exc = exc
+                log.debug("get_public_key attempt %d failed: %s", attempt, exc)
+                if attempt < attempts:
+                    time.sleep(0.5 * attempt)
+                continue
+            pk = (result or "").strip()
+            # Basic sanity: a NIP-46 pubkey result is 64 lowercase hex.
+            if len(pk) == 64 and all(c in "0123456789abcdef" for c in pk.lower()):
+                return pk.lower()
+            last_exc = Nip46Error(f"get_public_key returned non-pubkey: {result!r}")
+            log.debug("%s", last_exc)
+            if attempt < attempts:
+                time.sleep(0.5 * attempt)
+        raise last_exc or Nip46Error("get_public_key: no response")
+
     def sign_event(self, unsigned: dict, timeout: float = 120) -> dict:
         """Ask the signer to sign ``unsigned`` (a dict) and return the signed event.
 
@@ -430,8 +635,9 @@ class Nip46Client:
         rid = self._send_request(
             "sign_event", [json.dumps(unsigned)], self.remote_signer_pubkey
         )
-        # accept_any: Amber doesn't echo our request id, so take the
-        # signer's first signed-event reply by provenance.
+        # accept_any: defensive fallback for signers that don't echo the
+        # request id (real Amber does); take the signer's first
+        # signed-event reply by provenance.
         result = self._read_response(rid, timeout=timeout, accept_any=True)
         try:
             signed = json.loads(result)
@@ -445,9 +651,11 @@ class Nip46Client:
         return signed
 
     def close(self) -> None:
+        close_msg = json.dumps(["CLOSE", self._sub_id])
+        # Test-injected single fake socket.
         if self._ws is not None:
             try:
-                self._ws.send(json.dumps(["CLOSE", self._sub_id]))
+                self._ws.send(close_msg)
             except Exception:
                 pass
             try:
@@ -455,3 +663,14 @@ class Nip46Client:
             except Exception:
                 pass
             self._ws = None
+        # Real per-relay connections.
+        for ws in list(self._wss.values()):
+            try:
+                ws.send(close_msg)
+            except Exception:
+                pass
+            try:
+                ws.close()
+            except Exception:
+                pass
+        self._wss.clear()

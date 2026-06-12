@@ -79,6 +79,33 @@ def test_connect_uri_shape():
     assert "sign_event:27235" in q["perms"][0]
 
 
+def test_connect_uri_multi_relay():
+    """Multiple relays must each appear as a repeated ``relay=`` param
+    (NIP-46 / nostr-tools ``getAll("relay")`` convention) so Amber stores
+    and replies on all of them — the redundancy that makes login reliable."""
+    relays = ["wss://r1.example", "wss://r2.example", "wss://r3.example"]
+    c = nip46.Nip46Client(relays=relays, name="vezir")
+    uri = c.build_connect_uri()
+    q = parse_qs(urlsplit(uri).query)
+    assert q["relay"] == relays  # order preserved, one entry each
+
+
+def test_default_relays_match_blink():
+    """vezir ships blink-terminal's exact proven NIP-46 relay set."""
+    assert nip46.DEFAULT_RELAYS == [
+        "wss://relay.nsec.app",
+        "wss://relay.damus.io",
+        "wss://nos.lol",
+        "wss://relay.getportal.cc",
+        "wss://offchain.pub",
+    ]
+    # No explicit relays -> default set is used.
+    c = nip46.Nip46Client()
+    assert c.relays == nip46.DEFAULT_RELAYS
+    q = parse_qs(urlsplit(c.build_connect_uri()).query)
+    assert q["relay"] == nip46.DEFAULT_RELAYS
+
+
 # ── simulated remote signer ──────────────────────────────────────────────────
 
 
@@ -345,6 +372,133 @@ def test_amber_non_echoed_id_and_no_get_pubkey():
     assert nostr_event.verify_event(signed)
     assert signed["pubkey"] == signer.pubkey
     assert client.user_pubkey == signer.pubkey
+
+
+def test_get_public_key_used_for_user_pubkey():
+    """After connect, the client resolves the user pubkey via
+    get_public_key (the proven blink flow), not by waiting for a signed
+    event.  FakeSigner's user key == signer key, so they match here, but
+    the point is wait_for_connection returns BEFORE any sign_event."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="ack")
+
+    user_pubkey = client.wait_for_connection(timeout=5)
+    # user_pubkey came from get_public_key and is recorded.
+    assert user_pubkey == signer.pubkey
+    assert client.user_pubkey == signer.pubkey
+
+
+class MultiRelaySockets:
+    """Minimal multi-socket fake for _recv_raw: each "relay" is a queue of
+    raw frames; recv() pops or raises (timeout)."""
+
+    def __init__(self, frames_per_socket):
+        self._queues = [list(f) for f in frames_per_socket]
+        self.timeout = None
+
+    def as_dict(self):
+        return {f"wss://r{i}": _SockView(q) for i, q in enumerate(self._queues)}
+
+
+class _SockView:
+    def __init__(self, queue):
+        self._q = queue
+
+    def settimeout(self, t):
+        pass
+
+    def recv(self):
+        if self._q:
+            return self._q.pop(0)
+        raise TimeoutError("empty")
+
+    def send(self, raw):
+        pass
+
+    def close(self):
+        pass
+
+
+def _event_frame(sub_id, eid):
+    return json.dumps(["EVENT", sub_id, {"id": eid, "pubkey": "x", "kind": 24133,
+                                         "content": "c", "tags": []}])
+
+
+def test_recv_raw_dedupes_same_event_across_relays():
+    """The same kind-24133 response delivered by two relays must be
+    returned once; the duplicate is dropped by event-id de-dupe."""
+    client = nip46.Nip46Client(relays=["wss://r0", "wss://r1"])
+    eid = "a" * 64
+    multi = MultiRelaySockets([[_event_frame(client._sub_id, eid)],
+                               [_event_frame(client._sub_id, eid)]])
+    client._wss = multi.as_dict()
+
+    first = client._recv_raw(remaining=2.0)
+    assert first is not None and eid in first
+    # Second sweep: the duplicate from the other relay is suppressed.
+    second = client._recv_raw(remaining=2.0)
+    assert second is None
+
+
+def test_recv_raw_reads_from_a_live_relay_when_another_is_quiet():
+    """A response arriving on only ONE relay is still read even if the
+    other relay has nothing (round-robin poll, no starvation)."""
+    client = nip46.Nip46Client(relays=["wss://r0", "wss://r1"])
+    eid = "b" * 64
+    # r0 is silent; r1 has the event.
+    multi = MultiRelaySockets([[], [_event_frame(client._sub_id, eid)]])
+    client._wss = multi.as_dict()
+
+    got = client._recv_raw(remaining=2.0)
+    assert got is not None and eid in got
+
+
+def test_connect_ws_tolerates_partial_relay_failure(monkeypatch):
+    """If some relays fail to open, connect proceeds on the survivors;
+    only a total failure raises."""
+    client = nip46.Nip46Client(relays=["wss://good", "wss://bad"])
+
+    class _FakeConn:
+        def send(self, raw):
+            pass
+
+        def settimeout(self, t):
+            pass
+
+    import sys
+    import types
+
+    fake_ws_mod = types.ModuleType("websocket")
+
+    def _create_connection(url, timeout=30):
+        if "bad" in url:
+            raise OSError("relay down")
+        return _FakeConn()
+
+    fake_ws_mod.create_connection = _create_connection
+    monkeypatch.setitem(sys.modules, "websocket", fake_ws_mod)
+
+    client._connect_ws()
+    assert set(client._wss.keys()) == {"wss://good"}
+
+
+def test_connect_ws_raises_when_all_relays_fail(monkeypatch):
+    client = nip46.Nip46Client(relays=["wss://bad1", "wss://bad2"])
+
+    import sys
+    import types
+
+    fake_ws_mod = types.ModuleType("websocket")
+
+    def _create_connection(url, timeout=30):
+        raise OSError("relay down")
+
+    fake_ws_mod.create_connection = _create_connection
+    monkeypatch.setitem(sys.modules, "websocket", fake_ws_mod)
+
+    with pytest.raises(nip46.Nip46Error, match="any relay"):
+        client._connect_ws()
 
 
 def test_ignores_relay_noise_from_other_authors():

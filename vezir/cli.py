@@ -1213,8 +1213,10 @@ def team_config_remove(team_id):
     help="Team slug to store this session under (default: active team or 'default').",
 )
 @click.option(
-    "--relay", default=None,
-    help="Nostr relay for the NIP-46 handshake (default: wss://relay.nsec.app).",
+    "--relay", "relay", multiple=True, default=(),
+    help="Nostr relay for the NIP-46 handshake. Repeatable; pass multiple "
+         "times to fan out (more relays = more reliable delivery of the "
+         "signer's responses). Default: blink's proven 5-relay set.",
 )
 @click.option(
     "--timeout", "timeout", type=int, default=180, show_default=True,
@@ -1277,7 +1279,7 @@ def login(url, team_id, relay, timeout, verbose):
         click.echo(f"  Your signer needs approval — open: {u}")
 
     client = nip46.Nip46Client(
-        relay=relay or nip46.DEFAULT_RELAY,
+        relays=list(relay) or None,  # () -> use DEFAULT_RELAYS (blink's 5)
         name="vezir",
         on_auth_url=_on_auth_url,
     )
