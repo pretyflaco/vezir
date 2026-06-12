@@ -62,16 +62,16 @@
 }
 
 # --- Tailscale listener (Let's Encrypt cert via `tailscale cert`) ---
-# Replace muscle.tail178bd.ts.net with your tailnet's MagicDNS name.
+# Replace <your-host>.<tailnet>.ts.net with your tailnet's MagicDNS name.
 #
 # Stock Caddy cannot auto-provision certs for *.ts.net domains.
 # Instead, use `tailscale cert` to get a Let's Encrypt cert/key pair
 # and point Caddy at the files:
 #
 #   sudo tailscale cert \
-#     --cert-file /etc/caddy/certs/muscle.tail178bd.ts.net.crt \
-#     --key-file  /etc/caddy/certs/muscle.tail178bd.ts.net.key \
-#     muscle.tail178bd.ts.net
+#     --cert-file /etc/caddy/certs/<your-host>.<tailnet>.ts.net.crt \
+#     --key-file  /etc/caddy/certs/<your-host>.<tailnet>.ts.net.key \
+#     <your-host>.<tailnet>.ts.net
 #
 # Set up a cron/timer to renew (certs last 90 days):
 #   sudo tailscale cert ... && sudo systemctl reload caddy
@@ -79,18 +79,63 @@
 # Alternative: build Caddy with the Tailscale module for auto-renewal:
 #   xcaddy build --with github.com/tailscale/caddy-tailscale
 
-muscle.tail178bd.ts.net {
-	tls /etc/caddy/certs/muscle.tail178bd.ts.net.crt /etc/caddy/certs/muscle.tail178bd.ts.net.key
+<your-host>.<tailnet>.ts.net {
+	tls /etc/caddy/certs/<your-host>.<tailnet>.ts.net.crt /etc/caddy/certs/<your-host>.<tailnet>.ts.net.key
 	import security_headers
 	import common_logging
 	import proxy_to_vezir
 }
 
 # --- nvpn listener (Caddy internal CA) -----------------------------
-# Replace 10.44.141.239 with your nvpn server IP.
+# Replace <NVPN_SERVER_IP> with your nvpn server IP.
 
-10.44.141.239 {
+<NVPN_SERVER_IP> {
 	tls internal
+	import security_headers
+	import common_logging
+	import proxy_to_vezir
+}
+
+# --- public listener (VPS front + WireGuard + nftables DNAT) --------
+# This is the clearnet entry point (see infra/vps/). The flow is:
+#
+#   client ──HTTPS──▶ VPS:443 ──nftables DNAT──▶ 10.99.0.2:443 (this box,
+#   over WireGuard) ──▶ Caddy terminates TLS ──▶ 127.0.0.1:8000
+#
+# TLS is TERMINATED HERE on muscle, not on the VPS: the VPS only L4-
+# forwards ciphertext, so it never sees plaintext or bearer/session
+# tokens (TLS passthrough). That means Caddy on THIS box must hold the
+# real Let's Encrypt cert for the public hostname.
+#
+# Because muscle is behind double-NAT (no inbound :80/:443 from the
+# internet), the HTTP-01 / TLS-ALPN-01 challenges can't work. Use the
+# DNS-01 challenge via the Gandi provider plugin. Build Caddy with it:
+#
+#   xcaddy build --with github.com/caddy-dns/gandi
+#
+# and supply a Gandi Personal Access Token (PAT) with DNS edit rights on
+# example.com. Store it in the environment, NOT inline:
+#
+#   # /etc/caddy/gandi.env  (mode 0600, owned by the caddy user)
+#   GANDI_API_TOKEN=pat-xxxxxxxx
+#
+# and reference it via {env.GANDI_API_TOKEN} below. Systemd drop-in:
+#   [Service]
+#   EnvironmentFile=/etc/caddy/gandi.env
+
+vezir.example.com {
+	tls {
+		dns gandi {env.GANDI_API_TOKEN}
+		# Gandi LiveDNS lags ~2min before new TXT records hit the
+		# authoritative NS, and public resolvers negative-cache the
+		# NXDOMAIN (3h TTL). Check propagation against Gandi's OWN
+		# authoritative nameservers (find them with
+		# `dig +short NS <domain>` — they're ns-XX-{a,b,c}.gandi.net,
+		# NOT ns-1/2/3) and give it generous time.
+		resolvers ns-XX-a.gandi.net ns-XX-b.gandi.net ns-XX-c.gandi.net
+		propagation_delay 120s
+		propagation_timeout 600s
+	}
 	import security_headers
 	import common_logging
 	import proxy_to_vezir
@@ -109,7 +154,7 @@ muscle.tail178bd.ts.net {
 # Uncomment if you want a fixed-path download URL on the same Caddy
 # instance instead of running `caddy trust` manually on each joiner:
 #
-# 10.44.141.239:80 {
+# <NVPN_SERVER_IP>:80 {
 #     handle /trust/vezir-root.crt {
 #         root * /etc/ssl/caddy-root
 #         file_server

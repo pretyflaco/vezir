@@ -34,7 +34,26 @@ and devices is maintained out-of-tree by the admin at
 `~/vezir-data/nvpn-peers.md`.
 
 To join, send your npub (printed by `nvpn init`) to the admin and they
-will run `nvpn add-participant --participant <your-npub>`.
+will run `nvpn add-participant --participant <your-npub>` followed by
+`nvpn reload` on the server (the reload republishes the signed roster so
+your node receives it).
+
+> **Important — `import-invite` is not approval.** Importing the invite
+> only *queues a join request* on the server (it lands in
+> `inbound_join_requests` in the server's config); it does **not** add
+> you to the roster. An admin must explicitly run
+> `nvpn add-participant --participant <your-npub>` + `nvpn reload`.
+>
+> **Admin: always verify the npub against the roster in
+> `~/vezir-data/nvpn-peers.md`** before approving. The server's
+> `inbound_join_requests` shows a `requester` npub and
+> `requester_node_name` — but a node can present a hostname without that
+> npub being the teammate's real/current key (e.g. a stale identity from
+> a reinstall or a second nvpn install on the same machine). Confirm the
+> npub directly with the teammate (`grep public_key
+> ~/.config/nvpn/config.toml` on their machine) before adding it, and
+> record it in `nvpn-peers.md`. Do **not** infer identity from the
+> hostname alone.
 
 ---
 
@@ -342,11 +361,51 @@ daemon socket.  Trust `sudo systemctl status nvpn` (Linux) or
 ### No peers / tunnel not connecting
 
 1. Confirm the admin has approved your npub:
-   `nvpn add-participant --participant <your-npub>` (admin runs this)
+   `nvpn add-participant --participant <your-npub>` (admin runs this),
+   followed by `nvpn reload` on the server. Importing the invite alone
+   is **not** enough — see "Important" under "Current participants".
 2. Confirm you copied the config to root (see Step 4 for your platform)
 3. Check logs:
-   - Linux: `sudo journalctl -u nvpn --no-pager -n 50`
+   - The daemon writes to `~/.config/nvpn/daemon.log` (or
+     `/root/.config/nvpn/daemon.log` for the system service), not
+     journald. Use `sudo tail -50 /root/.config/nvpn/daemon.log`.
    - macOS: `log show --predicate 'process == "nvpn"' --last 5m`
+
+#### Stuck on "Waiting for participants" / `expected_peer_count: 0`
+
+Your daemon is running and connected to the Nostr relays, but your node
+has an **empty roster**. Check, in order:
+
+1. **Is your npub actually on the server roster?** (admin, on server):
+   ```bash
+   grep public_key ~/.config/nvpn/config.toml      # joiner: your current npub
+   sudo grep -A30 'participants' /root/.config/nvpn/config.toml
+   #   -> if the joiner's npub is NOT in this list, approve it:
+   sudo nvpn add-participant --participant <joiner-npub>
+   sudo nvpn reload                                  # republishes the signed roster
+   ```
+   After this, the joiner restarts (`sudo systemctl restart nvpn`) to
+   fetch the republished roster. `expected_peer_count` should go > 0.
+
+2. **Identity sanity check.** Confirm the npub on the roster matches the
+   joiner's *current* `public_key` (a reinstall / second install can
+   produce a different key). Fix by re-adding the correct npub and
+   removing any stale one, then `nvpn reload`.
+
+#### Peer is on the roster but stays `fips link pending` / `reachable: false`
+
+This is a **NAT-traversal** failure, not a roster problem. The server
+log (`/root/.config/nvpn/daemon.log`) shows repeated
+`NAT traversal failed ... signal timeout waiting for answer` and the
+peer's `rx_bytes` stays 0 with no `runtime_endpoint`. Both ends are
+behind NAT and can't complete UDP hole-punching. Things to check:
+
+- The joiner has `fips_bootstrap_enabled = true` (so it can use the
+  public FIPS relays). Disabled bootstrap shows as
+  `NAT traversal failed ... error=bootstrap disabled` in their log.
+- The server's inbound UDP `:51820` is reachable from the internet
+  (port-forward through any NAT layers — see the server's router setup).
+- STUN egress (UDP `:3478`) is not blocked on either side.
 
 ### curl to server tunnel IP hangs
 

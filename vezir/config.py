@@ -246,6 +246,16 @@ def server_json_path() -> Path:
     return data_dir() / "server.json"
 
 
+def session_secret_path() -> Path:
+    """Path to the HMAC secret used to sign nostr session JWTs.
+
+    A random 0600 file created on first use by ``server.nostr_auth``.
+    Deleting it invalidates every outstanding session (forces re-login),
+    which is the intended rotation mechanism.
+    """
+    return data_dir() / ".session-secret"
+
+
 def server_config() -> dict:
     """Read optional ``server.json`` from the data dir.
 

@@ -11,7 +11,12 @@ Type=simple
 ExecStart=%h/.local/bin/vezir serve
 WorkingDirectory=%h/models/vezir
 Environment=VEZIR_DATA=%h/vezir-data
-Environment=VEZIR_HOST=0.0.0.0
+# Bind to loopback only: Caddy terminates TLS and reverse-proxies to
+# 127.0.0.1:8000.  uvicorn must NEVER be directly reachable on the LAN or
+# (via the VPS DNAT) the public internet — the only ingress path is
+# Caddy.  Use VEZIR_HOST=0.0.0.0 ONLY as a temporary escape hatch before
+# Caddy is in place (see infra/caddy/README.md).
+Environment=VEZIR_HOST=127.0.0.1
 Environment=VEZIR_PORT=8000
 # PATH includes ~/.local/bin (for `meet`), and the standard system
 # locations for ffmpeg, git, etc.

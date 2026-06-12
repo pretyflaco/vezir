@@ -1,0 +1,20 @@
+# WireGuard — VPS end.  Install as /etc/wireguard/wg0.conf on the VPS.
+#
+# The VPS is the LISTENER (it has a public IP). muscle dials out to it.
+# Replace the placeholders:
+#   <VPS_PRIVATE_KEY>     contents of /etc/wireguard/vps.key
+#   <MUSCLE_PUBLIC_KEY>   contents of muscle's /etc/wireguard/muscle.pub
+#
+# Do NOT set an Endpoint here — muscle is behind NAT and its address is
+# learned from the incoming handshake.
+
+[Interface]
+Address = 10.99.0.1/24
+ListenPort = 51820
+PrivateKey = <VPS_PRIVATE_KEY>
+
+[Peer]
+# muscle (the vezir server, behind double-NAT)
+PublicKey = <MUSCLE_PUBLIC_KEY>
+# Only route the single muscle host through the tunnel.
+AllowedIPs = 10.99.0.2/32

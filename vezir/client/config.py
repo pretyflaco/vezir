@@ -230,6 +230,51 @@ def add_team_credentials(
     return cfg
 
 
+def set_team_session(
+    team_id: str,
+    url: str,
+    session_jwt: str,
+    npub: str,
+    label: str | None = None,
+    *,
+    activate: bool = True,
+) -> dict:
+    """Store a nostr-login session for a team in teams.json.
+
+    The session JWT is stored in the same ``token`` field that bearer
+    tokens use, so :func:`resolve_credentials` and
+    ``api.VezirClient._headers()`` send it as ``Authorization: Bearer``
+    with no special-casing.  We additionally record ``auth="nostr"`` and
+    the ``npub`` so ``vezir login`` can recognize a re-login candidate and
+    show whose key is bound.  Upserts on ``team_id`` like
+    :func:`add_team_credentials`.
+    """
+    cfg = load_teams_config()
+    teams: list = cfg["teams"]
+    for t in teams:
+        if t["id"] == team_id:
+            t["url"] = url
+            t["token"] = session_jwt
+            t["auth"] = "nostr"
+            t["npub"] = npub
+            if label is not None:
+                t["label"] = label
+            break
+    else:
+        teams.append({
+            "id": team_id,
+            "url": url,
+            "token": session_jwt,
+            "auth": "nostr",
+            "npub": npub,
+            "label": label or team_id,
+        })
+    if activate or not cfg.get("active"):
+        cfg["active"] = team_id
+    save_teams_config(cfg)
+    return cfg
+
+
 def remove_team_credentials(team_id: str) -> dict:
     """Remove a team entry from teams.json.  Idempotent if missing.
 

@@ -105,10 +105,38 @@ class ApiResult:
         """Human-readable error suitable for display in the TUI status bar."""
         if self.http_error is not None:
             code, msg = self.http_error
-            return f"server returned {code}: {msg}"
+            base = f"server returned {code}: {msg}"
+            if code == 401:
+                base += "; " + _reauth_hint()
+            return base
         if self.network_error is not None:
             return f"network error: {self.network_error}"
         return ""
+
+    def is_auth_error(self) -> bool:
+        """True iff this is a 401 (expired/invalid credential)."""
+        return self.http_error is not None and self.http_error[0] == 401
+
+
+def _reauth_hint() -> str:
+    """Suggest the right re-auth action based on the active credential type.
+
+    A nostr session (teams.json ``auth="nostr"``) expires after ~24h and
+    is renewed with ``vezir login``; a bearer token is renewed by the
+    operator.  Best-effort: any error reading config falls back to the
+    generic hint.
+    """
+    try:
+        from .config import load_teams_config
+
+        cfg = load_teams_config()
+        active = cfg.get("active")
+        for t in cfg.get("teams", []):
+            if t["id"] == active and t.get("auth") == "nostr":
+                return "your nostr session may have expired — run `vezir login`"
+    except Exception:
+        pass
+    return "credential invalid or expired — check $VEZIR_TOKEN or run `vezir login`"
 
 
 # ─── Session record ──────────────────────────────────────────────────────────

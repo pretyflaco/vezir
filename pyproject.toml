@@ -85,6 +85,12 @@ server = [
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
+    # Nostr (NIP-98) auth: BIP-340 Schnorr verification of signed HTTP-Auth
+    # events (vezir/server/nip98.py) + short-lived session JWTs minted on
+    # successful login (vezir/server/nostr_auth.py).  Server-only: the thin
+    # clients present a signed event / bearer JWT but never verify signatures.
+    "coincurve>=20",
+    "pyjwt>=2.8",
     # MLX Whisper ASR backend, auto-detected on Apple Silicon by
     # vezir.config.meet_asr_backend(). Pulled only on Darwin/arm64;
     # pip skips this line on Linux/Windows via the environment marker.
@@ -95,7 +101,20 @@ server = [
 # always-on-top floating record widget. `pip install vezir[tui]` pulls
 # textual; the optional `serve` mode additionally needs textual-serve
 # (install separately when you want to publish the TUI over HTTP).
-tui = ["textual>=0.80"]
+# Nostr login (`vezir login`): NIP-46 remote signing for the thin
+# client.  Opt-in so a plain `pip install vezir` stays lean — these are
+# imported lazily by the login command only.
+#   * coincurve      — secp256k1 (Schnorr sign + ECDH for NIP-44)
+#   * cryptography   — ChaCha20 for NIP-44 v2
+#   * websocket-client — sync relay transport for the NIP-46 round-trip
+#   * segno          — terminal QR for the nostrconnect:// URI
+nostr = [
+    "coincurve>=20",
+    "cryptography>=42",
+    "websocket-client>=1.5",
+    "segno>=1.5",
+]
+tui = ["textual>=0.80", "vezir[nostr]"]
 dev = ["ruff", "pytest", "pytest-asyncio", "pytest-timeout", "mypy"]
 
 [tool.ruff]
