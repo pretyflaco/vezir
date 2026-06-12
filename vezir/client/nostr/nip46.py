@@ -225,13 +225,22 @@ class Nip46Client:
         self._ws.send(json.dumps(["EVENT", ev]))
         return req_id
 
-    def _read_response(self, expect_id: str, timeout: float) -> str:
+    def _read_response(
+        self, expect_id: str, timeout: float, *, accept_any: bool = False
+    ) -> str:
         """Block until a response for ``expect_id`` arrives; return its result.
 
         Handles ``auth_url`` challenges by invoking ``on_auth_url`` and
-        continuing to wait (the signer re-sends with the same id once the
-        user approves).  Raises ``Nip46Error`` on an ``error`` result or
-        timeout.
+        continuing to wait (the signer re-sends once the user approves).
+        Raises ``Nip46Error`` on an ``error`` result or timeout.
+
+        ``accept_any``: when True, accept the first result-bearing response
+        from the signer regardless of whether its ``id`` matches.  Amber
+        mints random UUID response ids instead of echoing ours, so with a
+        single request in flight (and the relay already filtered to the
+        signer via ``authors=[signer]``) we accept the signer's reply by
+        provenance rather than id.  We still skip pure connect echoes
+        (``"ack"`` / our secret), which are not method results.
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -281,20 +290,27 @@ class Nip46Client:
                 (author or "?")[:8], rid, expect_id,
                 (result[:40] if isinstance(result, str) else result), error,
             )
-            # Strict id match (nostr-tools semantics: listeners[id]).  With
-            # the authors=[signer] filter, the signer's id-echoed reply is
-            # the only thing that reaches us, so an exact match is both
-            # correct and unambiguous.
-            if rid != expect_id:
-                continue
-
             # Auth challenge: result == "auth_url", error == URL to open.
+            # (Handle before id-matching: Amber may use a fresh id here.)
             if result == "auth_url":
                 if rid not in self._auth_url_seen:
                     self._auth_url_seen.add(rid)
                     if self.on_auth_url and error:
                         self.on_auth_url(error)
                 # keep waiting for the real result on the same id
+                continue
+
+            # Skip the signer's connect echoes ("ack" / our secret) — these
+            # are not method results (Amber re-emits them repeatedly).
+            if result == "ack" or result == self.secret:
+                log.debug("skip connect echo (result=%r) while awaiting reply", result)
+                continue
+
+            # Id matching: nostr-tools requires the echoed id; Amber mints
+            # random UUIDs.  With one request in flight and the relay
+            # filtered to the signer, accept the signer's first
+            # result/error reply by provenance when ``accept_any`` is set.
+            if rid != expect_id and not accept_any:
                 continue
 
             if rid in self._handled:
@@ -380,22 +396,17 @@ class Nip46Client:
                 log.info("nip46: connected to signer %s", author[:12])
                 # Re-subscribe filtered to the signer's pubkey so the relay
                 # only delivers ITS responses (mirrors nostr-tools'
-                # setupSubscription authors=[signer]).  Without this the
-                # relay streams unrelated kind-24133 traffic and we can't
-                # cleanly match the get_public_key / sign_event reply.
+                # setupSubscription authors=[signer]).
                 self._send_req(authors=[author])
-                # Try get_public_key, but don't hard-fail the whole login
-                # if the signer's reply is awkward.  The authoritative
+                # NOTE: we deliberately do NOT call get_public_key here.
+                # Amber does not reliably answer it (and mints random UUID
+                # response ids rather than echoing ours), so a
+                # get_public_key round-trip just stalls.  The authoritative
                 # user-pubkey is the ``pubkey`` field of the signed login
-                # event, resolved in sign_event().
-                try:
-                    self.user_pubkey = self._get_public_key(
-                        timeout=min(30, max(10, deadline - time.time()))
-                    )
-                except Nip46Error as exc:
-                    log.debug("get_public_key failed (non-fatal): %s", exc)
-                    self.user_pubkey = None
-                return self.user_pubkey or ""
+                # event itself, which we capture in sign_event().  Return
+                # the signer pubkey as a provisional value.
+                self.user_pubkey = None
+                return author
             if result == "auth_url":
                 url = resp.get("error")
                 if url and self.on_auth_url and resp.get("id") not in self._auth_url_seen:
@@ -408,13 +419,6 @@ class Nip46Client:
             "the request in your signer app?"
         )
 
-    def _get_public_key(self, timeout: float) -> str:
-        rid = self._send_request("get_public_key", [], self.remote_signer_pubkey)
-        pubkey = self._read_response(rid, timeout=max(timeout, 10))
-        if not pubkey or len(pubkey) != 64:
-            raise Nip46Error(f"signer returned an invalid user pubkey: {pubkey!r}")
-        return pubkey
-
     def sign_event(self, unsigned: dict, timeout: float = 120) -> dict:
         """Ask the signer to sign ``unsigned`` (a dict) and return the signed event.
 
@@ -426,7 +430,9 @@ class Nip46Client:
         rid = self._send_request(
             "sign_event", [json.dumps(unsigned)], self.remote_signer_pubkey
         )
-        result = self._read_response(rid, timeout=timeout)
+        # accept_any: Amber doesn't echo our request id, so take the
+        # signer's first signed-event reply by provenance.
+        result = self._read_response(rid, timeout=timeout, accept_any=True)
         try:
             signed = json.loads(result)
         except Exception as exc:

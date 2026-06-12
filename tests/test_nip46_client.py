@@ -322,6 +322,31 @@ def test_responses_filtered_to_signer():
     assert client.user_pubkey == signer.pubkey
 
 
+def test_amber_non_echoed_id_and_no_get_pubkey():
+    """Full Amber emulation: connect returns ack, the signer does NOT echo
+    our request ids (uses fresh UUIDs), and we never rely on
+    get_public_key.  sign_event must still accept the signer's signed reply
+    (accept_any) and login completes; the user pubkey comes from the
+    signed event."""
+    signer = FakeSigner(echo_id=False)
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="ack")
+
+    provisional = client.wait_for_connection(timeout=5)
+    # wait_for_connection returns the signer pubkey provisionally (no
+    # get_public_key round-trip).
+    assert provisional == signer.pubkey
+
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=5,
+    )
+    assert nostr_event.verify_event(signed)
+    assert signed["pubkey"] == signer.pubkey
+    assert client.user_pubkey == signer.pubkey
+
+
 def test_ignores_relay_noise_from_other_authors():
     """The real-world failure: a stray kind-24133 event from an UNRELATED
     key (UUID id) arrives on the relay. The client must ignore it (it's not
