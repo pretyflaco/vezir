@@ -67,12 +67,14 @@ class SignerHarness:
         scheme: str = "nip44",
         echo_id: bool = True,
         reply_relays: int | None = None,
+        listen_relays: int | None = None,
         connect_delay: float = 0.0,
         priv_hex: str | None = None,
     ) -> None:
         self.scheme = scheme
         self.echo_id = echo_id
         self.connect_delay = connect_delay
+        self._listen_relays_n = listen_relays
 
         self._priv = PrivateKey(bytes.fromhex(priv_hex)) if priv_hex else PrivateKey()
         self.pubkey = self._priv.public_key_xonly.format().hex()
@@ -90,6 +92,14 @@ class SignerHarness:
         # Which relays we PUBLISH responses on (Amber-subset emulation).
         self.reply_relays = (
             self.relays[:reply_relays] if reply_relays else list(self.relays)
+        )
+        # Which relays we SUBSCRIBE on (read the client's requests from).
+        # Simulates the laptop failure: if the client publishes only to
+        # relays the signer isn't reading, the signer never sees the
+        # request.  The client's periodic re-publish + relay reconnect must
+        # eventually land a copy on a relay in this listen set.
+        self.listen_relays = (
+            self.relays[:listen_relays] if listen_relays else None
         )
         self._wss: dict[str, object] = {}
         self._sub_id = "signer-" + secrets.token_hex(4)
@@ -134,13 +144,20 @@ class SignerHarness:
             "since": self._since,
         }
         req = json.dumps(["REQ", self._sub_id, filt])
+        listen_set = self.listen_relays if self.listen_relays else list(self._wss)
+        subscribed = []
         for url, ws in self._wss.items():
+            if url not in listen_set:
+                continue  # connected but NOT reading requests here (overlap-gap sim)
             try:
                 ws.send(req)
+                subscribed.append(url)
             except Exception as exc:
                 log(f"REQ failed on {url}: {exc}")
+        self._subscribed_urls = set(subscribed)
         log(f"pubkey={self.pubkey}")
-        log(f"listening on {len(self._wss)}/{len(self.relays)} relays")
+        log(f"listening (reading requests) on {len(subscribed)}/{len(self._wss)} "
+            f"connected relays: {subscribed}")
         log(f"will reply on {len(self.reply_relays)} relay(s): {self.reply_relays}")
 
     def _publish(self, ev: dict) -> None:
@@ -216,9 +233,13 @@ class SignerHarness:
         self._connect()
         self._send_connect_ack()
         deadline = time.time() + timeout
-        # Round-robin poll all sockets.
+        # Round-robin poll only the sockets we SUBSCRIBED on (we only read
+        # the client's requests where we're listening — the overlap-gap sim).
+        subscribed = getattr(self, "_subscribed_urls", set(self._wss))
         while not self._stop.is_set() and time.time() < deadline:
-            for ws in list(self._wss.values()):
+            for url, ws in list(self._wss.items()):
+                if url not in subscribed:
+                    continue
                 try:
                     ws.settimeout(0.3)
                     raw = ws.recv()
@@ -256,6 +277,9 @@ def main() -> None:
                     help="mint fresh UUID response ids (Amber quirk)")
     ap.add_argument("--reply-relays", type=int, default=None,
                     help="reply on only the first N relays from the URI")
+    ap.add_argument("--listen-relays", type=int, default=None,
+                    help="read the client's requests on only the first N "
+                         "relays (simulates the laptop overlap gap)")
     ap.add_argument("--connect-delay", type=float, default=0.0)
     ap.add_argument("--priv", help="signer private key hex (else random)")
     ap.add_argument("--timeout", type=float, default=120)
@@ -270,6 +294,7 @@ def main() -> None:
         scheme=args.scheme,
         echo_id=not args.no_echo_id,
         reply_relays=args.reply_relays,
+        listen_relays=args.listen_relays,
         connect_delay=args.connect_delay,
         priv_hex=args.priv,
     )

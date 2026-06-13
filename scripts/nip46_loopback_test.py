@@ -52,6 +52,7 @@ def run(
     scheme: str,
     echo_id: bool,
     reply_relays: int | None,
+    listen_relays: int | None,
     connect_delay: float,
     timeout: float,
 ) -> int:
@@ -65,6 +66,7 @@ def run(
         scheme=scheme,
         echo_id=echo_id,
         reply_relays=reply_relays,
+        listen_relays=listen_relays,
         connect_delay=connect_delay,
     )
 
@@ -130,6 +132,9 @@ def main() -> None:
     ap.add_argument("--no-echo-id", action="store_true")
     ap.add_argument("--reply-relays", type=int, default=None,
                     help="signer replies on only the first N relays")
+    ap.add_argument("--listen-relays", type=int, default=None,
+                    help="signer reads the client's requests on only the "
+                         "first N relays (simulates the laptop overlap gap)")
     ap.add_argument("--connect-delay", type=float, default=0.0)
     ap.add_argument("--timeout", type=float, default=60)
     ap.add_argument("--verbose", action="store_true")
@@ -147,6 +152,7 @@ def main() -> None:
         scheme=args.scheme,
         echo_id=not args.no_echo_id,
         reply_relays=args.reply_relays,
+        listen_relays=args.listen_relays,
         connect_delay=args.connect_delay,
         timeout=args.timeout,
     )

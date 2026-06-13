@@ -517,3 +517,122 @@ def test_ignores_relay_noise_from_other_authors():
     )
     assert signed["pubkey"] == signer.pubkey
     assert client.remote_signer_pubkey == signer.pubkey
+
+
+class _RecordingFakeWS(FakeWS):
+    """FakeWS that records every frame the client sends (to assert we never
+    CLOSE/re-REQ the subscription mid-flow)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.sent_verbs = []
+
+    def send(self, raw):
+        try:
+            self.sent_verbs.append(json.loads(raw)[0])
+        except Exception:
+            pass
+        super().send(raw)
+
+
+def test_no_resubscribe_after_connect():
+    """Regression for the laptop hang: the client must NOT CLOSE/re-REQ its
+    subscription after connect (that races our own publishes so the signer
+    never receives get_public_key/sign_event). Exactly one REQ for the
+    whole session; zero CLOSE until close()."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    ws = _RecordingFakeWS(client, signer, connect_result="ack")
+    client._ws = ws
+
+    client.wait_for_connection(timeout=5)
+    client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=5,
+    )
+    assert ws.sent_verbs.count("REQ") == 1, ws.sent_verbs
+    assert ws.sent_verbs.count("CLOSE") == 0, ws.sent_verbs
+
+
+class _DropFirstPublishWS(FakeWS):
+    """Simulates the laptop overlap gap: the signer does NOT receive the
+    FIRST publish of each method request (it lands on a relay the signer
+    isn't reading). Only the client's periodic RE-publish gets through."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._seen_method_once: set[str] = set()
+
+    def send(self, raw):
+        msg = json.loads(raw)
+        if msg[0] == "EVENT":
+            ev = msg[1]
+            # Decrypt to learn the method so we can drop only the first try.
+            try:
+                from vezir.client.nostr import nip04, nip44
+                content = ev["content"]
+                if nip04.is_nip04(content):
+                    pt = nip04.decrypt(content, self._signer._priv.to_hex(),
+                                       self._client.client_pubkey)
+                else:
+                    pt = nip44.decrypt_from(content, self._signer._priv.to_hex(),
+                                            self._client.client_pubkey)
+                method = json.loads(pt).get("method")
+            except Exception:
+                method = None
+            if method and method not in self._seen_method_once:
+                # Drop the first publish of this method entirely.
+                self._seen_method_once.add(method)
+                return
+        super().send(raw)
+
+
+def test_periodic_republish_recovers_dropped_request():
+    """If the first publish of get_public_key/sign_event is lost (overlap
+    gap), the client's periodic re-publish must still drive the flow to
+    completion. Without re-publish this times out."""
+    signer = FakeSigner(echo_id=False)
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = _DropFirstPublishWS(client, signer, connect_result="ack")
+
+    # republish_interval defaults to 2s; give enough timeout for one cycle.
+    user_pubkey = client.wait_for_connection(timeout=15)
+    assert user_pubkey == signer.pubkey
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(time.time()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=15,
+    )
+    assert nostr_event.verify_event(signed)
+    assert signed["pubkey"] == signer.pubkey
+
+
+def test_reconnect_dead_relays_reopens_missing(monkeypatch):
+    """_reconnect_dead_relays must reopen advertised relays that aren't
+    currently connected (handles startup refusals / mid-session drops)."""
+    client = nip46.Nip46Client(relays=["wss://r0", "wss://r1", "wss://r2"])
+
+    class _Conn:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, raw):
+            self.sent.append(raw)
+
+    # Start with only r0 connected; r1/r2 were "refused" at startup.
+    client._wss = {"wss://r0": _Conn()}
+    opened = []
+
+    def _fake_open(url):
+        opened.append(url)
+        return _Conn()
+
+    monkeypatch.setattr(client, "_open_relay", _fake_open)
+    client._reconnect_dead_relays()
+
+    assert set(opened) == {"wss://r1", "wss://r2"}
+    assert set(client._wss.keys()) == {"wss://r0", "wss://r1", "wss://r2"}
+    # Reconnected sockets get a REQ subscription.
+    for url in ("wss://r1", "wss://r2"):
+        assert any('"REQ"' in s for s in client._wss[url].sent)
