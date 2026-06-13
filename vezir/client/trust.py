@@ -63,14 +63,61 @@ def resolve_verify(explicit: bool | str | ssl.SSLContext | None = None):
     if not extra:
         return True
 
-    # Start from the default trust store (system roots + certifi) so public
-    # certificates keep validating, then add the internal CA(s) on top.
-    ctx = ssl.create_default_context()
+    # Build a context that trusts BOTH the public roots and the internal CA.
+    #
+    # IMPORTANT: ssl.create_default_context() / load_default_certs() consult
+    # OpenSSL's default verify paths, which honor $SSL_CERT_FILE.  On boxes
+    # where SSL_CERT_FILE names the Caddy-only CA (the very misconfiguration
+    # this fixes), that would narrow the "default" store to just Caddy and
+    # break the public Let's Encrypt front.  So we seed the public roots
+    # explicitly from certifi (independent of SSL_CERT_FILE) and add the OS
+    # trust directory, then append the internal CA(s) on top.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    _load_public_roots(ctx)
     for path in extra:
         try:
             ctx.load_verify_locations(cafile=path)
         except (ssl.SSLError, OSError):
             # A malformed/unreadable extra CA must not blind us to the
-            # default store; skip it and keep public trust intact.
+            # public roots; skip it and keep public trust intact.
             continue
     return ctx
+
+
+def _load_public_roots(ctx: ssl.SSLContext) -> None:
+    """Load the public CA roots into ``ctx`` independent of $SSL_CERT_FILE.
+
+    Prefers certifi (the same bundle httpx's default uses); also adds the OS
+    capath directory when present so privately-installed public-equivalent
+    roots still apply.  Best-effort: failures here leave whatever loaded so
+    far intact.
+    """
+    loaded = False
+    try:
+        import certifi
+
+        ctx.load_verify_locations(cafile=certifi.where())
+        loaded = True
+    except (ImportError, ssl.SSLError, OSError):
+        pass
+
+    # Also pick up the OS trust directory (capath) if discoverable, without
+    # going through SSL_CERT_FILE.
+    paths = ssl.get_default_verify_paths()
+    capath = paths.capath or paths.openssl_capath
+    if capath and os.path.isdir(capath):
+        try:
+            ctx.load_verify_locations(capath=capath)
+            loaded = True
+        except (ssl.SSLError, OSError):
+            pass
+
+    if not loaded:
+        # Last resort: fall back to OpenSSL defaults (may honor SSL_CERT_FILE,
+        # but better than an empty store).
+        try:
+            ctx.load_default_certs()
+        except (ssl.SSLError, OSError):
+            pass

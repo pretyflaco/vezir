@@ -44,20 +44,33 @@ def ca_pem(tmp_path):
     return p
 
 
-def _ca_count(ctx: ssl.SSLContext) -> int:
-    return len(ctx.get_ca_certs())
+def _subjects(ctx: ssl.SSLContext) -> set[str]:
+    """CommonNames of the certs ``ctx`` enumerates via get_ca_certs().
 
-
-def _default_baseline(monkeypatch) -> int:
-    """CA count of a default context with NO trust env vars set.
-
-    ``ssl.create_default_context()`` honors SSL_CERT_FILE at call time, so the
-    baseline must be measured with those vars cleared to isolate what the
-    internal CA adds.
+    NOTE: get_ca_certs() only enumerates certs loaded from a *cafile*, not a
+    *capath* directory.  Whether the system default store is enumerable thus
+    varies by platform (Debian/local uses a capath -> not enumerable; CI's
+    image uses a cafile -> enumerable).  Tests must therefore assert on the
+    *delta* the internal CA introduces, never on absolute counts.
     """
-    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
-    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
-    return _ca_count(ssl.create_default_context())
+    out: set[str] = set()
+    for c in ctx.get_ca_certs():
+        cn = dict(x for rdn in c["subject"] for x in rdn).get("commonName")
+        if cn:
+            out.add(cn)
+    return out
+
+
+def _public_subjects() -> set[str]:
+    """Subjects of the public roots the resolver seeds (same loader).
+
+    Built via the resolver's own _load_public_roots so the comparison
+    enumerates the exact same certs the resolver does, independent of how
+    the platform's default store happens to be configured.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    trust._load_public_roots(ctx)
+    return _subjects(ctx)
 
 
 # ── explicit wins ────────────────────────────────────────────────────────────
@@ -98,39 +111,43 @@ def test_env_points_at_missing_file_returns_true(monkeypatch, tmp_path):
 
 
 def test_internal_ca_is_appended_not_replacing(monkeypatch, ca_pem):
-    """Context must contain the default roots PLUS the internal CA."""
-    baseline = _default_baseline(monkeypatch)
+    """Context must contain the default roots PLUS the internal CA.
+
+    Asserted as a *delta* over the default store (see _subjects docstring):
+    the resolver's enumerable subjects == default enumerable subjects ∪
+    {our test CA}.  This holds whether or not the platform's default store
+    is itself enumerable.
+    """
+    public_subjects = _public_subjects()
     monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
 
     ctx = trust.resolve_verify()
     assert isinstance(ctx, ssl.SSLContext)
-    # Default store preserved (public certs still validate) ...
-    # ... and the internal CA was added on top.
-    assert _ca_count(ctx) == baseline + 1
-    subjects = [
-        dict(x for rdn in c["subject"] for x in rdn).get("commonName")
-        for c in ctx.get_ca_certs()
-    ]
-    assert "vezir-test-ca" in subjects
+    # The internal CA was added ...
+    assert "vezir-test-ca" in _subjects(ctx)
+    # ... on top of the default store (nothing dropped).
+    assert public_subjects <= _subjects(ctx)
+    assert _subjects(ctx) == public_subjects | {"vezir-test-ca"}
 
 
 def test_both_env_vars_deduped(monkeypatch, ca_pem):
     """Same path in both env vars is loaded once, not twice."""
-    baseline = _default_baseline(monkeypatch)
+    public_subjects = _public_subjects()
     monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
     monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca_pem))
     ctx = trust.resolve_verify()
     assert isinstance(ctx, ssl.SSLContext)
-    assert _ca_count(ctx) == baseline + 1
+    # Loaded exactly once -> the delta is a single new subject.
+    assert _subjects(ctx) == public_subjects | {"vezir-test-ca"}
 
 
 def test_malformed_ca_skipped_keeps_default_store(monkeypatch, tmp_path):
     """A garbage 'CA' file must not blind us to the default store."""
-    baseline = _default_baseline(monkeypatch)
+    public_subjects = _public_subjects()
     bad = tmp_path / "bad.crt"
     bad.write_text("not a certificate\n")
     monkeypatch.setenv("SSL_CERT_FILE", str(bad))
     ctx = trust.resolve_verify()
     assert isinstance(ctx, ssl.SSLContext)
-    # Default roots intact; malformed extra simply skipped.
-    assert _ca_count(ctx) == baseline
+    # Default roots intact; malformed extra simply skipped (no delta).
+    assert _subjects(ctx) == public_subjects
