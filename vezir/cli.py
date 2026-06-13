@@ -1296,6 +1296,10 @@ def login(url, team_id, relay, timeout, verbose):
         pass  # QR is a convenience; the URI below always works.
     click.echo(connect_uri)
     click.echo()
+    _clock_warn = _clock_unsynced_warning()
+    if _clock_warn:
+        click.echo(_clock_warn, err=True)
+        click.echo()
     click.echo(f"Waiting up to {timeout}s for you to approve in your signer…")
 
     try:
@@ -1353,6 +1357,34 @@ def _login_verify():
         if path and os.path.isfile(path):
             return path
     return True
+
+
+def _clock_unsynced_warning() -> str | None:
+    """Best-effort: warn if the local clock is NOT NTP-synchronized.
+
+    An unsynced clock that runs behind the signer's makes the signer's
+    relay-side ``since`` filter drop our NIP-46 requests, so login hangs
+    after connect.  The client self-corrects via the signer's timestamp,
+    but a heads-up saves debugging.  Returns a message string or None.
+    Linux-only (timedatectl); silently no-op elsewhere.
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("timedatectl"):
+        return None
+    try:
+        out = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+    except Exception:
+        return None
+    if out == "no":
+        return (
+            "warning: your system clock is not NTP-synchronized. If login "
+            "stalls after connecting, sync it:  sudo timedatectl set-ntp true"
+        )
+    return None
 
 
 # ── session (v0.6.2+: cross-team move) ───────────────────────────────────────

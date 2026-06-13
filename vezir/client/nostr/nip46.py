@@ -65,6 +65,13 @@ log = logging.getLogger("vezir.nip46")
 
 NIP46_KIND = 24133
 
+# Max |clock offset| (seconds) we'll learn from the signer's connect event.
+# Real skew between a misconfigured client and an NTP-correct signer is
+# usually seconds-to-minutes; anything beyond this is treated as bogus and
+# ignored (don't let a hostile signer push our event timestamps absurdly
+# far).  5 minutes comfortably covers realistic unsynced-clock drift.
+MAX_CLOCK_OFFSET = 300
+
 # Relays known to handle NIP-46 ephemeral events well.  This is blink
 # POS / blink-terminal's exact set (NostrConnectService.ts
 # DEFAULT_NIP46_RELAYS), which is proven to work reliably with Amber.
@@ -181,6 +188,17 @@ class Nip46Client:
         self._handled: set[str] = set()
         # Track which request ids have already surfaced an auth_url.
         self._auth_url_seen: set[str] = set()
+        # Clock-skew correction.  Amber subscribes for OUR requests with a
+        # relay-side filter `since = now` (the signer's clock).  If our
+        # clock is behind the signer's, every request we stamp with
+        # created_at = our_now is filtered out by the relay before reaching
+        # the signer — the request is never delivered and the flow hangs
+        # after connect (observed on a laptop with NTP disabled).  We learn
+        # the offset from the signer's connect-response `created_at` (its
+        # NTP-correct clock) and add it to our outgoing `created_at`, so our
+        # events clear the signer's `since` regardless of local skew.
+        # Clamped to a sane range to reject absurd/malicious values.
+        self._clock_offset: int = 0
 
     # ── connection token ─────────────────────────────────────────────────────
 
@@ -372,13 +390,41 @@ class Nip46Client:
         req_id = secrets.token_hex(8)
         payload = json.dumps({"id": req_id, "method": method, "params": params})
         ciphertext = self._encrypt_for_peer(payload, target_pubkey)
+        # Stamp with the signer-corrected clock so the event clears the
+        # signer's `since` request-filter even if our local clock is behind.
+        created_at = int(time.time()) + self._clock_offset
         ev = nostr_event.finalize_event(
             private_key_hex=self._client_priv_hex,
             kind=NIP46_KIND,
             tags=[["p", target_pubkey]],
             content=ciphertext,
+            created_at=created_at,
         )
         return req_id, json.dumps(["EVENT", ev])
+
+    def _learn_clock_offset(self, signer_created_at) -> None:
+        """Learn our clock offset from the signer's connect-event time.
+
+        ``offset = signer_created_at - our_now``.  Applied to outgoing
+        request ``created_at`` so our events clear the signer's
+        ``since``-filtered subscription regardless of local clock skew.
+        Clamped to ``±MAX_CLOCK_OFFSET``; ignored if non-numeric.
+        """
+        try:
+            sc = int(signer_created_at)
+        except (TypeError, ValueError):
+            return
+        offset = sc - int(time.time())
+        if offset > MAX_CLOCK_OFFSET:
+            offset = MAX_CLOCK_OFFSET
+        elif offset < -MAX_CLOCK_OFFSET:
+            offset = -MAX_CLOCK_OFFSET
+        self._clock_offset = offset
+        if abs(offset) >= 5:
+            log.info(
+                "nip46: local clock is %+ds vs the signer; correcting "
+                "request timestamps (consider enabling NTP)", -offset,
+            )
 
     def _publish(self, event_msg: str, *, reconnect: bool = True) -> int:
         """Broadcast one ``["EVENT", ev]`` frame to every live relay.
@@ -460,7 +506,7 @@ class Nip46Client:
         *,
         accept_any: bool = False,
         event_msg: str | None = None,
-        republish_interval: float = 2.0,
+        republish_interval: float = 4.0,
     ) -> str:
         """Block until a response for ``expect_id`` arrives; return its result.
 
@@ -479,21 +525,24 @@ class Nip46Client:
 
         ``event_msg``: when given, the request frame is RE-broadcast every
         ``republish_interval`` seconds while we wait (reconnecting any dead
-        relay first).  This is the crux of the laptop fix: a single publish
-        can be silently dropped by the reachable relays (or land only on
-        relays the signer isn't reading), so the signer never sees the
-        request.  Periodic re-publish + relay reconnect lets a transient
-        delivery gap self-heal within the wait window, mirroring how
-        nostr-tools' SimplePool keeps the request live.
+        relay first) as a secondary safety net for a transient delivery
+        drop or a relay that comes back mid-wait.  (The primary cause of a
+        request never reaching the signer was clock skew vs the signer's
+        ``since`` filter — corrected at build time; see _learn_clock_offset.)
         """
         deadline = time.time() + timeout
         last_publish = time.time()  # _send_request already published once
+        republishes = 0
         while time.time() < deadline:
             # Re-broadcast the request periodically so a dropped/mis-routed
             # publish self-heals (and pick up any relay that came back).
             if event_msg is not None and (time.time() - last_publish) >= republish_interval:
                 n = self._publish(event_msg)
-                log.debug("re-published request to %d relay(s)", n)
+                republishes += 1
+                # Throttle the log: only every 5th re-publish (~20s) to
+                # avoid flooding --verbose output.
+                if republishes % 5 == 1:
+                    log.debug("re-published request to %d relay(s) (x%d)", n, republishes)
                 last_publish = time.time()
             remaining = deadline - time.time()
             raw = self._recv_raw(remaining)
@@ -635,6 +684,13 @@ class Nip46Client:
             if result == self.secret or result == "ack":
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
+                # Learn the clock offset from the signer's connect event:
+                # its `created_at` is stamped by the signer's (NTP-correct)
+                # clock, which is also what its `since` request-subscription
+                # uses.  Stamping our requests with this offset makes them
+                # clear the signer's `since` even if our local clock is
+                # behind.  Clamp to reject absurd/malicious skew.
+                self._learn_clock_offset(ev.get("created_at"))
                 # We do NOT re-subscribe here.  The single #p subscription
                 # from _subscribe_once already receives the signer's
                 # responses (they're #p-tagged to us); author filtering is

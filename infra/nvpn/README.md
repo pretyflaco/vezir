@@ -415,6 +415,25 @@ behind NAT and can't complete UDP hole-punching. Things to check:
 - Wait 30-60 seconds -- Nostr relay discovery can be slow on first
   connection
 
+### `vezir login` hangs after "connected to signer" / get_public_key times out
+
+Almost always a **client clock skew** problem. The nostr signer (Amber,
+nsec.app) subscribes for your login requests with a relay-side `since`
+filter set to *its* clock. If your machine's clock is behind the signer's,
+the relays drop your requests before the signer sees them — connect
+succeeds but `get_public_key`/`sign_event` never arrive, and login times
+out. The signer's activity log shows only "Connect".
+
+`vezir login` self-corrects by learning the offset from the signer's
+timestamp, but the robust fix is to sync your clock:
+
+```bash
+timedatectl                         # check "System clock synchronized: yes"
+sudo timedatectl set-ntp true       # if it says no — then retry vezir login
+```
+
+(macOS: System Settings → General → Date & Time → "Set time automatically".)
+
 ### Vezir upload returns 401 "invalid bearer token"
 
 Check your token for copy-paste artifacts:

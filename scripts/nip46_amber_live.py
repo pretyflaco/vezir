@@ -35,11 +35,29 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--relays", nargs="*", default=None)
     ap.add_argument("--timeout", type=float, default=180)
+    ap.add_argument("--fake-skew", type=int, default=0,
+                    help="Stamp our request events this many seconds BEHIND "
+                         "real time (simulates an unsynced client clock that "
+                         "is behind the signer), WITHOUT touching the system "
+                         "clock. Positive = behind. Use with/without "
+                         "--no-clock-fix to show the skew failure vs the fix.")
+    ap.add_argument("--no-clock-fix", action="store_true",
+                    help="Disable the learned clock-offset correction "
+                         "(forces offset=0). With --fake-skew this should "
+                         "reproduce the laptop hang against real Amber.")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
                         format="[nip46] %(message)s")
     logging.getLogger("vezir.nip46").setLevel(logging.DEBUG)
+
+    # Inject a fake "behind" clock into the nip46 module only (event
+    # created_at uses nip46_mod.time.time()), without changing the OS clock.
+    if args.fake_skew:
+        _real = nip46.time.time
+        nip46.time.time = lambda: _real() - args.fake_skew  # type: ignore
+        print(f"[harness] faking client clock {args.fake_skew}s BEHIND real "
+              f"time (system clock untouched)", file=sys.stderr, flush=True)
 
     relays = args.relays if args.relays else nip46.DEFAULT_RELAYS
 
@@ -48,6 +66,14 @@ def main() -> int:
 
     client = nip46.Nip46Client(relays=relays, name="vezir-live",
                                on_auth_url=_on_auth)
+
+    if args.no_clock_fix:
+        # Neutralize the learned-offset correction to demonstrate the
+        # failure mode (offset stays 0 no matter what the signer says).
+        client._learn_clock_offset = lambda *_a, **_k: None  # type: ignore
+        print("[harness] clock-offset correction DISABLED (--no-clock-fix)",
+              file=sys.stderr, flush=True)
+
     uri = client.build_connect_uri()
 
     print("\n=== Scan this in Amber (or paste the URI) ===\n", flush=True)

@@ -608,6 +608,98 @@ def test_periodic_republish_recovers_dropped_request():
     assert signed["pubkey"] == signer.pubkey
 
 
+class _SinceFilterWS(FakeWS):
+    """Emulates Amber's request subscription: the signer only RECEIVES our
+    kind-24133 request events whose ``created_at >= signer_since`` (a
+    relay-side ``since`` filter computed from the signer's own clock).
+
+    Requests stamped before ``signer_since`` are silently dropped — exactly
+    the laptop failure when the client clock is behind the signer's. The
+    connect ack is still delivered (the signer is the publisher there).
+    """
+
+    def __init__(self, *a, signer_since: int, **kw):
+        super().__init__(*a, **kw)
+        self._signer_since = signer_since
+
+    def send(self, raw):
+        msg = json.loads(raw)
+        if msg[0] == "EVENT":
+            ev = msg[1]
+            if ev.get("created_at", 0) < self._signer_since:
+                return  # filtered out by the signer's `since` — never seen
+            resp = self._signer.handle_request(
+                self._client.client_pubkey, ev["content"]
+            )
+            self._outbox.append(["EVENT", self._client._sub_id, resp])
+
+    def recv(self):
+        # Connect ack carries the SIGNER's clock (== signer_since baseline),
+        # which is how the client learns its offset.
+        if self._send_connect and not self._connect_sent:
+            self._connect_sent = True
+            result = (
+                self._client.secret if self._connect_result == "secret"
+                else self._connect_result
+            )
+            resp = json.dumps({"id": "connect", "result": result})
+            ct = self._signer._encrypt(resp, self._client.client_pubkey)
+            return json.dumps(["EVENT", self._client._sub_id, {
+                "pubkey": self._signer.pubkey, "kind": 24133, "content": ct,
+                "tags": [["p", self._client.client_pubkey]],
+                "created_at": self._signer_since}])
+        if self._outbox:
+            return json.dumps(self._outbox.pop(0))
+        raise TimeoutError("no message")
+
+
+def test_clock_offset_recovers_from_behind_skew(monkeypatch):
+    """The laptop root cause: client clock BEHIND the signer's, so requests
+    stamped created_at=our_now fall before the signer's `since` filter and
+    are never delivered. The client must learn the offset from the connect
+    event's timestamp and stamp requests forward so they clear `since`.
+    """
+    import vezir.client.nostr.nip46 as nip46_mod
+
+    real = time.time
+    skew = 120  # our clock is 120s BEHIND the signer
+
+    # Make the client's wall clock read `skew` seconds behind real time.
+    monkeypatch.setattr(nip46_mod.time, "time", lambda: real() - skew)
+
+    signer = FakeSigner(echo_id=False)
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    signer_since = int(real())  # signer subscribes with since = signer's now
+    client._ws = _SinceFilterWS(
+        client, signer, connect_result="ack", signer_since=signer_since
+    )
+
+    user_pubkey = client.wait_for_connection(timeout=15)
+    # Offset learned (~ +skew so corrected created_at >= signer_since).
+    assert client._clock_offset >= skew - 2
+    assert user_pubkey == signer.pubkey
+
+    signed = client.sign_event(
+        {"kind": 27235, "created_at": int(real()),
+         "tags": [["u", "https://x/login"], ["method", "POST"]], "content": ""},
+        timeout=15,
+    )
+    assert nostr_event.verify_event(signed)
+    assert signed["pubkey"] == signer.pubkey
+
+
+def test_clock_offset_clamped(monkeypatch):
+    """A bogus/hostile signer timestamp far in the future is clamped to
+    MAX_CLOCK_OFFSET (we don't blindly trust the signer's clock)."""
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._learn_clock_offset(int(time.time()) + 99999)
+    assert client._clock_offset == nip46.MAX_CLOCK_OFFSET
+    client._learn_clock_offset(int(time.time()) - 99999)
+    assert client._clock_offset == -nip46.MAX_CLOCK_OFFSET
+    client._learn_clock_offset("not-a-number")  # ignored, keeps last value
+    assert client._clock_offset == -nip46.MAX_CLOCK_OFFSET
+
+
 def test_reconnect_dead_relays_reopens_missing(monkeypatch):
     """_reconnect_dead_relays must reopen advertised relays that aren't
     currently connected (handles startup refusals / mid-session drops)."""
