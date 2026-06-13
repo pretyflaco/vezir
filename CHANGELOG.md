@@ -3,6 +3,52 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.2 — security hardening + Google prefill
+
+Addresses a security audit of the 0.8.x auth code plus a Google sign-in
+prefill fix.
+
+### Security
+
+* **NIP-98 replay protection (H1).**  A valid login event could be replayed
+  within its freshness window (~180 s) to mint a second session JWT.  The
+  server now keeps an in-memory TTL set of consumed event ids and rejects
+  any reuse (401).
+* **Header-injection-resistant login URL (H2).**  `_login_url` reconstructed
+  the NIP-98 `u`-tag target from `X-Forwarded-Proto` / `Host`, which a
+  caller reaching uvicorn directly could spoof.  Set **`VEZIR_PUBLIC_URL`**
+  (or `server.json` `public_url`) and the server validates against that
+  fixed base instead of the request headers.  **Set this in production.**
+  (Falls back to the old header behavior when unset, for local/dev.)
+* **Exact Google domain match (H3 hardening).**  The Workspace-domain check
+  now compares the email's domain part exactly (`rsplit("@",1)`) instead of
+  a suffix `endswith`, removing any lookalike/subdomain ambiguity.  (The
+  allowlist already gated this; the change tightens defense-in-depth.)
+* **`/health` no longer discloses `data_dir` (M5).**  The unauthenticated
+  endpoint returns only `status` + `version`.
+* **Loud warning when rate limiting is disabled (M4).**  Startup logs a
+  warning if `VEZIR_DISABLE_RATELIMIT` is set, so a CI flag can't silently
+  remove brute-force protection in prod.
+* **DST-correct timestamp parsing.**  `_parse_iso` (token expiry) and the
+  `doctor` / `cli` siblings now use `calendar.timegm` (true UTC) instead of
+  `time.mktime(...) - time.timezone`, which was off by the DST offset for
+  part of the year.
+
+### Fixed
+
+* **Google sign-in prefill.**  Google's device-code endpoint returns only a
+  bare `verification_url`; the server now **synthesizes**
+  `verification_url_complete` (`…/device?user_code=<CODE>`) so clients can
+  open a pre-filled verification page instead of making the user type the
+  code.  (Pairs with vezir-android 0.6.1+.)
+
+### Deferred (from the audit)
+
+* JWT per-token revocation (a feature; the session secret is the current
+  nuclear option), session-secret hot-rotation, NIP-46 "ack" tightening,
+  and infra LOWs (nftables forward `policy drop`, Caddy CSP, plaintext
+  token at rest with 0600).  Tracked in the operator plan.
+
 ## 0.8.1 — Google sign-in UX + JWKS/DNS resilience
 
 ### Fixed

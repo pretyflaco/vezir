@@ -44,6 +44,7 @@ Auth dependencies:
 """
 from __future__ import annotations
 
+import calendar
 import hashlib
 import hmac
 import logging
@@ -97,11 +98,16 @@ def _now_iso() -> str:
 
 
 def _parse_iso(ts: str | None) -> float | None:
-    """Parse an ISO 8601 UTC ``YYYY-MM-DDTHH:MM:SSZ`` string to epoch seconds."""
+    """Parse an ISO 8601 UTC ``YYYY-MM-DDTHH:MM:SSZ`` string to epoch seconds.
+
+    Uses ``calendar.timegm`` (interprets the struct as UTC) rather than
+    ``time.mktime(...) - time.timezone`` (which assumes local time and is
+    off by the DST offset for part of the year).
+    """
     if not ts:
         return None
     try:
-        return time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+        return float(calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")))
     except Exception:
         return None
 

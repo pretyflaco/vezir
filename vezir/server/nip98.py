@@ -49,6 +49,16 @@ DEFAULT_MAX_AGE_SECONDS = 120
 # Tolerance for clocks running ahead of the server.
 _FUTURE_TOLERANCE_SECONDS = 60
 
+# Replay protection.  A NIP-98 event is single-use: once a valid event id
+# has minted a session, it must not be reusable within its freshness window.
+# We keep a small in-memory map of consumed event ids -> expiry epoch and
+# reject any id seen again.  TTL = the full window an event can be accepted
+# (max age + future tolerance), after which it's stale anyway and the entry
+# can be pruned.  In-memory is sufficient for the single-process uvicorn
+# deployment; a restart only resets the window to the freshness bound.
+_REPLAY_TTL_SECONDS = DEFAULT_MAX_AGE_SECONDS + _FUTURE_TOLERANCE_SECONDS
+_consumed_ids: dict[str, float] = {}
+
 
 class Nip98Error(Exception):
     """Raised on any NIP-98 verification failure, with a human reason."""
@@ -220,6 +230,25 @@ def _verify_signature(event: dict) -> None:
         raise Nip98Error("invalid signature")
 
 
+def _check_and_record_replay(event_id: str, ttl: int = _REPLAY_TTL_SECONDS) -> None:
+    """Reject a NIP-98 event id that has already been consumed.
+
+    Records ``event_id`` so it can't mint a second session within its
+    freshness window; prunes expired entries opportunistically.  Must be
+    called only after the event is otherwise fully verified (valid sig),
+    so we never poison the store with unverified ids.
+    """
+    now = time.time()
+    # Opportunistic prune (cheap; the store stays tiny at team scale).
+    if _consumed_ids:
+        expired = [k for k, exp in _consumed_ids.items() if exp <= now]
+        for k in expired:
+            _consumed_ids.pop(k, None)
+    if event_id in _consumed_ids:
+        raise Nip98Error("event already used (replay rejected)")
+    _consumed_ids[event_id] = now + ttl
+
+
 def verify_nip98(
     auth_header: str | None,
     request_url: str,
@@ -245,4 +274,7 @@ def verify_nip98(
     _validate_method_tag(event, method)
     _verify_id(event)
     _verify_signature(event)
+    # Replay guard last: only record an id once the event is fully valid,
+    # so an attacker can't pre-poison the store with bogus ids.
+    _check_and_record_replay(event["id"].lower())
     return event["pubkey"].lower()

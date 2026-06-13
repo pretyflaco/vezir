@@ -184,3 +184,102 @@ def test_replay_after_expiry_rejected(client, tmp_data, monkeypatch):
     monkeypatch.setattr(nostr_auth, "SESSION_TTL_SECONDS", -1)
     token = nostr_auth.issue_session_jwt("alice", "ab" * 32, False)
     assert nostr_auth.verify_session_jwt(token) is None
+
+
+# ── H1: NIP-98 replay protection ─────────────────────────────────────────────
+# (The consumed-id store is cleared between tests by an autouse fixture in
+# conftest.py: _reset_nip98_replay_store.)
+
+
+def test_nip98_replay_within_window_rejected(client, tmp_data):
+    """The same signed login event must not mint a second JWT."""
+    from vezir.server import nostr_members
+
+    priv = PrivateKey()
+    pubkey = priv.public_key_xonly.format().hex()
+    nostr_members.add(pubkey, "alice")
+
+    header = _login_header(priv, _public_login_url(client))
+    first = client.post(LOGIN_PATH, headers={"Authorization": header})
+    assert first.status_code == 200, first.text
+
+    # Replaying the exact same header (same event id) is rejected.
+    second = client.post(LOGIN_PATH, headers={"Authorization": header})
+    assert second.status_code == 401
+    assert "replay" in second.json()["detail"].lower() or \
+        "already used" in second.json()["detail"].lower()
+
+
+def test_nip98_distinct_events_both_accepted(client, tmp_data):
+    """Two distinct (freshly-signed) events from the same key both work."""
+    from vezir.server import nostr_members
+
+    priv = PrivateKey()
+    pubkey = priv.public_key_xonly.format().hex()
+    nostr_members.add(pubkey, "alice")
+    url = _public_login_url(client)
+
+    # Two separate signed events (different created_at → different id).
+    h1 = _login_header(priv, url)
+    import time as _t
+    _t.sleep(1)
+    h2 = _login_header(priv, url)
+    assert h1 != h2
+    assert client.post(LOGIN_PATH, headers={"Authorization": h1}).status_code == 200
+    assert client.post(LOGIN_PATH, headers={"Authorization": h2}).status_code == 200
+
+
+# ── H2: VEZIR_PUBLIC_URL pins the login URL (header-injection resistant) ──────
+
+
+def test_login_url_uses_public_url_over_headers(client, tmp_data, monkeypatch):
+    """With VEZIR_PUBLIC_URL set, a spoofed Host/X-Forwarded-Proto must not
+    change the URL the NIP-98 event is validated against."""
+    from vezir.server import nostr_members
+
+    monkeypatch.setenv("VEZIR_PUBLIC_URL", "https://vezir.example.com")
+
+    priv = PrivateKey()
+    pubkey = priv.public_key_xonly.format().hex()
+    nostr_members.add(pubkey, "alice")
+
+    # Event signed for the configured public URL succeeds even though the
+    # request carries different (spoofed) Host/proto headers.
+    header = _login_header(priv, "https://vezir.example.com/api/auth/nostr/login")
+    resp = client.post(
+        LOGIN_PATH,
+        headers={
+            "Authorization": header,
+            "Host": "attacker.example",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_login_url_public_url_rejects_other_url(client, tmp_data, monkeypatch):
+    """An event signed for a spoofed URL is rejected when public_url is set."""
+    from vezir.server import nostr_members
+
+    monkeypatch.setenv("VEZIR_PUBLIC_URL", "https://vezir.example.com")
+    priv = PrivateKey()
+    pubkey = priv.public_key_xonly.format().hex()
+    nostr_members.add(pubkey, "alice")
+
+    # Signed for an attacker-chosen URL → must NOT validate against the
+    # pinned public URL.
+    header = _login_header(priv, "https://attacker.example/api/auth/nostr/login")
+    resp = client.post(LOGIN_PATH, headers={"Authorization": header})
+    assert resp.status_code == 401
+
+
+# ── M5: /health must not disclose the data_dir filesystem path ────────────────
+
+
+def test_health_omits_data_dir(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert "version" in body
+    assert "data_dir" not in body
