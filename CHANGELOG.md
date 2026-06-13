@@ -3,7 +3,7 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 0.8.0 — nostr (NIP-46) sign-in + VPS public-access front
+## 0.8.0 — nostr (NIP-46) + Google sign-in; VPS public-access front
 
 ### Added
 
@@ -14,8 +14,20 @@ Notable changes per release. Format loosely follows
   `Authorization: Bearer`.  Same `lookup_identity` path as `vzr_` tokens, so
   every existing route works unchanged.  Authorize a key with
   `vezir npub add --npub … --github …`.
+* **`vezir login --method google` — Google Workspace sign-in.**  A second
+  sign-in method for members who don't use a Nostr signer, via the OAuth 2.0
+  **Device Authorization Grant** (works in a TUI / headless box): the client
+  shows a short code + URL, the user approves in any browser with their
+  `@blinkbtc.com` account, and the server mints the **same session JWT** as
+  the nostr path.  The server proxies Google's device + token endpoints so
+  the OAuth client secret never leaves the server; the ID token is verified
+  (issuer, `email_verified`, `hd`/email domain == allowed domain) and the
+  email must be allow-listed.  Authorize with
+  `vezir google add --email …@blinkbtc.com --github …`.
 * **Server NIP-98 + npub allowlist + JWT issuance** (`nip98.py`,
   `nostr_members`, `nostr_auth.py`); pure-Python NIP-46 client with NIP-04/44.
+  Google support adds `google_members` (email allowlist) and `google_auth`
+  (device-grant router + ID-token verification).
 * **VPS public-access front** (`infra/vps/`, `infra/caddy/`): WireGuard
   (server dials out) + nftables TLS-passthrough, so clients reach the server
   over ordinary outbound HTTPS — works from CGNAT/IPv6-only links — while TLS
@@ -35,6 +47,19 @@ Notable changes per release. Format loosely follows
   hang).  We learn the offset from the signer's connect-event timestamp and
   stamp requests accordingly (clamped ±300s), plus an NTP-sync preflight
   warning in `vezir login`.
+
+### Fixed (client TLS trust)
+
+* **Client now trusts the public *and* internal CA instead of replacing the
+  store.**  The public VPS front (e.g. `vezir.twentyone.ist`) serves a
+  publicly-trusted (Let's Encrypt) certificate, but the client honored
+  `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` by pointing httpx at *only*
+  the Caddy internal CA — so on boxes where those vars name the internal root,
+  public TLS validation failed with `CERTIFICATE_VERIFY_FAILED: unable to get
+  local issuer certificate`.  A new `vezir.client.trust.resolve_verify` builds
+  an SSL context that seeds the public roots (from certifi, independent of
+  `SSL_CERT_FILE`) and *appends* any configured internal CA, so a single
+  client validates both the public front and internal `tls internal` hosts.
 
 ### Notes
 
