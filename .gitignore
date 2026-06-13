@@ -25,3 +25,7 @@ data/logs/
 # Local config
 .env
 *.local.json
+
+# Operational session notes — contain real IPs, npubs, hostnames, and
+# teammate-identifying data. Operator-local only; never publish.
+docs/sessions/

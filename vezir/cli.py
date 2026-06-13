@@ -682,6 +682,130 @@ def token_list(dormant_days, show_id):
             )
 
 
+# ── npub (nostr allowlist) ──────────────────────────────────────────────────
+
+
+@main.group()
+def npub():
+    """Manage the nostr login allowlist (server-side).
+
+    A nostr member authenticates by signing a NIP-98 event with their
+    nostr key (via `vezir login` / Amber) instead of presenting a
+    ``vzr_`` bearer token.  This group maps an ``npub1…`` public key to a
+    GitHub handle + privilege tier so the rest of the auth chain
+    (team membership, admin gating) works identically to tokens.
+
+    The user must still be a member of every team they operate on
+    (``vezir team add-member``).
+    """
+
+
+@npub.command("add")
+@click.option(
+    "--npub", "npub_str", required=True,
+    help="The user's nostr public key as 'npub1…' (or 64-char hex).",
+)
+@click.option("--github", required=True, help="GitHub handle to bind this key to.")
+@click.option(
+    "--admin", "is_admin", is_flag=True, default=False,
+    help="Mark this member as admin-tier (gates /admin/* routes).",
+)
+@click.option(
+    "--label", default=None,
+    help="Free-text annotation (e.g. 'milfort-laptop'); shown by `npub list`.",
+)
+def npub_add(npub_str, github, is_admin, label):
+    """Authorize a nostr public key to log in as a given GitHub handle.
+
+    Idempotent: re-running with the same npub updates the github/admin/
+    label fields (use case: promoting to admin, fixing a handle).
+    """
+    from . import nostr_nip19
+    from .server import nostr_members
+
+    try:
+        pubkey_hex = nostr_nip19.to_hex(npub_str)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--npub") from exc
+
+    nostr_members.add(pubkey_hex, github, is_admin=is_admin, label=label)
+    click.echo(f"Authorized nostr key for github={github}")
+    click.echo(f"  npub:   {nostr_nip19.encode_npub(pubkey_hex)}")
+    click.echo(f"  hex:    {pubkey_hex}")
+    if is_admin:
+        click.echo("  role:   admin (can reach /admin/* routes)")
+    if label:
+        click.echo(f"  label:  {label}")
+    click.echo()
+    click.echo(
+        "NOTE: this key has no team scope.  Ensure the user is a member "
+        f"of each team they need: `vezir team add-member --github {github} "
+        "--team <id>`.  They can now run `vezir login`."
+    )
+
+
+@npub.command("list")
+def npub_list():
+    """List authorized nostr keys (npub, github, role, label, added)."""
+    from . import nostr_nip19
+    from .server import nostr_members
+
+    rows = nostr_members.list_members()
+    if not rows:
+        click.echo("(no nostr keys authorized)")
+        return
+
+    def _w(items, min_w):
+        return max([min_w] + [len(s) for s in items])
+
+    githubs = [str(r.get("github") or "?") for r in rows]
+    labels = [str(r.get("label") or "-") for r in rows]
+    roles = ["admin" if r.get("is_admin") else "scribe" for r in rows]
+    g_w = _w(githubs, len("github"))
+    l_w = _w(labels, len("label"))
+    r_w = _w(roles, len("role"))
+
+    click.echo(
+        f"  {'github':<{g_w}}  {'role':<{r_w}}  {'label':<{l_w}}  "
+        f"{'added':<20}  npub"
+    )
+    for entry in rows:
+        github = str(entry.get("github") or "?")
+        role = "admin" if entry.get("is_admin") else "scribe"
+        label = str(entry.get("label") or "-")
+        added = str(entry.get("added_at") or "?")
+        try:
+            display_npub = nostr_nip19.encode_npub(entry["npub"])
+        except Exception:
+            display_npub = entry.get("npub") or "?"
+        click.echo(
+            f"  {github:<{g_w}}  {role:<{r_w}}  {label:<{l_w}}  "
+            f"{added:<20}  {display_npub}"
+        )
+
+
+@npub.command("remove")
+@click.option(
+    "--npub", "npub_str", required=True,
+    help="The 'npub1…' (or 64-char hex) key to de-authorize.",
+)
+def npub_remove(npub_str):
+    """Remove a nostr key from the allowlist.  Idempotent."""
+    from . import nostr_nip19
+    from .server import nostr_members
+
+    try:
+        pubkey_hex = nostr_nip19.to_hex(npub_str)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--npub") from exc
+
+    removed = nostr_members.remove(pubkey_hex)
+    if removed:
+        click.echo(f"Removed nostr key {nostr_nip19.encode_npub(pubkey_hex)}")
+    else:
+        click.echo("(no matching nostr key; nothing removed)")
+
+
 # ── team ──────────────────────────────────────────────────────────────────────
 
 @main.group()
@@ -1074,6 +1198,193 @@ def team_config_remove(team_id):
         click.echo(f"active is now: {cfg['active']}")
     else:
         click.echo("no teams remaining; active is unset")
+
+
+# ── login (nostr / NIP-46) ───────────────────────────────────────────────────
+
+
+@main.command()
+@click.option(
+    "--url", "url", default=None,
+    help="vezir server URL (default: $VEZIR_URL, then the active team's URL).",
+)
+@click.option(
+    "--team", "team_id", default=None,
+    help="Team slug to store this session under (default: active team or 'default').",
+)
+@click.option(
+    "--relay", "relay", multiple=True, default=(),
+    help="Nostr relay for the NIP-46 handshake. Repeatable; pass multiple "
+         "times to fan out (more relays = more reliable delivery of the "
+         "signer's responses). Default: blink's proven 5-relay set.",
+)
+@click.option(
+    "--timeout", "timeout", type=int, default=180, show_default=True,
+    help="Seconds to wait for you to approve in your signer.",
+)
+@click.option(
+    "--verbose", "verbose", is_flag=True, default=False,
+    help="Print NIP-46 handshake debug logs (which relay events arrive, "
+         "their encryption scheme, and why any are skipped).",
+)
+def login(url, team_id, relay, timeout, verbose):
+    """Log in with your nostr key via a remote signer (Amber / nsec.app).
+
+    Generates a ``nostrconnect://`` request (shown as a URI + QR).  Open
+    or scan it in your signer, approve the connection and the signing
+    prompt, and vezir stores a short-lived session token.  No nsec ever
+    touches this machine.
+
+    Your npub must be authorized server-side first
+    (``vezir npub add --npub … --github …``).
+    """
+    import logging
+    import os
+
+    if verbose:
+        logging.getLogger("vezir.nip46").setLevel(logging.DEBUG)
+        logging.getLogger("vezir.nip46").addHandler(logging.StreamHandler())
+
+    from .client import config as client_config
+
+    # Resolve target URL: explicit flag > env > active team.
+    resolved_url = url or os.environ.get("VEZIR_URL")
+    resolved_team = team_id
+    if not resolved_url or not resolved_team:
+        active_team, active_url, _tok = client_config.active_team_credentials()
+        resolved_url = resolved_url or active_url
+        resolved_team = resolved_team or active_team
+    resolved_team = resolved_team or "default"
+    if not resolved_url:
+        click.echo(
+            "error: no server URL; pass --url, set $VEZIR_URL, or configure "
+            "a team with `vezir team config add`.",
+            err=True,
+        )
+        sys.exit(2)
+
+    try:
+        from .client.nostr import login as nostr_login
+        from .client.nostr import nip46
+    except Exception as exc:  # pragma: no cover - import guard
+        click.echo(
+            f"error: nostr login support not installed ({exc}); "
+            "run `pip install 'vezir[nostr]'`.",
+            err=True,
+        )
+        sys.exit(2)
+
+    def _on_auth_url(u: str) -> None:
+        click.echo()
+        click.echo(f"  Your signer needs approval — open: {u}")
+
+    client = nip46.Nip46Client(
+        relays=list(relay) or None,  # () -> use DEFAULT_RELAYS (blink's 5)
+        name="vezir",
+        on_auth_url=_on_auth_url,
+    )
+    connect_uri = client.build_connect_uri()
+
+    click.echo(f"Logging in to {resolved_url} (team: {resolved_team})")
+    click.echo()
+    click.echo("Scan this QR or paste the URI into your nostr signer:")
+    click.echo()
+    try:
+        from .server.enroll import render_qr_terminal
+        click.echo(render_qr_terminal(connect_uri))
+    except Exception:
+        pass  # QR is a convenience; the URI below always works.
+    click.echo(connect_uri)
+    click.echo()
+    _clock_warn = _clock_unsynced_warning()
+    if _clock_warn:
+        click.echo(_clock_warn, err=True)
+        click.echo()
+    click.echo(f"Waiting up to {timeout}s for you to approve in your signer…")
+
+    try:
+        client.wait_for_connection(timeout=timeout)
+        template = nostr_login.build_login_event_template(
+            nostr_login.login_url_for(resolved_url)
+        )
+        signed = client.sign_event(template, timeout=timeout)
+    except nip46.Nip46Error as exc:
+        click.echo(f"error: {exc}", err=True)
+        client.close()
+        sys.exit(1)
+    finally:
+        # Keep the connection only until signing is done.
+        pass
+
+    # Honor the client's TLS trust resolution (internal CA support).
+    verify = _login_verify()
+    try:
+        body = nostr_login.post_login(
+            resolved_url,
+            nostr_login.auth_header_from_event(signed),
+            verify=verify,
+        )
+    except RuntimeError as exc:
+        click.echo(f"error: {exc}", err=True)
+        client.close()
+        sys.exit(1)
+    finally:
+        client.close()
+
+    client_config.set_team_session(
+        resolved_team,
+        resolved_url,
+        body["session_jwt"],
+        body.get("npub", client.user_pubkey or ""),
+        label=resolved_team,
+    )
+    click.echo()
+    click.echo(f"Logged in as github={body.get('github')} "
+               f"(admin={body.get('is_admin')}).")
+    hours = int(body.get("expires_in", 0)) // 3600
+    click.echo(f"Session stored for team '{resolved_team}'; valid ~{hours}h.")
+    memberships = body.get("memberships") or []
+    if memberships:
+        names = ", ".join(m.get("slug") or m.get("team_id") for m in memberships)
+        click.echo(f"Team memberships: {names}")
+
+
+def _login_verify():
+    """Resolve httpx ``verify`` the same way VezirClient does (internal CA)."""
+    import os
+    for var in ("SSL_CERT_FILE", "VEZIR_CADDY_ROOT_CERT_PATH"):
+        path = os.environ.get(var)
+        if path and os.path.isfile(path):
+            return path
+    return True
+
+
+def _clock_unsynced_warning() -> str | None:
+    """Best-effort: warn if the local clock is NOT NTP-synchronized.
+
+    An unsynced clock that runs behind the signer's makes the signer's
+    relay-side ``since`` filter drop our NIP-46 requests, so login hangs
+    after connect.  The client self-corrects via the signer's timestamp,
+    but a heads-up saves debugging.  Returns a message string or None.
+    Linux-only (timedatectl); silently no-op elsewhere.
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("timedatectl"):
+        return None
+    try:
+        out = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+    except Exception:
+        return None
+    if out == "no":
+        return (
+            "warning: your system clock is not NTP-synchronized. If login "
+            "stalls after connecting, sync it:  sudo timedatectl set-ntp true"
+        )
+    return None
 
 
 # ── session (v0.6.2+: cross-team move) ───────────────────────────────────────

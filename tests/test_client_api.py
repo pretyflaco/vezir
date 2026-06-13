@@ -26,6 +26,45 @@ from vezir.client.api import (
 # ─── Result-tag plumbing ─────────────────────────────────────────────────────
 
 
+# ─── 401 re-auth hinting ─────────────────────────────────────────────────────
+
+
+def test_is_auth_error():
+    assert ApiResult.http(401, "invalid bearer token").is_auth_error()
+    assert not ApiResult.http(403, "forbidden").is_auth_error()
+    assert not ApiResult.success({}).is_auth_error()
+
+
+def test_401_message_hints_nostr_login_when_session_active(monkeypatch, tmp_path):
+    """A 401 on an active nostr session points the user at `vezir login`."""
+    import json as _json
+    from pathlib import Path
+
+    from vezir import config as server_config
+
+    cfgdir = tmp_path / ".config" / "vezir"
+    cfgdir.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    server_config.secure_write_text(
+        cfgdir / "teams.json",
+        _json.dumps({
+            "teams": [{"id": "blink", "url": "https://x", "token": "eyJ.a.b",
+                       "auth": "nostr", "npub": "ab"}],
+            "active": "blink",
+        }),
+    )
+    msg = ApiResult.http(401, "invalid bearer token").error_message()
+    assert "vezir login" in msg
+    assert "expired" in msg
+
+
+def test_401_message_generic_for_bearer(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    msg = ApiResult.http(401, "invalid bearer token").error_message()
+    assert "VEZIR_TOKEN" in msg
+
+
 # ─── CA / verify resolution ──────────────────────────────────────────────────
 
 

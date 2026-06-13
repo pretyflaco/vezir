@@ -351,14 +351,32 @@ def lookup(token: str) -> str | None:
 
 
 def lookup_identity(token: str) -> tuple[str, bool] | None:
-    """Resolve a bearer token to ``(github, is_admin)``, or None.
+    """Resolve a bearer credential to ``(github, is_admin)``, or None.
 
     v0.7.0: replaces ``lookup_full`` (which also returned ``team_id``).
     Team context is now derived per-request from the ``X-Team-Id``
     header, not from the token.
 
-    Side-effect: debounced ``last_used_at`` touch on hit.
+    v0.8.0: the ``Authorization: Bearer`` slot now carries EITHER a
+    ``vzr_`` opaque token OR a nostr **session JWT** (minted by
+    ``nostr_auth`` after a NIP-98 login).  We try the JWT path first —
+    it's a cheap 3-segment shape check + HMAC verify, no DB hit — and
+    fall back to the SQLite token-hash lookup.  This single resolver is
+    what ``require_bearer``/``require_team_context``/``require_admin``
+    all funnel through, so both credential kinds work everywhere with no
+    changes to those dependencies.
+
+    Side-effect: debounced ``last_used_at`` touch on a token-hash hit
+    (JWTs are stateless; their expiry is self-contained).
     """
+    # Lazy import: nostr_auth imports config/queue but not auth, so this
+    # avoids any import cycle while keeping auth.py's top-level imports lean.
+    from . import nostr_auth
+
+    session = nostr_auth.verify_session_jwt(token)
+    if session is not None:
+        return session
+
     entry = _lookup_entry(token)
     if entry is None:
         return None

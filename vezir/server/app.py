@@ -17,6 +17,7 @@ from .. import __version__, config
 from . import (
     labels,
     migrations,
+    nostr_auth,
     queue,
     sessions,
     teams,
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(labels.router)
     app.include_router(teams.router)
+    app.include_router(nostr_auth.router)
 
     return app
 

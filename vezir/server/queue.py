@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tokens_github ON tokens(github);
+
+CREATE TABLE IF NOT EXISTS nostr_members (
+    npub          TEXT PRIMARY KEY,   -- 64-char lowercase hex x-only pubkey
+    github        TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    label         TEXT,
+    added_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_nostr_members_github ON nostr_members(github);
 """
 
 

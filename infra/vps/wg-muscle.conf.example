@@ -1,0 +1,24 @@
+# WireGuard — muscle end.  Install as /etc/wireguard/wg0.conf on muscle.
+#
+# muscle is the DIALER (it's behind double-NAT with no inbound). It sets
+# the VPS public Endpoint and uses PersistentKeepalive to keep the NAT
+# pinhole open so the VPS can push :443 traffic back down the tunnel.
+#
+# Replace the placeholders:
+#   <MUSCLE_PRIVATE_KEY>  contents of /etc/wireguard/muscle.key
+#   <VPS_PUBLIC_KEY>      contents of the VPS's /etc/wireguard/vps.pub
+
+[Interface]
+Address = 10.99.0.2/24
+PrivateKey = <MUSCLE_PRIVATE_KEY>
+
+[Peer]
+# The VPS front (public IP).
+PublicKey = <VPS_PUBLIC_KEY>
+Endpoint = <VPS_PUBLIC_IP>:51820
+# Accept traffic from the VPS WG IP. We do NOT route 0.0.0.0/0 here:
+# muscle keeps its normal default route (nvpn/Tailscale/LAN unaffected);
+# only the 10.99.0.0/24 tunnel subnet goes over wg0.
+AllowedIPs = 10.99.0.1/32
+# Keep the outbound NAT mapping alive so the VPS can reach us at any time.
+PersistentKeepalive = 25
