@@ -287,6 +287,56 @@ def alternate_urls() -> list[str]:
     return [u for u in raw if isinstance(u, str) and u.startswith("http")]
 
 
+# ── Google sign-in (server-side OAuth, v0.8.x) ───────────────────────────────
+# vezir verifies a Google ID token (obtained by the client via the OAuth 2.0
+# Device Authorization Grant) and maps the verified `@<domain>` email to a
+# member.  The client_id is public (it's the token's `aud`); the client_secret
+# stays server-side (the server runs the device/token exchange so clients never
+# handle it — see server.google_auth).
+
+
+def google_client_id() -> str | None:
+    """OAuth client_id for Google sign-in (public; the ID token's ``aud``).
+
+    From ``$VEZIR_GOOGLE_CLIENT_ID``.  Returns None if unset (Google
+    sign-in then reports "not configured").
+    """
+    cid = os.environ.get("VEZIR_GOOGLE_CLIENT_ID", "").strip()
+    return cid or None
+
+
+def google_client_secret() -> str | None:
+    """OAuth client_secret for the device/token exchange (server-only).
+
+    Resolution order:
+      1. ``$VEZIR_GOOGLE_CLIENT_SECRET`` (the raw secret), else
+      2. ``$VEZIR_GOOGLE_CLIENT_SECRET_FILE`` (a path to read it from).
+    Returns None if neither yields a value.  Never logged or returned to
+    clients.
+    """
+    raw = os.environ.get("VEZIR_GOOGLE_CLIENT_SECRET", "").strip()
+    if raw:
+        return raw
+    path = os.environ.get("VEZIR_GOOGLE_CLIENT_SECRET_FILE", "").strip()
+    if path:
+        try:
+            val = Path(path).read_text().strip()
+            return val or None
+        except Exception:
+            return None
+    return None
+
+
+def google_allowed_domain() -> str:
+    """Workspace domain that may sign in via Google (default ``blinkbtc.com``).
+
+    The ID token must carry this as its ``hd`` (hosted-domain) claim and/or
+    an ``email`` ending in ``@<domain>``.  Override with
+    ``$VEZIR_GOOGLE_ALLOWED_DOMAIN``.
+    """
+    return os.environ.get("VEZIR_GOOGLE_ALLOWED_DOMAIN", "blinkbtc.com").strip() or "blinkbtc.com"
+
+
 def host() -> str:
     """Bind address for `vezir serve`.
 
