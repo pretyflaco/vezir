@@ -3,6 +3,43 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.0 — nostr (NIP-46) sign-in + VPS public-access front
+
+### Added
+
+* **`vezir login` — nostr sign-in via a remote signer (NIP-46 / Amber).**
+  Runs the client-initiated `nostrconnect://` flow (QR + URI shown in the
+  terminal); the user approves in their signer (Amber / nsec.app), and the
+  server mints a short-lived **session JWT** (~24h) reused as
+  `Authorization: Bearer`.  Same `lookup_identity` path as `vzr_` tokens, so
+  every existing route works unchanged.  Authorize a key with
+  `vezir npub add --npub … --github …`.
+* **Server NIP-98 + npub allowlist + JWT issuance** (`nip98.py`,
+  `nostr_members`, `nostr_auth.py`); pure-Python NIP-46 client with NIP-04/44.
+* **VPS public-access front** (`infra/vps/`, `infra/caddy/`): WireGuard
+  (server dials out) + nftables TLS-passthrough, so clients reach the server
+  over ordinary outbound HTTPS — works from CGNAT/IPv6-only links — while TLS
+  terminates on the server (the VPS sees only ciphertext).  Supersedes
+  per-client nvpn/Tailscale for *reaching* the server.
+
+### Fixed (NIP-46 robustness — validated against real Amber)
+
+* **Multi-relay fan-out** across blink-terminal's proven 5 relays: the signer
+  publishes responses to the URI relays, so a single relay dropping ephemeral
+  kind-24133 events would strand login.
+* **Persistent subscription + periodic re-publish + relay reconnect** for
+  flaky/restrictive networks.
+* **Client clock-skew correction.**  The signer subscribes for our requests
+  with a relay-side `since` filter on its clock; an unsynced client clock that
+  ran behind made the signer never receive our requests (connect ok, then
+  hang).  We learn the offset from the signer's connect-event timestamp and
+  stamp requests accordingly (clamped ±300s), plus an NTP-sync preflight
+  warning in `vezir login`.
+
+### Notes
+
+* `vzr_` bearer tokens are retained for machine/CI use.
+
 ## 0.7.21 — require millet 0.12.7 (complete in-room speaker fix)
 
 ### Changed
