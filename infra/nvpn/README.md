@@ -296,9 +296,9 @@ opt-outs are configured via the in-app UI rather than env vars or CLI
 flags.
 
 End-to-end validated 2026-05-22 on vezir-android 0.1.4 against muscle
-running vezir 0.1.11.  See the
-[wiki onboarding page](https://github.com/blinkbitcoin/blink-wip/wiki/pretyflaco----2026-05-21-Vezir-Onboarding-with-nostr-vpn)
-for the full UI walkthrough.
+running vezir 0.1.11.  See the main [vezir README](../../README.md) and
+[vezir-android](https://github.com/pretyflaco/vezir-android) for the
+current onboarding walkthrough.
 
 ---
 

@@ -5,615 +5,256 @@
   </picture>
 </p>
 
-Self-hosted scribe service for team-scale meeting capture. Vezir wraps
-[millet](https://github.com/pretyflaco/millet) and turns it into a
-multi-user, VPN-hosted service: a designated scribe records a meeting
-on their laptop, the audio uploads to a central GPU-equipped box, and the
-team gets back a diarized transcript, AI summary, and PDF — with speaker
-labels resolved to GitHub handles via a shared web UI.
+**Self-hosted team intelligence.** Record a meeting on any device; Vezir
+gives you back a diarized transcript, an AI summary, and a PDF — processed
+on your own GPU server and synced into a private team archive you control.
+Sign in with Nostr or Google.
+
+Vezir wraps [millet](https://github.com/pretyflaco/millet) (the
+transcription/diarization/summarization pipeline) and turns it into a
+multi-user, multi-team service: a scribe records on their laptop or phone,
+the audio uploads to a central GPU box, and the team gets back labeled
+transcripts and summaries — with speakers resolved to GitHub handles.
 
 ## Status
 
-Alpha (0.6.5). Designed for small teams that want to keep meeting audio
-inside their own infrastructure: one private mesh VPN + one server (Linux
-GPU box or Apple Silicon Mac).
-Full release history in [`CHANGELOG.md`](CHANGELOG.md).
+Alpha (**0.8.3**). Built for small teams that want meeting audio to stay
+inside their own infrastructure: one GPU server (Linux/CUDA or Apple
+Silicon) reachable over ordinary HTTPS. Full history in
+[`CHANGELOG.md`](CHANGELOG.md).
 
-**Highlights of the 0.6.x line (current):**
+**What's new in 0.7–0.8:**
 
-- **Multi-team support** (v0.6.0+).  Team isolation end-to-end:
-  each bearer token is scoped to a team, sessions are visible only
-  within their team, voiceprint DBs and sync remotes are per-team.
-  TUI team-switcher via `Ctrl+T`; CLI `vezir team config add/use`.
-- **`vezir pull`** (v0.6.5).  Download meeting artifacts (summaries,
-  transcripts, PDFs) from the server into `~/vezir-meetings/<team>/`.
-  Enables team-wide meeting sharing without relying on git sync.
-  Options: `--limit`, `--since`, `--session`.
-- **Unified recording path** (v0.6.5).  All entry points write to
-  `~/vezir-meetings/<team>/meeting-YYYYMMDD-HHMMSS_TITLE/`.
-  Replaces the previous fragmented `~/millet-recordings/` and
-  `~/meet-recordings/` directories.
-- **Auto-download artifacts** (v0.6.5).  TUI and GUI automatically
-  save meeting artifacts into the local recording directory when
-  server processing completes.
-- **Per-team voiceprints and sync** (v0.6.2).  Each team holds its
-  own speaker-profile DB and sync remote; the worker exposes them
-  to millet via per-job HOME shims.
-- **`vezir doctor`** (v0.6.4).  17-check diagnostic command for
-  credential resolution, SSL certs, connectivity, token validity,
-  migration status, and more.
-- **`vezir tui` — Textual terminal thin client** (v0.3.0+).  Native
-  desktop UI: record, browse sessions, view artifacts, label
-  speakers, system clipboard, ffplay sample playback, background
-  "needs labeling" notifications.  `pip install vezir[tui]`.
-- **`vezir scribe-widget` — always-on-top Tkinter recorder** (v0.3.0+).
-- **`--personal` per-recording flag** (v0.3.0+).  Forces sync off
-  for one recording; session stays private to the uploader.
-- **Library-direct recording with pause/resume** (v0.3.0+).
-- **HTTPS verify against internal CAs.**  The thin client honors
-  `SSL_CERT_FILE` then `VEZIR_CADDY_ROOT_CERT_PATH`.
+- **Identity sign-in (0.8.x).** Members sign in with **Nostr** (a remote
+  signer like [Amber](https://github.com/greenart7c3/Amber) via NIP-46, or
+  the NIP-55 Android intent flow) or with **Google** (`@workspace-domain`
+  accounts via the OAuth device grant). The server mints a short-lived
+  **session JWT** (~24h); no key or password touches the client. `vzr_`
+  bearer tokens are retained for machine/CI use.
+- **Public-access front (0.8.x).** A small VPS terminates nothing — it
+  WireGuard-forwards TLS to the server, which keeps the cert. Clients reach
+  the server over plain outbound HTTPS, so it works from CGNAT / IPv6-only
+  links (e.g. Starlink) with no per-client VPN.
+- **Multi-team by membership (0.7.0).** A token/identity is a *person*, not
+  a team; team scope is supplied per-request via `X-Team-Id` and validated
+  against a memberships table. One identity covers every team you're in;
+  the TUI/Android auto-discover them. Team keys are stable UUIDs with
+  mutable slugs (`vezir team rename`).
+- **Hardening (0.8.2).** NIP-98 replay protection, header-injection-resistant
+  login-URL pinning (`VEZIR_PUBLIC_URL`), exact Google-domain matching.
+- **Resumable uploads** (tus.io subset), **`vezir relabel`**, **`vezir
+  pull`**, **per-team voiceprints + sync**, **`vezir doctor`**.
 
-**Established features (0.1.x line, still current):**
+> The JSON-only API (no web dashboard since 0.7.0) is consumed by the TUI,
+> the Android app, and the CLI. Speaker labeling happens in the TUI/Android
+> or via a one-time `/login?code=…` page link printed after upload.
 
-- **Summarization preset selector** (per upload) — pick between
-  `high-quality` (Sonnet 4.6), `confidential` (DeepSeek V4 Pro in a
-  Tinfoil hardware-attested TEE), or `alternative` (Kimi K2.6).
-  CLI: `--preset`; TUI/GUI: dropdown; Android: dropdown.  When the
-  `confidential` preset is chosen the PDF carries a red CONFIDENTIAL
-  watermark on every page.
-- **Auto-label opt-out** (per upload) — `--no-auto-label` skips
-  server-side voiceprint matching and always routes the session to
-  manual labeling.
-- **Sync opt-out** (per upload) — `--no-sync` keeps the session
-  `local-only` on the dashboard; artifacts stay on the vezir server
-  and aren't pushed to the configured destination repo.
-  Retroactively syncable from the dashboard's "Sync now" button.
-- **Retry summary with preset override** — `POST /api/sessions/{id}/retry-summary`
-  accepts a JSON body `{"preset": "high-quality"}` for swapping
-  backends when the original fails (e.g. Tinfoil outage → retry
-  with Claude Max).
+Linux and macOS (Apple Silicon) laptop clients and an
+[Android client](https://github.com/pretyflaco/vezir-android) are supported.
 
-Supported VPN options:
-- [nostr-vpn](https://github.com/mmalmi/nostr-vpn) — **recommended.**
-  Decentralized, no accounts or fees, Nostr keys for identity.
-  No third-party gatekeeper.  See [`infra/nvpn/README.md`](infra/nvpn/README.md).
-- [Tailscale](https://tailscale.com/) — established alternative,
-  easy setup, requires a third-party account.
+Requires **`millet-pipeline >= 0.12.5`** (pinned via the `[server]` extra).
 
-Linux and macOS Apple Silicon clients are fully supported.  An
-Android thin client lives at
-[vezir-android](https://github.com/pretyflaco/vezir-android) (v0.3.2+).
-On Apple Silicon the server auto-selects MLX Whisper ASR + PyTorch MPS
-when available, falling back to CPU/MPS-split mode otherwise.
+## Sign-in & access
 
-Requires **`millet-pipeline >= 0.12.5`** (pinned via the `[server]`
-extra).  0.12.5 adds title-aware schedule matching + the sync collision
-guard that vezir 0.7.16's title injection and "sync as" override rely on.
-(0.9.x was the millet-rename release of the transcription pipeline,
-formerly `meetscribe-offline`.)
+Members authenticate with their own identity; an admin authorizes it once.
+
+```bash
+# Admin, on the server — authorize an identity (one of):
+vezir npub add   --npub npub1…             --github <handle> --label "<who>"
+vezir google add --email them@blinkbtc.com --github <handle> --label "<who>"
+# …and grant team scope (one handle covers every team they join):
+vezir team add-member --team <slug> --role scribe --github <handle>
+```
+
+```bash
+# Member, on their laptop:
+export VEZIR_URL=https://your-vezir-host
+vezir login --team <slug>                  # Nostr (remote signer / Amber)
+vezir login --method google --team <slug>  # Google (@workspace-domain)
+```
+
+`vezir login` stores a ~24h session; the client uses it as
+`Authorization: Bearer` on every request. Re-run to refresh.
+
+**Production note:** set `VEZIR_PUBLIC_URL=https://your-host` on the server
+so NIP-98 login-URL verification is pinned to a fixed base (not
+reconstructed from request headers).
 
 ## Architecture
 
 ```
-[Scribe laptop / phone]               [GPU server, over nvpn / Tailscale]
-  vezir tui            ──▶            vezir serve (FastAPI, 127.0.0.1
-   (Textual; record,                    │  fronted by Caddy w/ TLS)
-    list, label, view                   │
-    artifacts, copy,                    │   multipart form fields:
-    open-in-browser)                    │     summary_preset
-                                        │     auto_label
-  vezir scribe         ──▶              │     sync
-   (CLI; library-direct                 │     personal
-    record w/ pause)                    │
-                                        ├── sqlite job queue (per-team)
-  vezir scribe-widget  ──▶              │   (summary_preset,
-   (Tk floating recorder;               │    auto_label_enabled,
-    start / pause / stop)               │    sync_enabled, personal,
-                                        │    team_id)
-  vezir gui            ──▶              ▼
-   (Tk full UI; recorder              worker
-    + sessions list)                     │ shells out via HOME-shim
-                                         │ (per-team voiceprints + sync)
-  vezir upload <file>  ──▶               ▼
-   (resume any WAV/OGG)               millet transcribe --summary-preset <id>
-                                       millet label --auto  (if auto_label_enabled)
-  vezir-android (Kotlin) ──▶           millet sync          (if sync_enabled
-                                                           and not personal)
-                                                  ──▶ private git repo (per-team)
-  vezir pull           ◀──              │
-   (download artifacts                  ▼
-    for team sharing)                 web UI (labeling, dashboard,
-                                              "Sync now" button)
-                                        ◀── scribe browser
+[Scribe laptop / phone]                 [GPU server]
+  vezir tui / scribe   ──HTTPS──▶   vezir serve (FastAPI, 127.0.0.1)
+   (record, list,                     │  fronted by Caddy (TLS terminates here)
+    label, view,                      │
+    pull artifacts)                   │   identity sign-in:
+                                      │     NIP-46 / NIP-55 (nostr)  ─┐
+  vezir-android        ──HTTPS──▶     │     Google device grant      ─┴─▶ session JWT
+   (record + sign in)                 │     vzr_ tokens (machine/CI)
+                                      │
+                            ┌─ public VPS front (optional) ─┐
+   any network ────────────┤  WireGuard + nftables TLS-     │
+   (incl. CGNAT/IPv6)       │  passthrough → server :443    │
+                            └───────────────────────────────┘
+                                      │
+                                      ├── sqlite job queue (per-team)
+                                      ▼
+                                    worker  ── HOME-shim ──▶ millet
+                                      │   (per-team voiceprints + sync)
+                                      ▼
+                                    millet transcribe / label --auto / sync
+                                      └──▶ private git repo (per-team)
 ```
 
-Millet is invoked as an unmodified subprocess via a per-job HOME shim
-that exposes per-team voiceprints and sync config. Vezir owns its own
-job queue, voiceprint databases (per-team), team roster, and browser
-auth, and exposes the per-upload toggles end-to-end (client → form
-field → queue column → worker gate).
+Millet runs as an unmodified subprocess via a per-job HOME shim that exposes
+per-team voiceprints + sync config. Vezir owns the job queue, per-team
+voiceprint DBs, team roster/memberships, and auth.
 
 ## Clients
 
-Vezir ships five client surfaces; pick whichever fits the moment.
-All speak the same multipart upload + JSON API; you can mix and match
-across devices.
-
 | Client | Best for | Install |
 |---|---|---|
-| **`vezir tui`** | Day-to-day desktop use.  Record + browse sessions + view artifacts + label speakers, all in one terminal-native UI.  Has system-clipboard integration, ffplay sample playback, background "needs labeling" toasts. | `pip install vezir[tui]` |
-| **`vezir scribe`** | Headless / ssh / dotfile-driven workflows.  Pure CLI; pause/resume with `p` key during recording. | `pip install vezir` |
-| **`vezir scribe-widget`** | "Just a recorder, get out of my way."  Always-on-top Tkinter floating widget — start/pause/stop and upload, no session browser. | `pip install vezir` + `apt install python3-tk` |
-| **`vezir gui`** | Legacy Tkinter full UI (recorder + session list + dashboard launcher).  Still works; future of this surface depends on dogfood feedback. | `pip install vezir[gui]` + `apt install python3-tk` |
-| **`vezir upload <file>`** | Existing WAV/OGG you recorded another way (e.g. phone, Audio Hijack, OBS).  Resumes from byte 0 after transient failures. | `pip install vezir` |
-| **`vezir pull`** | Download meeting artifacts from the server.  Team-wide sharing: pull summaries, transcripts, and PDFs for meetings you didn't record yourself.  Idempotent. | `pip install vezir` |
-| **[vezir-android](https://github.com/pretyflaco/vezir-android)** | Field recording from phone.  Mirrors TUI feature set (v0.3.2); confidential preset is the Android default. | Play Store / sideload |
+| **`vezir tui`** | Day-to-day desktop use — record, browse sessions, read transcripts/summaries, label speakers, all in one terminal UI. `ctrl+e` Teams tab, `ctrl+t` cycles teams. | `pip install 'vezir[tui]'` |
+| **`vezir scribe`** | Headless / ssh / scripted recording. Pause-resume with `p`. | `pip install vezir` |
+| **`vezir upload <file>`** | An existing WAV/OGG (phone, OBS, etc.); resumable. | `pip install vezir` |
+| **`vezir pull`** | Download artifacts for meetings others recorded (team sharing without git). | `pip install vezir` |
+| **[vezir-android](https://github.com/pretyflaco/vezir-android)** | Recording from a phone; signs in with Nostr (Amber) or Google. | Sideload the release APK |
 
-All desktop clients honor credentials from (in order):
-`VEZIR_URL` + `VEZIR_TOKEN` env vars > `~/.config/vezir/teams.json`
-active team > `~/.config/vezir/client.json`.  The TUI / GUI persist
-preset + auto-label + sync preferences across launches, while the
-`--personal` flag stays per-recording and is never persisted.
-Multi-team: `vezir team config add/use/list/remove` manages
-`teams.json`; TUI's `Ctrl+T` cycles between configured teams.
-
-For internal-CA HTTPS endpoints (Caddy with its built-in CA), set
-`SSL_CERT_FILE=/etc/caddy/certs/vezir-internal-ca.crt` or
-`VEZIR_CADDY_ROOT_CERT_PATH=<same>` so the thin clients trust the
-server.  (Default httpx uses `certifi.where()` which doesn't include
-internal CAs.)
+All desktop clients resolve credentials from a `vezir login` session
+(stored per-team in `~/.config/vezir/teams.json`), or from
+`VEZIR_URL`+`VEZIR_TOKEN` for machine/CI. The TUI/Android auto-discover
+every team you belong to from `/api/me`.
 
 ## Summarization presets
 
-A preset picks the backend + model the server will use for the AI
-summary.  The client sends the preset id as the multipart form field
-`summary_preset`; the worker passes it to
-`millet transcribe --summary-preset <id>` which millet resolves to
-a `(backend, model)` pair.
+The client sends a preset id as the `summary_preset` form field; the worker
+passes it to `millet transcribe --summary-preset <id>`.
 
 | Preset | Backend | Model | Use case |
 |---|---|---|---|
-| `high-quality` | claudemax | Sonnet 4.6 | Default on desktop; highest summary quality (requires a Claude Max subscription on the server) |
-| `confidential` | tinfoil | DeepSeek V4 Pro | Hardware-attested TEE — prompts not visible to model provider / cloud operator.  Default on Android.  PDF gains a red CONFIDENTIAL header + footer on every page. |
-| `alternative` | openrouter | Kimi K2.6 | Cheapest cloud option (~$0.017/meeting); useful when claudemax credentials are unavailable on the server |
+| `high-quality` | claudemax | Sonnet | Default on desktop; highest quality (Claude Max on the server). |
+| `confidential` | tinfoil | DeepSeek (TEE) | Hardware-attested enclave — prompts not visible to the provider. Default on Android; PDF gets a CONFIDENTIAL watermark. |
+| `alternative` | openrouter | Kimi | Cheapest cloud option. |
 
-When a preset is explicitly chosen, the server **does not silently
-fall back** to a different backend on failure — a silent
-tinfoil → claudemax fallback would defeat the entire point of the
-Confidential preset.  Jobs whose chosen preset fails end up in
-`error` state on the dashboard with a clear reason.
+When a preset is explicitly chosen the server **does not silently fall
+back** to another backend on failure — a silent tinfoil→cloud fallback
+would defeat the Confidential preset. Set via `vezir scribe --preset …` or
+the TUI/Android dropdown.
 
-Set the preset via:
-- CLI: `vezir scribe --preset confidential`, `vezir upload --preset alternative <file>`
-- GUI: dropdown above the record button (stickied to last choice via
-  `~/.config/vezir/client.json`)
-- Android: dropdown above the title field (stickied to
-  EncryptedSharedPreferences; default `confidential` on Android)
+## Privacy toggles (per upload)
 
-The server needs the matching backend credentials/SDK installed.  On
-muscle, the Tinfoil SDK is pulled by the `[tee]` extra of millet-
-offline (`pip install 'millet-pipeline[tee]'`) and the API key
-lives in `TINFOIL_API_KEY` or at `~/models/tinfoil/tinfoil.txt`.
-
-## Privacy toggles
-
-Three per-upload toggles.  `auto_label` and `sync` default ON
-(preserves pre-0.1.11 behavior) and are sticky; `personal` defaults
-OFF and is **per-recording only — never persisted** (treating the
-"I want this one to be private" intent as ephemeral by design).
-
-| Toggle | Default | When set | Persisted? |
+| Toggle | Default | When set | Sticky? |
 |---|---|---|---|
-| `auto_label` | ON | OFF skips `millet label --auto`; session always routes to manual labeling.  Useful when you don't want the server attempting to identify speakers from previously enrolled voiceprints. | Yes (`~/.config/vezir/client.json`) |
-| `sync` | ON | OFF keeps the session local-only (status `done (local-only)` on the dashboard).  Artifacts stay on the vezir server but aren't pushed to the configured destination repo. | Yes (`~/.config/vezir/client.json`) |
-| `personal` | OFF | ON marks the session "Personal" in the UI, forces `sync` off for this recording regardless of session default, and keeps the session private to the uploader.  Useful for 1:1s, draft notes, anything you might not want to publish even if you forget to flip the sync toggle. | **No** — per-recording only |
+| `auto_label` | ON | OFF skips voiceprint matching; routes to manual labeling. | Yes |
+| `sync` | ON | OFF keeps the session on the server (`local-only`), not pushed to the team git repo. Retroactively syncable. | Yes |
+| `personal` | OFF | ON marks it private to you and forces `sync` off for this recording. | **No** (per-recording) |
 
-CLI: `--auto-label/--no-auto-label`, `--sync/--no-sync`,
-`--personal` on both `scribe` and `upload`.  Explicit choices for
-the first two are persisted to `~/.config/vezir/client.json` so the
-next session remembers them; `--personal` is intentionally
-per-recording.
-
-TUI: three checkboxes between the title row and the recorder controls
-(personal checkbox greys out the sync checkbox when active to make
-the forced-OFF behavior visible).  `ctrl+x` toggles personal from
-the keyboard.
-
-GUI: two checkboxes between the preset combobox and the recorder row;
-personal toggle on the same line as Record.
-
-Android: three `Switch` rows on the record screen, persisted in
-EncryptedSharedPreferences (personal resets to OFF on each launch
-per v0.2.5 semantics).
-
-### Retroactive sync
-
-A session uploaded with `--no-sync` can be promoted to git later from
-the dashboard.  The session detail page (`/s/<id>`) renders a
-"Sync now" button when the session reached `done` with `sync_enabled=0`.
-Clicking it POSTs to `/session/<id>/sync`, which flips the queue row's
-`sync_enabled = 1` and re-runs the finalize-sync flow in a background
-thread.  The page polls and refreshes through `syncing → done`.
-
-The status badge reads `local-only` (purple) instead of `done`
-(green) for these sessions so they're visually distinct in the
-dashboard.
-
-### Operator-side kill switches
-
-The two **server-side** env vars are unchanged:
-
-- `VEZIR_SKIP_SYNC=1` — global sync kill switch.  Wins over the
-  per-job `sync_enabled = 1`.  Both must allow sync for sync to
-  happen.
-- `VEZIR_DELETE_AUDIO=1` — delete recorded audio after artifacts are
-  produced (storage retention policy).
-
-## Compatibility
-
-The 0.1.11 wire format is forward- and backward-compatible:
-
-- **Older clients (< 0.1.11) talking to a 0.1.11 server** don't send
-  the `summary_preset` / `auto_label` / `sync` fields; the server
-  treats absent fields as the safe defaults (no preset → server
-  default backend; auto_label=ON; sync=ON).
-- **A 0.1.11 client talking to an older server (< 0.1.11)** sends the
-  fields but the older server ignores them.  Behavior is exactly
-  today's: server uses its default backend, always auto-labels,
-  always syncs.
-
-Both cases are silent — no errors.  If a teammate is on an older
-client and you want them to use a preset / opt-out, ask them to
-`pip install --upgrade vezir`.
-
-## Repo layout
-
-```
-vezir/
-  vezir/                    # python package
-    cli.py                  # serve, scribe, tui, scribe-widget,
-                            # gui, upload, pull, token, team, doctor
-    config.py               # paths, env, recordings_dir, sanitize_title
-    doctor.py               # `vezir doctor` diagnostic checks
-    server/                 # FastAPI app, queue, worker, meet_runner
-    client/
-      api.py                # VezirClient (httpx) — shared by TUI + all clients
-      artifacts.py          # shared artifact download (auto-download + pull)
-      pull.py               # `vezir pull` core logic
-      uploader.py           # multipart upload w/ resume + verify discovery
-      config.py             # client-side config (client.json + teams.json)
-      scribe.py             # library-direct recorder (pause/resume)
-      scribe_widget.py      # Tkinter floating recorder
-      gui.py                # Tkinter full UI (recorder + sessions list)
-      audio.py              # ffplay wrapper + notify_desktop
-      tui/                  # Textual TUI
-        app.py              # VezirTuiApp + MainScreen (TabbedContent)
-        record_screen.py
-        sessions_screen.py
-        detail_screen.py
-        artifact_screen.py
-        label_screen.py
-        help_screen.py
-        notify.py           # background "needs labeling" poll
-    web/                    # templates + static (dashboard, labeling UI)
-  data/
-    team.json.example
-  infra/
-    nvpn/                   # nostr-vpn join guide (Linux + macOS)
-    caddy/                  # Caddy install script + Caddyfile templates
-    systemd/                # vezir.service unit
-  assets/
-    logo/                   # vezir wordmark, lockup, icons
-  tests/                    # 389 passing as of v0.6.4
-```
-
-Runtime data lives **outside** the repo at `~/vezir-data/` (server),
-`~/.config/vezir/` (client preferences + teams.json), and
-`~/vezir-meetings/<team>/` (local recordings + pulled artifacts).
+CLI: `--auto-label/--no-auto-label`, `--sync/--no-sync`, `--personal` on
+`scribe` and `upload`. Server-side kill switches: `VEZIR_SKIP_SYNC=1`
+(global sync off), `VEZIR_DELETE_AUDIO=1` (drop audio after artifacts).
 
 ## Install profiles
 
-| Role | Install command | Footprint |
+| Role | Install | Footprint |
 |---|---|---|
-| **Scribe client (CLI only)** | `pip install --user vezir` | ~30 MB |
-| **Scribe client + Textual TUI** *(recommended for desktop)* | `pip install --user 'vezir[tui]'` | ~35 MB |
-| **Scribe client + Tkinter GUI / scribe-widget** | `pip install --user 'vezir[gui]'` plus `apt install python3-tk` (Debian/Ubuntu) | ~30 MB |
-| **Server** (FastAPI + worker + dashboard + labeling UI) | `pip install --user 'vezir[server]'` | ~3 GB on Linux/CUDA (millet-pipeline = whisperx + torch + pyannote); on Apple Silicon also pulls `mlx-whisper` for the MLX ASR backend (~few hundred MB extra) |
+| **Scribe client (CLI)** | `pip install --user vezir` | ~30 MB |
+| **Scribe client + TUI** *(recommended desktop)* | `pip install --user 'vezir[tui]'` | ~35 MB |
+| **Server** (FastAPI + worker + pipeline) | `pip install --user 'vezir[server]'` | ~3 GB (Linux/CUDA: whisperx+torch+pyannote); +`mlx-whisper` on Apple Silicon |
 
-You can combine extras: `pip install --user 'vezir[tui,gui]'` gets you
-both the TUI and the Tkinter widgets on the same box.
+The base install uses
+[millet-record](https://github.com/pretyflaco/millet-record) (capture only);
+`[server]` adds [millet-pipeline](https://github.com/pretyflaco/millet) for
+transcription/diarization/summarization (plus `mlx-whisper` on Apple
+Silicon via a PEP 508 marker for the MLX ASR backend).
 
-The split is enforced by `pyproject.toml`'s `[project.optional-dependencies]`:
-the base install uses [millet-record](https://github.com/pretyflaco/millet-record)
-(capture only). The `[tui]` extra adds [Textual](https://textual.textualize.io/);
-the `[server]` extra adds [millet-pipeline](https://github.com/pretyflaco/millet)
-for the heavy transcription/diarization/summarization pipeline.
-
-On Apple Silicon, the same `[server]` extra additionally installs
-`mlx-whisper` via a PEP 508 environment marker so the MLX ASR backend is
-available out of the box. Auto-detection selects it at runtime; see the
-env-var table below for overrides (`VEZIR_MEET_ASR_BACKEND`,
-`VEZIR_MEET_MLX_MODEL`).
-
-## Quick start (server, on a GPU box reachable over VPN)
+## Quick start — server
 
 ```bash
-git clone https://github.com/pretyflaco/vezir.git
-cd vezir
+git clone https://github.com/pretyflaco/vezir.git && cd vezir
 pip install --user -e '.[server]'
 
-# Seed voiceprints from existing millet profile DB
 mkdir -p ~/vezir-data
-vezir voiceprints seed --from ~/.config/meet/speaker_profiles.json
+vezir voiceprints seed --from ~/.config/meet/speaker_profiles.json   # optional
 
-# Create a team (v0.6.0+; bearer tokens are scoped to teams).
 vezir team create --id myteam --name "My Team"
+vezir team set-sync --id myteam --remote https://github.com/yourorg/meetings.git  # optional
 
-# Per-team sync target (optional; meetings sync to this git repo).
-# Drop a sync_config.json into the team directory:
-cat > ~/vezir-data/teams/myteam/sync_config.json <<'EOF'
-{
-  "repo_url": "https://github.com/yourorg/meetings.git",
-  "meetings": [],
-  "team_members": [],
-  "min_team_members": 0
-}
-EOF
+# Authorize yourself + grant scope (identity sign-in):
+vezir npub add --npub npub1… --github you --admin --label "laptop"
+vezir team add-member --team myteam --role admin --github you
 
-# Issue an admin token for yourself, scoped to the team.
-vezir token issue --github you --admin --team myteam --label "linux-laptop"
-
-# Start the service. As of 0.1.12 vezir binds to 127.0.0.1:8000 by
-# default and expects a reverse proxy in front (see infra/caddy/).
-vezir serve
-
-# Or, to skip git sync (artifacts stay only in ~/vezir-data/sessions/<id>/)
-VEZIR_SKIP_SYNC=1 vezir serve
+export VEZIR_PUBLIC_URL=https://your-vezir-host   # recommended in prod
+vezir serve                                       # binds 127.0.0.1:8000; front with Caddy
 ```
 
-### TLS via Caddy (recommended)
-
-The vezir server binds to loopback by default; expose it on the VPN with
-Caddy:
+### TLS via Caddy
 
 ```bash
-cd infra/caddy
-./install-caddy.sh
-# edit the dropped Caddyfile to use your hostnames, then:
-sudo systemctl enable --now caddy        # Linux
-# brew services start caddy              # macOS
+cd infra/caddy && ./install-caddy.sh
+# edit the Caddyfile for your hostnames, then:
+sudo systemctl enable --now caddy
 ```
 
-For nvpn deployments, point Caddy at its internal CA root and tell
-vezir where to find it so the enrollment QR embeds it for joiners:
+For a public-access deployment (clients on any network, incl. CGNAT), see
+[`infra/vps/`](infra/vps/) — a VPS WireGuard-forwards :443 to the server,
+which terminates TLS (the VPS sees only ciphertext).
+
+## Quick start — scribe client
 
 ```bash
-export VEZIR_CADDY_ROOT_CERT_PATH=/etc/ssl/caddy-root.crt
-export VEZIR_COOKIE_SECURE=1   # cookie's Secure flag now safe to set
-```
-
-See [`infra/caddy/README.md`](infra/caddy/README.md) for the migration
-plan and per-transport TLS strategy.
-
-### Sync target governance
-
-Each team has its own sync configuration at
-`~/vezir-data/teams/<team_id>/sync_config.json`.  Set it via
-`vezir team set-sync --id <team> --remote <git-url>` or by dropping
-a full `sync_config.json` into the team directory (operator override).
-
-Vezir's worker uses `--force` with a per-session meeting type, which
-bypasses millet's schedule and team-presence gates.  Each session gets a
-unique folder under `meetings/` regardless of when it was recorded.
-
-**Alternative to git sync**: `vezir pull` enables team-wide artifact
-sharing directly from the server, without requiring a shared git repo.
-Team members run `vezir pull` to download summaries and transcripts
-for meetings they didn't record themselves.
-
-## Quick start (scribe client)
-
-```bash
-# Install vezir + millet-record (lightweight; ~30 MB base).
-pip install --user vezir
-
-# Add the Textual TUI (recommended for daily desktop use; ~5 MB extra).
 pip install --user 'vezir[tui]'
+export VEZIR_URL=https://your-vezir-host
 
-# Optional: Tkinter widgets (GUI / scribe-widget); on Debian/Ubuntu:
-sudo apt install python3-tk
+vezir login --team myteam                 # Nostr / Amber
+# or: vezir login --method google --team myteam
 
-# Configure (one-time): server URL = your vezir server's VPN hostname or tunnel IP.
-# For nostr-vpn: use the server's tunnel IP (see infra/nvpn/README.md).
-# For Tailscale: use the MagicDNS name or Tailscale IP.
-export VEZIR_URL=https://your-vezir-server     # https when fronted by Caddy
-export VEZIR_TOKEN=<token-issued-on-server>
-
-# Internal CA (Caddy default): tell the thin client where to find it.
-export SSL_CERT_FILE=/etc/caddy/certs/vezir-internal-ca.crt
-
-# ── Textual TUI (recommended) ────────────────────────────────────────
-# Record + browse sessions + label speakers + view artifacts in one
-# terminal-native UI.  Press F1 for the in-app help.
-vezir tui
-
-# Boot a local server in the background and connect to it (single-box
-# self-hosted setups):
-vezir tui --serve
-
-# ── CLI scribe ───────────────────────────────────────────────────────
-vezir scribe --title "what this meeting is about"
-# Talk; press `p` to pause / resume; Ctrl+C when done.
-# By default, the recorded WAV is compressed to OGG/Opus before upload.
-# Use --no-compress to upload the raw WAV instead.
-
-# Pick a summarization preset.  Default is whatever the GUI/CLI/TUI
-# last used (sticky in ~/.config/vezir/client.json); flag overrides
-# for one session and updates the stickied value.
-vezir scribe --preset confidential --title "board meeting"
-
-# Privacy toggles.  --auto-label / --sync default ON and stick to the
-# last chosen state; --personal defaults OFF and never persists.
-vezir scribe --no-auto-label --title "research interview"
-vezir scribe --no-sync --title "draft notes"
-vezir scribe --personal --title "1:1 with Alice"                 # forces sync off, never sticks
-vezir scribe --preset confidential --personal --no-auto-label    # maximum-privacy mode
-
-# ── Always-on-top floating recorder (Tkinter; minimal) ───────────────
-vezir scribe-widget       # just start/pause/stop + upload, no browser
-
-# ── Legacy Tkinter full UI (recorder + session list) ─────────────────
-vezir gui
-
-# ── Upload an existing recording (WAV/OGG) ───────────────────────────
-vezir upload ./previous-meeting.wav --title "previous meeting"
-
-# Compress an existing WAV before uploading it
-vezir upload ./previous-meeting.wav --compress --title "previous meeting"
-
-# Same flags work on upload:
-vezir upload ./private-call.wav --preset confidential --personal --title "1:1"
+vezir tui                                 # record + browse + label
+vezir scribe --title "team sync"          # CLI record (p = pause; Ctrl+C = stop)
+vezir upload ./recording.ogg --title "…"  # existing file (resumable)
+vezir pull                                # artifacts for meetings others recorded
+vezir doctor                              # diagnose creds / connectivity / certs
 ```
 
-When the recording is uploaded, vezir prints a dashboard URL. Open it in
-your browser; the GUI's "Open dashboard" button does this for you. The
-URL flows through `/login?token=...` so the browser is signed in via
-HttpOnly cookie before it lands on the session page; subsequent access
-from the same browser does not require re-passing the token.
+After upload, artifacts (summary, transcript, PDF) auto-download into
+`~/vezir-meetings/<team>/meeting-…/`. Standalone uploads accept `.wav`/`.ogg`.
 
-Live client recordings are saved under `~/vezir-meetings/<team>/` by
-default (e.g. `~/vezir-meetings/myteam/meeting-20260526-143041_STANDUP/`).
-The `VEZIR_RECORD_DIR` env var overrides the root.  After server
-processing completes, artifacts (summary, transcript, PDF) are
-automatically downloaded into the same directory.
+### macOS (Apple Silicon) scribe
 
-To download artifacts for meetings recorded by other team members:
-
-```bash
-vezir pull                       # pull recent team meetings
-vezir pull --since 2026-05-20    # pull since a date
-vezir pull --session 01KSG...    # pull a specific session
-```
-
-`vezir doctor` diagnoses credential resolution, connectivity, SSL
-certs, token validity, and migration status.
-
-Standalone uploads currently accept `.wav` and `.ogg`, matching what the
-server-side millet pipeline consumes from session folders. Use
-`vezir upload --compress file.wav` to compress a WAV to OGG/Opus before
-uploading. Other formats such as `.mp3`, `.m4a`, and `.webm` should be
-transcoded to WAV/OGG first until server-side transcoding is added.
-
-The client reports upload progress, retries from byte 0 after transient
-connection failures, and sends the expected audio byte count so the server can
-reject incomplete uploads instead of processing partial meetings.
-
-### macOS thin client (Apple Silicon)
-
-The same `pip install vezir` command works on macOS Apple Silicon. The base
-install pulls `millet-record`, which ships a Swift sidecar binary
-(`meet-record-mac`) inside the macOS arm64 wheel. This binary captures mic +
-system audio via Apple's native APIs (AVAudioEngine + Core Audio Process Tap)
-— no virtual audio drivers, no reboot, no Audio MIDI Setup configuration.
-
-```bash
-pip install vezir                # ~31 MB total; no ML dependencies
-export VEZIR_URL=http://your-vezir-server:8000
-export VEZIR_TOKEN=<token-issued-on-server>
-vezir scribe --title "team sync"
-# Records mic + system audio via the Swift sidecar.
-# Ctrl+C to stop → compresses to OGG/Opus → uploads to server.
-```
-
-The server handles transcription, diarization, labeling, and sync. The Mac
-only needs to record and upload — total install footprint is ~31 MB vs ~5 GB
-for the full end-to-end (`millet-pipeline[mlx]`) pipeline.
-
-For end-to-end local transcription on Apple Silicon (no server needed), see
-[millet](https://github.com/pretyflaco/millet) directly.
+`pip install vezir` pulls `millet-record`, whose macOS wheel ships a Swift
+sidecar that captures mic + system audio via native APIs (no virtual
+drivers). Grant **both** Microphone and System Audio Recording to your
+terminal app; verify with `millet check`. The server does the heavy lifting.
 
 ## Environment variables
 
 | Variable | Default | Effect |
 |---|---|---|
-| `VEZIR_DATA` | `~/vezir-data` | All runtime state — sessions, voiceprints, queue, tokens, sync_config |
-| `VEZIR_HOST` | `127.0.0.1` | Bind address for `vezir serve`.  Front with Caddy in production; set to `0.0.0.0` only as an opt-in escape hatch. |
-| `VEZIR_PORT` | `8000` | Port for `vezir serve` |
-| `VEZIR_URL` | `http://localhost:8000` | Server URL for `vezir scribe` / `vezir tui` clients |
-| `VEZIR_TOKEN` | — | Bearer token for `vezir scribe` / `vezir tui` clients |
-| `SSL_CERT_FILE` | unset | **Primary** CA bundle path the thin clients check first when verifying HTTPS endpoints (e.g. Caddy internal CA at `/etc/caddy/certs/vezir-internal-ca.crt`).  Falls back to `VEZIR_CADDY_ROOT_CERT_PATH` then `certifi.where()`.  Needed because httpx defaults to certifi which doesn't include internal CAs.  Standard env var name; honored by many other Python HTTP libraries. |
-| `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Secondary CA bundle path.  Also embedded into the device-enrollment QR payload (v2 format) so Android clients can trust the server on first contact.  Ignored / falls back to v1 QR when unset or the file is invalid. |
-| `VEZIR_COOKIE_SECURE` | unset | Set to `1` to add `Secure` to the session cookie. Recommended once Caddy is in front. |
-| `VEZIR_SUMMARY_PRESET` | unset | Default summarization preset (`high-quality` \| `confidential` \| `alternative`).  Read by CLI / TUI / GUI as the initial value when `~/.config/vezir/client.json` has no `summary_preset` key.  CLI `--preset` flag takes precedence. |
-| `VEZIR_TUI_DISABLE_NOTIFY_POLL` | unset | Set to `1` to disable the TUI's background "needs labeling" poll (runs every 60s by default).  Mostly useful in tests; also handy if you find the notifications noisy. |
-| `VEZIR_LOG_LEVEL` | `INFO` | Logging level |
-| `VEZIR_RECORD_DIR` | `~/vezir-meetings` | Root directory for local recordings.  Team subdirectory is appended automatically. |
-| `VEZIR_MILLET_BIN` | `$(which millet)` | Path to `millet` binary |
-| `VEZIR_MILLET_DEVICE` | `mps` on Apple Silicon when supported, `cuda` when CUDA is available, otherwise `cpu` | Device passed to `millet transcribe` |
-| `VEZIR_MILLET_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA, `float32` on MPS | Compute type passed to `millet transcribe` |
-| `VEZIR_MILLET_TORCH_DEVICE` | auto | PyTorch device passed to `millet transcribe --torch-device` when supported |
-| `VEZIR_MILLET_ASR_BACKEND` | `mlx` on Apple Silicon when available | ASR backend passed to `millet transcribe --asr-backend` when supported |
-| `VEZIR_MILLET_MLX_MODEL` | millet default | MLX Whisper model path/repo passed to `millet transcribe --mlx-model` |
-| `VEZIR_SKIP_SYNC` | unset | Set to `1` to skip the `millet sync` step entirely (server-side kill switch; wins over per-job `sync_enabled=1`). |
-| `VEZIR_DELETE_AUDIO` | unset | Set to `1` to delete audio after artifacts are produced (storage policy). Default OFF during pilot. |
-| `VEZIR_SYNC_MEETING_TYPE` | `sandbox` | Subfolder name (under `meetings/`) used by `millet sync --force`. Will be removed once vezir respects schedules. |
-| `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Maximum accepted upload size (default 2 GiB). Oversized uploads return HTTP 413. |
-| `VEZIR_DISABLE_RATELIMIT` | unset | Set to `1` to disable the in-process rate limiter. Test/CI only. |
+| `VEZIR_DATA` | `~/vezir-data` | All server runtime state. |
+| `VEZIR_HOST` / `VEZIR_PORT` | `127.0.0.1` / `8000` | Bind for `vezir serve` (front with Caddy). |
+| `VEZIR_PUBLIC_URL` | unset | Canonical public base URL; pins NIP-98 login-URL verification (recommended in prod). |
+| `VEZIR_URL` | `http://localhost:8000` | Server URL for clients. |
+| `VEZIR_TOKEN` | — | `vzr_` bearer for machine/CI clients (interactive members use `vezir login`). |
+| `VEZIR_GOOGLE_CLIENT_ID` / `…_SECRET[_FILE]` / `…_ALLOWED_DOMAIN` | unset | Enable Google sign-in (server holds the secret). |
+| `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Extra internal CA to trust; the client *appends* it to the public store (0.8.0+), so public + internal hosts both validate. |
+| `VEZIR_COOKIE_SECURE` | unset | `1` adds `Secure` to the session cookie (HTTPS). |
+| `VEZIR_SUMMARY_PRESET` | unset | Default preset (`high-quality`\|`confidential`\|`alternative`). |
+| `VEZIR_RECORD_DIR` | `~/vezir-meetings` | Local recordings root. |
+| `VEZIR_MILLET_*` | auto | Pass-throughs to `millet transcribe` (device, compute type, ASR backend, MLX model). |
+| `VEZIR_SKIP_SYNC` / `VEZIR_DELETE_AUDIO` | unset | Server-side sync kill switch / audio retention. |
+| `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Max upload (2 GiB → 413). |
+| `VEZIR_DISABLE_RATELIMIT` | unset | Disable the in-process rate limiter. **Test/CI only** (logs a loud warning if set). |
 
-On Apple Silicon, vezir prefers millet's MLX Whisper ASR backend when
-`mlx-whisper` is installed and the installed `millet transcribe` supports
-`--asr-backend`. Alignment and diarization still use PyTorch, so vezir also
-passes `--torch-device mps` when that option is available. If MLX ASR is not
-available, the fallback Apple Silicon route is CPU ASR via CTranslate2 plus
-PyTorch MPS for alignment/diarization. `VEZIR_MILLET_ASR_BACKEND`,
-`VEZIR_MILLET_MLX_MODEL`, and `VEZIR_MILLET_TORCH_DEVICE` override the
-automatic selection.
+## Performance (rough, 1h audio)
 
-## Performance expectations
+| Runtime | Path | Time |
+|---|---|---|
+| NVIDIA CUDA | CUDA float16 | ~5–20 min |
+| Apple Silicon (MLX) | MLX Whisper + MPS | ~10–30 min |
+| Apple Silicon (split) | CPU CTranslate2 + MPS | ~20–45 min |
+| CPU only | CPU int8 | ~1.5–10 h |
 
-End-to-end processing time depends on audio quality, model size, language
-detection, diarization, summary generation, and whether alignment models are
-already cached. For a one-hour recording with the default large-v3-turbo-style
-pipeline, use these as rough operator estimates:
-
-| Runtime | ASR path | PyTorch alignment/diarization path | Expected time for 1h audio |
-|---|---|---|---|
-| NVIDIA CUDA GPU | CUDA, float16 | CUDA | ~5-20 min end-to-end |
-| Apple Silicon MLX mode | MLX Whisper | MPS | ~10-30 min end-to-end |
-| Apple Silicon split mode | CPU, int8 via CTranslate2 | MPS | ~20-45 min end-to-end |
-| CPU only | CPU, int8 | CPU | ~1.5-10 hours end-to-end |
-
-ASR is automatic speech recognition: the stage that turns audio into text.
-In Apple Silicon MLX mode, ASR uses MLX Whisper on the Apple GPU while
-alignment and diarization use PyTorch MPS. The first run downloads the selected
-MLX model; subsequent runs use the local Hugging Face cache.
-
-The most useful future improvements are:
-
-- Add per-stage timing to worker logs so real deployments can compare ASR,
-  alignment, diarization, summary, and sync costs instead of relying on broad
-  estimates.
-- Benchmark `mlx-community/whisper-large-v3-turbo`, `-q4`, and `-4bit` variants
-  on representative meeting audio to choose the best speed/quality default.
-
-Runtime directories are created private (`0700`) and sensitive runtime files
-are written private (`0600`). The systemd unit also sets `UMask=0077` so
-artifacts created by subprocesses inherit private defaults.
-
-## What's next
-
-The post-v0.6.5 backlog, in roughly the order I'm thinking about it:
-
-- **Job timing columns** (`started_at` / `finished_at`) + extended
-  `vezir status` for per-stage timing visibility.
-- **Structured logging** (JSON formatter + file handler) for
-  production observability.
-- **Web dashboard deprecation track.**  New end-user features ship to
-  TUI + Android first; the dashboard is admin/labeling-only.
-- **Per-team admin roles** — team-scoped admin tokens so team leads
-  can manage their own roster and sync config without server access.
-- **TUI paper-cut polish** as it surfaces from dogfood.
-- **Android v0.4.0** — multi-team support + `vezir pull` equivalent.
+Runtime dirs are created `0700`, sensitive files `0600`; the systemd unit
+sets `UMask=0077`.
 
 ## License
 
