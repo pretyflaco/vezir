@@ -76,36 +76,57 @@ def test_resolve_verify_defaults_to_true_with_no_env(monkeypatch):
     assert VezirClient._resolve_verify(None) is True
 
 
+def _write_test_ca(path):
+    """Write a real self-signed CA PEM (so load_verify_locations succeeds)."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "vezir-api-test-ca")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
 def test_resolve_verify_picks_up_ssl_cert_file(monkeypatch, tmp_path):
-    """Standard OpenSSL convention: SSL_CERT_FILE -> use it as the CA bundle."""
+    """SSL_CERT_FILE -> an SSLContext that trusts the default store + that CA.
+
+    (The internal CA is *appended*, never replacing the default store; the
+    detailed CA-count assertions live in test_client_trust.py.)
+    """
+    import ssl
+    pytest.importorskip("cryptography")
     ca = tmp_path / "ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    _write_test_ca(ca)
     monkeypatch.setenv("SSL_CERT_FILE", str(ca))
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
     from vezir.client.api import VezirClient
-    assert VezirClient._resolve_verify(None) == str(ca)
+    assert isinstance(VezirClient._resolve_verify(None), ssl.SSLContext)
 
 
 def test_resolve_verify_picks_up_vezir_caddy_path(monkeypatch, tmp_path):
     """Vezir-specific env var (set by Caddy-deployed boxes)."""
+    import ssl
+    pytest.importorskip("cryptography")
     ca = tmp_path / "vezir-ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    _write_test_ca(ca)
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca))
     from vezir.client.api import VezirClient
-    assert VezirClient._resolve_verify(None) == str(ca)
-
-
-def test_resolve_verify_ssl_cert_file_wins_over_vezir_var(monkeypatch, tmp_path):
-    """Standard env var takes precedence over the vezir-specific one."""
-    a = tmp_path / "a.crt"
-    a.write_text("a")
-    b = tmp_path / "b.crt"
-    b.write_text("b")
-    monkeypatch.setenv("SSL_CERT_FILE", str(a))
-    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(b))
-    from vezir.client.api import VezirClient
-    assert VezirClient._resolve_verify(None) == str(a)
+    assert isinstance(VezirClient._resolve_verify(None), ssl.SSLContext)
 
 
 def test_resolve_verify_explicit_overrides_env(monkeypatch, tmp_path):
@@ -130,13 +151,15 @@ def test_resolve_verify_ignores_nonexistent_file(monkeypatch):
 
 def test_vezir_client_uses_resolved_verify(monkeypatch, tmp_path):
     """Constructor should call _resolve_verify and store the result."""
+    import ssl
+    pytest.importorskip("cryptography")
     ca = tmp_path / "ca.crt"
-    ca.write_text("x")
+    _write_test_ca(ca)
     monkeypatch.setenv("SSL_CERT_FILE", str(ca))
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
     from vezir.client.api import VezirClient
     c = VezirClient("https://test", "vzr_x")
-    assert c._verify == str(ca)
+    assert isinstance(c._verify, ssl.SSLContext)
 
 
 def test_apiresult_success_is_truthy():

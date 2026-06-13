@@ -1472,13 +1472,14 @@ def login(url, team_id, relay, timeout, method, verbose):
 
 
 def _login_verify():
-    """Resolve httpx ``verify`` the same way VezirClient does (internal CA)."""
-    import os
-    for var in ("SSL_CERT_FILE", "VEZIR_CADDY_ROOT_CERT_PATH"):
-        path = os.environ.get(var)
-        if path and os.path.isfile(path):
-            return path
-    return True
+    """Resolve httpx ``verify`` the same way VezirClient does.
+
+    Trusts the public/default store AND any configured internal Caddy CA
+    (appends, never replaces) so login works against both the public
+    Let's Encrypt front and internal ``tls internal`` hosts.
+    """
+    from .client.trust import resolve_verify
+    return resolve_verify()
 
 
 def _login_google(resolved_url, resolved_team, timeout, client_config) -> None:
