@@ -3,6 +3,23 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.3 — Google device-flow DNS resilience
+
+### Fixed
+
+* **`/api/auth/google/device/start` retries transient DNS/network errors.**
+  On a host with flaky DNS, the first call to Google's device-code endpoint
+  could fail to resolve and surface as `502 "could not reach Google to start
+  sign-in"` (it worked on the next tap).  The POST is now retried with
+  backoff (same `_is_transient_network_error` classifier as the 0.8.1
+  JWKS/token path); only a genuine network failure after all retries returns
+  502.
+* **`device/poll` token exchange is now also retry- and
+  unreachable-tolerant.**  A DNS/network failure reaching Google's token
+  endpoint during polling returns **202 `authorization_pending`** (keep
+  polling) instead of a hard 502, so a mid-flow blip no longer aborts the
+  sign-in.
+
 ## 0.8.2 — security hardening + Google prefill
 
 Addresses a security audit of the 0.8.x auth code plus a Google sign-in

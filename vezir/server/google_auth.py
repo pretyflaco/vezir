@@ -38,6 +38,7 @@ Security: a valid Google token is not enough — the email must be on the
 from __future__ import annotations
 
 import logging
+import time
 import urllib.parse
 
 import httpx
@@ -140,6 +141,33 @@ def google_config():
     }
 
 
+def _post_with_retry(url: str, data: dict):
+    """POST to ``url`` retrying transient network/DNS errors with backoff.
+
+    Google endpoints are reached from a host with occasionally-flaky DNS
+    (see infra notes), so a first call can fail to resolve and succeed a
+    second later.  Retries only on transient network/DNS errors; HTTP-level
+    rejections are returned to the caller to handle.  Raises the last
+    ``httpx.HTTPError`` if every attempt fails on the network.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_VERIFY_RETRIES):
+        try:
+            with httpx.Client(timeout=_HTTP_TIMEOUT) as c:
+                return c.post(url, data=data)
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if _is_transient_network_error(exc) and attempt + 1 < _VERIFY_RETRIES:
+                log.warning(
+                    "google %s transient network error (attempt %d/%d): %s",
+                    url, attempt + 1, _VERIFY_RETRIES, exc,
+                )
+                time.sleep(_VERIFY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            raise
+    raise last_exc  # pragma: no cover - loop always returns or raises above
+
+
 @router.post(
     "/api/auth/google/device/start",
     dependencies=[Depends(ratelimit.limit_login)],
@@ -148,13 +176,12 @@ def google_device_start():
     """Begin the device grant: ask Google for a user_code + device_code."""
     client_id, _secret, allowed_domain = _require_configured()
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as c:
-            r = c.post(
-                _DEVICE_CODE_URL,
-                data={"client_id": client_id, "scope": _SCOPE},
-            )
+        r = _post_with_retry(
+            _DEVICE_CODE_URL,
+            {"client_id": client_id, "scope": _SCOPE},
+        )
     except httpx.HTTPError as exc:
-        log.warning("google device/start network error: %s", exc)
+        log.warning("google device/start network error (after retries): %s", exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="could not reach Google to start sign-in; try again.",
@@ -201,8 +228,6 @@ def _verify_id_token(id_token_str: str, client_id: str, allowed_domain: str):
     library), then our extra policy: ``email_verified`` and the email's
     domain == allowed domain (``hd`` claim and/or email suffix).
     """
-    import time
-
     from google.auth.transport import requests as g_requests
     from google.oauth2 import id_token as g_id_token
 
@@ -283,22 +308,21 @@ def google_device_poll(device_code: str = Body(..., embed=True)):
     """
     client_id, client_secret, allowed_domain = _require_configured()
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as c:
-            r = c.post(
-                _TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "device_code": device_code,
-                    "grant_type": _DEVICE_GRANT,
-                },
-            )
+        r = _post_with_retry(
+            _TOKEN_URL,
+            {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "device_code": device_code,
+                "grant_type": _DEVICE_GRANT,
+            },
+        )
     except httpx.HTTPError as exc:
-        log.warning("google device/poll network error: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="could not reach Google to complete sign-in; try again.",
-        ) from exc
+        # Couldn't reach Google's token endpoint (DNS/network) even after
+        # retries.  The grant may still be valid; tell the client to keep
+        # polling rather than failing the whole sign-in.
+        log.warning("google device/poll network error (after retries): %s", exc)
+        return _pending("token_endpoint_unreachable")
 
     body = r.json() if r.content else {}
     if r.status_code != 200:
