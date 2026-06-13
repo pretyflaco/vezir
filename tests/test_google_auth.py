@@ -217,3 +217,66 @@ def test_endpoints_501_when_unconfigured(client):
     assert r.status_code == 501
     r2 = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
     assert r2.status_code == 501
+
+
+def test_device_start_surfaces_verification_url_complete(client, configured, monkeypatch):
+    # Google's device-code response includes a *complete* URL with the
+    # user_code embedded; the server must pass it through so clients can
+    # open a pre-filled page (no manual code typing).
+    _patch_token_exchange(monkeypatch, 200, {
+        "device_code": "dc",
+        "user_code": "JLZ-TTC-KHD",
+        "verification_url": "https://www.google.com/device",
+        "verification_url_complete": "https://www.google.com/device?user_code=JLZ-TTC-KHD",
+        "interval": 5,
+        "expires_in": 1800,
+    })
+    r = client.post("/api/auth/google/device/start")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["user_code"] == "JLZ-TTC-KHD"
+    assert body["verification_url"] == "https://www.google.com/device"
+    assert body["verification_url_complete"] == (
+        "https://www.google.com/device?user_code=JLZ-TTC-KHD"
+    )
+
+
+def test_device_poll_transient_jwks_error_returns_202(client, configured, monkeypatch):
+    # The token exchange succeeds (Google returns an id_token), but the
+    # subsequent JWKS fetch in verify_oauth2_token hits a DNS failure.  That
+    # is retryable, not a bad token — the client should keep polling (202),
+    # NOT see a terminal 401.
+    import socket
+
+    import google.oauth2.id_token as g
+
+    _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
+
+    def _boom(*a, **k):
+        raise Exception(
+            "HTTPSConnectionPool(host='www.googleapis.com', port=443): "
+            "Max retries exceeded ... Failed to resolve 'www.googleapis.com' "
+            "(Errno -2 Name or service not known)"
+        ) from socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(g, "verify_oauth2_token", _boom)
+    # Keep retries fast.
+    from vezir.server import google_auth
+    monkeypatch.setattr(google_auth, "_VERIFY_BACKOFF_SECONDS", 0.0)
+
+    r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "authorization_pending"
+
+
+def test_is_transient_network_error_detects_dns_vs_token():
+    import socket
+
+    from vezir.server import google_auth as ga
+    assert ga._is_transient_network_error(socket.gaierror(-2, "Name or service not known"))
+    assert ga._is_transient_network_error(
+        Exception("Max retries exceeded: Failed to resolve 'www.googleapis.com'")
+    )
+    # A real token error is NOT transient.
+    assert not ga._is_transient_network_error(ValueError("Token expired"))
+    assert not ga._is_transient_network_error(ValueError("Invalid audience"))

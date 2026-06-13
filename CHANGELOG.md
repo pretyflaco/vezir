@@ -3,6 +3,28 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.1 — Google sign-in UX + JWKS/DNS resilience
+
+### Fixed
+
+* **Google device sign-in no longer fails on a transient DNS blip.**  The
+  ID-token verification fetches Google's JWKS from `www.googleapis.com`;
+  on a host with flaky DNS that first fetch could fail with `Name or
+  service not known`, surfacing as a scary terminal `401 "Google ID token
+  verification failed"` (it then worked on the next try).  The verify now
+  retries transient network/DNS errors with backoff and, if still
+  unreachable, returns **202 `authorization_pending`** so the client keeps
+  polling — the user never sees the 401.  Adds `clock_skew_in_seconds=10`
+  defensively.  Genuine bad-token errors still fail fast (401).
+
+### Added
+
+* **`verification_url_complete` passthrough** from
+  `/api/auth/google/device/start`.  Google's device-code response includes
+  a URL with the `user_code` embedded; surfacing it lets clients open a
+  **pre-filled** verification page so the user doesn't have to read and
+  type the code by hand.
+
 ## 0.8.0 — nostr (NIP-46) + Google sign-in; VPS public-access front
 
 ### Added

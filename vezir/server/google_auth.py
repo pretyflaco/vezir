@@ -59,6 +59,46 @@ _ISSUERS = ("accounts.google.com", "https://accounts.google.com")
 
 _HTTP_TIMEOUT = 15.0
 
+# Tolerance for clocks running slightly behind Google's ``iat``/``nbf``.
+_CLOCK_SKEW_SECONDS = 10
+# Retry the ID-token verification on transient network/DNS errors.  The
+# verify call fetches Google's JWKS from www.googleapis.com, which on a
+# host with flaky DNS (see infra notes) can fail the first time and
+# succeed moments later.  We retry briefly, then — if it's *still* a
+# network error — treat it as retryable (the poll endpoint returns 202 so
+# the client keeps polling) instead of a terminal 401.
+_VERIFY_RETRIES = 3
+_VERIFY_BACKOFF_SECONDS = 1.0
+
+
+class _TransientVerifyError(Exception):
+    """ID-token verification could not be completed due to a network/DNS
+    failure reaching Google's JWKS endpoint (not a bad token)."""
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """True if ``exc`` (or its cause chain) is a DNS/connection failure
+    rather than a genuine token-validation failure."""
+    import socket
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (socket.gaierror, ConnectionError, TimeoutError, OSError)):
+            return True
+        text = f"{type(cur).__name__}: {cur}".lower()
+        if (
+            "name or service not known" in text
+            or "failed to resolve" in text
+            or "temporary failure in name resolution" in text
+            or "max retries exceeded" in text
+            or ("connection" in text and "refused" in text)
+        ):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
 
 def _require_configured() -> tuple[str, str, str]:
     """Return (client_id, client_secret, allowed_domain) or raise 501.
@@ -125,12 +165,17 @@ def google_device_start():
             detail="Google rejected the device-code request.",
         )
     data = r.json()
-    # Pass through only what the client needs to display + poll.
+    # Pass through only what the client needs to display + poll.  We surface
+    # both the bare verification URL and the *complete* variant (which embeds
+    # the user_code as a query param) so clients can open a pre-filled page
+    # and the user doesn't have to type the code by hand.
     return {
         "device_code": data["device_code"],
         "user_code": data["user_code"],
         "verification_url": data.get("verification_url")
         or data.get("verification_uri"),
+        "verification_url_complete": data.get("verification_url_complete")
+        or data.get("verification_uri_complete"),
         "expires_in": data.get("expires_in"),
         "interval": data.get("interval", 5),
         "allowed_domain": allowed_domain,
@@ -144,19 +189,43 @@ def _verify_id_token(id_token_str: str, client_id: str, allowed_domain: str):
     library), then our extra policy: ``email_verified`` and the email's
     domain == allowed domain (``hd`` claim and/or email suffix).
     """
+    import time
+
     from google.auth.transport import requests as g_requests
     from google.oauth2 import id_token as g_id_token
 
-    try:
-        claims = g_id_token.verify_oauth2_token(
-            id_token_str, g_requests.Request(), client_id
-        )
-    except Exception as exc:  # bad sig / aud / expiry
-        log.info("google id_token verification failed: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Google ID token verification failed.",
-        ) from exc
+    claims = None
+    last_exc: Exception | None = None
+    for attempt in range(_VERIFY_RETRIES):
+        try:
+            claims = g_id_token.verify_oauth2_token(
+                id_token_str,
+                g_requests.Request(),
+                client_id,
+                clock_skew_in_seconds=_CLOCK_SKEW_SECONDS,
+            )
+            break
+        except Exception as exc:  # bad sig / aud / expiry, OR a DNS/JWKS blip
+            last_exc = exc
+            if _is_transient_network_error(exc):
+                log.warning(
+                    "google id_token verify transient network error "
+                    "(attempt %d/%d): %s",
+                    attempt + 1, _VERIFY_RETRIES, exc,
+                )
+                if attempt + 1 < _VERIFY_RETRIES:
+                    time.sleep(_VERIFY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                # Still failing on the network — retryable, not a bad token.
+                raise _TransientVerifyError(str(exc)) from exc
+            # A genuine verification failure: fail fast (terminal 401).
+            log.info("google id_token verification failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google ID token verification failed.",
+            ) from exc
+    if claims is None:  # pragma: no cover - defensive
+        raise _TransientVerifyError(str(last_exc))
 
     if claims.get("iss") not in _ISSUERS:
         raise HTTPException(
@@ -234,7 +303,13 @@ def google_device_poll(device_code: str = Body(..., embed=True)):
             detail="Google did not return an ID token.",
         )
 
-    claims = _verify_id_token(id_token_str, client_id, allowed_domain)
+    try:
+        claims = _verify_id_token(id_token_str, client_id, allowed_domain)
+    except _TransientVerifyError as exc:
+        # Couldn't reach Google's JWKS (DNS/network blip).  The grant is
+        # fine; tell the client to keep polling rather than failing hard.
+        log.warning("google id_token verify deferred (network): %s", exc)
+        return _pending("verification_pending")
     email = claims["email"].strip().lower()
 
     resolved = google_members.lookup_email(email)
