@@ -346,3 +346,68 @@ def test_device_start_prefers_googles_complete_url_if_present(client, configured
     assert r.json()["verification_url_complete"] == (
         "https://www.google.com/device?user_code=ABCD&x=1"
     )
+
+
+def test_device_start_retries_transient_dns_error(client, configured, monkeypatch):
+    """A DNS blip on the first device/code POST is retried, then succeeds."""
+    import httpx
+
+    from vezir.server import google_auth
+
+    calls = {"n": 0}
+    good = {
+        "device_code": "dc", "user_code": "JLZ-TTC-KHD",
+        "verification_url": "https://www.google.com/device", "interval": 5,
+    }
+
+    class _FlakyClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("Failed to resolve 'oauth2.googleapis.com'")
+            return _FakeResp(200, good)
+
+    monkeypatch.setattr(google_auth.httpx, "Client", _FlakyClient)
+    monkeypatch.setattr(google_auth, "_VERIFY_BACKOFF_SECONDS", 0.0)
+
+    r = client.post("/api/auth/google/device/start")
+    assert r.status_code == 200, r.text
+    assert calls["n"] == 2  # failed once, retried, succeeded
+    assert r.json()["user_code"] == "JLZ-TTC-KHD"
+
+
+def test_device_poll_network_error_keeps_polling(client, configured, monkeypatch):
+    """If Google's token endpoint is unreachable (DNS) even after retries,
+    poll returns 202 (keep polling), not a hard 502/401."""
+    import httpx
+
+    from vezir.server import google_auth
+
+    class _DeadClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, **kwargs):
+            raise httpx.ConnectError("Failed to resolve 'oauth2.googleapis.com'")
+
+    monkeypatch.setattr(google_auth.httpx, "Client", _DeadClient)
+    monkeypatch.setattr(google_auth, "_VERIFY_BACKOFF_SECONDS", 0.0)
+
+    r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
+    assert r.status_code == 202
+    assert r.json()["status"] == "authorization_pending"
