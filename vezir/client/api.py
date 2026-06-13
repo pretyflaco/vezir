@@ -271,37 +271,26 @@ class VezirClient:
         self._timeout = timeout or _DEFAULT_TIMEOUT
         # httpx's default verify=True uses certifi.where() -- the bundled
         # public CA list -- which does NOT include our internal Caddy CA.
-        # If the caller didn't specify, honor the standard OpenSSL
-        # SSL_CERT_FILE env var (and the vezir-specific
-        # VEZIR_CADDY_ROOT_CERT_PATH set by Caddy-deployed servers) so
-        # internal-CA setups work out of the box.  Falls back to True
-        # (certifi) when no env hint is present, which is correct for
-        # public-CA servers.
+        # _resolve_verify builds an SSLContext that trusts the default store
+        # *and* any configured internal CA (SSL_CERT_FILE /
+        # VEZIR_CADDY_ROOT_CERT_PATH), so both the public Let's Encrypt
+        # front and internal `tls internal` hosts validate.  Falls back to
+        # True (certifi) when no internal CA is configured.
         self._verify = self._resolve_verify(verify)
 
     @staticmethod
-    def _resolve_verify(explicit: bool | str | None) -> bool | str:
+    def _resolve_verify(explicit: bool | str | None):
         """Pick the right ``verify`` value for httpx.Client.
 
-        Resolution order:
-          1. explicit kwarg (caller wins)
-          2. ``SSL_CERT_FILE`` env var (OpenSSL convention; the vezir
-             wiki onboarding doc instructs joiners to set this)
-          3. ``VEZIR_CADDY_ROOT_CERT_PATH`` (vezir-specific, set on
-             muscle and any Caddy-deployed server box for use by the
-             server itself; client may also pick it up if joined to
-             the same shell environment)
-          4. ``True`` (httpx default -> certifi public CA bundle)
+        Delegates to :func:`vezir.client.trust.resolve_verify`, which trusts
+        the public/default store AND any configured internal Caddy CA
+        (``SSL_CERT_FILE`` / ``VEZIR_CADDY_ROOT_CERT_PATH``) by *appending*
+        the internal CA rather than replacing the store.  This keeps both
+        the public Let's Encrypt front and internal ``tls internal`` hosts
+        validating from a single client.
         """
-        if explicit is not None:
-            return explicit
-        import os
-        for var in ("SSL_CERT_FILE", "VEZIR_CADDY_ROOT_CERT_PATH"):
-            path = os.environ.get(var)
-            if path and os.path.isfile(path):
-                log.debug("VezirClient.verify resolved from %s=%s", var, path)
-                return path
-        return True
+        from .trust import resolve_verify
+        return resolve_verify(explicit)
 
     # ── plumbing ──
 
