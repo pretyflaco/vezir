@@ -595,6 +595,7 @@ def token_list(dormant_days, show_id):
     With ``--dormant N`` only rows whose ``last_used`` is older than N
     days (or ``never used``) appear -- useful for "who should I rotate?".
     """
+    import calendar as _calendar
     import time as _time
 
     from .server import auth as _auth
@@ -610,9 +611,7 @@ def token_list(dormant_days, show_id):
         if not ts:
             return None
         try:
-            t = _time.mktime(
-                _time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
-            ) - _time.timezone
+            t = _calendar.timegm(_time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
             return _time.time() - t
         except Exception:
             return None

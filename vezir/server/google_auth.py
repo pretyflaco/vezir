@@ -38,6 +38,7 @@ Security: a valid Google token is not enough — the email must be on the
 from __future__ import annotations
 
 import logging
+import urllib.parse
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -165,17 +166,28 @@ def google_device_start():
             detail="Google rejected the device-code request.",
         )
     data = r.json()
-    # Pass through only what the client needs to display + poll.  We surface
-    # both the bare verification URL and the *complete* variant (which embeds
-    # the user_code as a query param) so clients can open a pre-filled page
-    # and the user doesn't have to type the code by hand.
+    verification_url = data.get("verification_url") or data.get("verification_uri")
+    user_code = data["user_code"]
+    # Google's device-code endpoint returns only the bare verification_url
+    # (no *_complete variant).  Its consumer device page DOES accept the code
+    # as a ``?user_code=`` query param, so synthesize the complete URL when
+    # Google omits it — clients then open a pre-filled page and the user
+    # doesn't have to type the code.  Falls back to whatever Google sent if
+    # present.
+    verification_url_complete = (
+        data.get("verification_url_complete")
+        or data.get("verification_uri_complete")
+    )
+    if not verification_url_complete and verification_url:
+        sep = "&" if "?" in verification_url else "?"
+        verification_url_complete = (
+            f"{verification_url}{sep}user_code={urllib.parse.quote(user_code)}"
+        )
     return {
         "device_code": data["device_code"],
-        "user_code": data["user_code"],
-        "verification_url": data.get("verification_url")
-        or data.get("verification_uri"),
-        "verification_url_complete": data.get("verification_url_complete")
-        or data.get("verification_uri_complete"),
+        "user_code": user_code,
+        "verification_url": verification_url,
+        "verification_url_complete": verification_url_complete,
         "expires_in": data.get("expires_in"),
         "interval": data.get("interval", 5),
         "allowed_domain": allowed_domain,
@@ -239,7 +251,13 @@ def _verify_id_token(id_token_str: str, client_id: str, allowed_domain: str):
         )
     email = (claims.get("email") or "").strip().lower()
     hd = (claims.get("hd") or "").strip().lower()
-    domain_ok = email.endswith("@" + allowed_domain) or (hd == allowed_domain)
+    # Exact-domain match (not a suffix): split on the LAST '@' and compare
+    # the domain part precisely, so neither ``user@evilblinkbtc.com`` nor a
+    # subdomain ``user@x.blinkbtc.com`` can pass.  The Google-set ``hd``
+    # (Workspace domain, cryptographically in the verified token) is an
+    # additional accept for Workspace accounts.
+    email_domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+    domain_ok = (email_domain == allowed_domain) or (hd == allowed_domain)
     if not email or not domain_ok:
         log.info("google login rejected: email %r not in domain %s", email, allowed_domain)
         raise HTTPException(

@@ -287,6 +287,26 @@ def alternate_urls() -> list[str]:
     return [u for u in raw if isinstance(u, str) and u.startswith("http")]
 
 
+def public_url() -> str | None:
+    """The server's canonical public base URL (no trailing slash), if set.
+
+    From ``$VEZIR_PUBLIC_URL`` (preferred) or ``server.json`` →
+    ``public_url``.  When set, NIP-98 login URL verification uses this
+    instead of reconstructing the URL from request headers — so a caller
+    that reaches uvicorn directly cannot spoof ``X-Forwarded-Proto`` /
+    ``Host`` to make an event signed for an arbitrary URL validate.
+    Returns None when unset (the server then falls back to header-based
+    reconstruction, the pre-0.8.2 behavior).
+    """
+    env = os.environ.get("VEZIR_PUBLIC_URL", "").strip()
+    if env:
+        return env.rstrip("/")
+    raw = server_config().get("public_url")
+    if isinstance(raw, str) and raw.startswith("http"):
+        return raw.rstrip("/")
+    return None
+
+
 # ── Google sign-in (server-side OAuth, v0.8.x) ───────────────────────────────
 # vezir verifies a Google ID token (obtained by the client via the OAuth 2.0
 # Device Authorization Grant) and maps the verified `@<domain>` email to a

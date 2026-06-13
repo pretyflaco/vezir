@@ -21,7 +21,7 @@ def pytest_configure(config):  # noqa: ARG001 - pytest hook signature
     """Run before any test imports the app."""
     os.environ.setdefault("VEZIR_DISABLE_RATELIMIT", "1")
     # Prevent host production env vars from leaking into tests.
-    for var in ("VEZIR_COOKIE_SECURE", "VEZIR_CADDY_ROOT_CERT_PATH"):
+    for var in ("VEZIR_COOKIE_SECURE", "VEZIR_CADDY_ROOT_CERT_PATH", "VEZIR_PUBLIC_URL"):
         os.environ.pop(var, None)
 
 
@@ -67,3 +67,18 @@ def pytest_collection_modifyitems(config, items):  # noqa: ARG001
         _install_auth_issue_shim()
     except Exception:  # pragma: no cover - defensive
         pass
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_nip98_replay_store():
+    """Clear the in-memory NIP-98 consumed-id store between tests so the
+    0.8.2 replay guard can't leak state across unrelated test cases."""
+    try:
+        from vezir.server import nip98
+        nip98._consumed_ids.clear()
+    except Exception:  # pragma: no cover - module may be unimportable in some envs
+        pass
+    yield

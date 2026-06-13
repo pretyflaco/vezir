@@ -280,3 +280,69 @@ def test_is_transient_network_error_detects_dns_vs_token():
     # A real token error is NOT transient.
     assert not ga._is_transient_network_error(ValueError("Token expired"))
     assert not ga._is_transient_network_error(ValueError("Invalid audience"))
+
+
+# ── H3: exact-domain check (no suffix/subdomain bypass) ──────────────────────
+
+
+def _poll_with_email(client, monkeypatch, email, hd="blinkbtc.com"):
+    _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
+    _patch_verify(monkeypatch, {
+        "iss": "https://accounts.google.com",
+        "email": email, "email_verified": True, "hd": hd,
+    })
+    return client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
+
+
+def test_domain_check_rejects_lookalike_domain(client, configured, monkeypatch):
+    from vezir.server import google_members
+    google_members.add("kemal@blinkbtc.com", "pretyflaco")
+    # Lookalike domain with empty hd must be rejected (403), not allowed.
+    r = _poll_with_email(client, monkeypatch, "mallory@evilblinkbtc.com", hd="")
+    assert r.status_code == 403
+
+
+def test_domain_check_rejects_subdomain(client, configured, monkeypatch):
+    r = _poll_with_email(client, monkeypatch, "mallory@sub.blinkbtc.com", hd="")
+    assert r.status_code == 403
+
+
+def test_domain_check_accepts_exact_and_allowlisted(client, configured, monkeypatch):
+    from vezir.server import google_members
+    google_members.add("kemal@blinkbtc.com", "pretyflaco")
+    r = _poll_with_email(client, monkeypatch, "kemal@blinkbtc.com", hd="")
+    assert r.status_code == 200, r.text
+    assert r.json()["github"] == "pretyflaco"
+
+
+# ── prefill: synthesize verification_url_complete when Google omits it ────────
+
+
+def test_device_start_synthesizes_complete_url(client, configured, monkeypatch):
+    # Google returns only the bare verification_url (no *_complete); the
+    # server must synthesize one with the user_code embedded.
+    _patch_token_exchange(monkeypatch, 200, {
+        "device_code": "dc",
+        "user_code": "JLZ-TTC-KHD",
+        "verification_url": "https://www.google.com/device",
+        "interval": 5,
+    })
+    r = client.post("/api/auth/google/device/start")
+    assert r.status_code == 200, r.text
+    assert r.json()["verification_url_complete"] == (
+        "https://www.google.com/device?user_code=JLZ-TTC-KHD"
+    )
+
+
+def test_device_start_prefers_googles_complete_url_if_present(client, configured, monkeypatch):
+    _patch_token_exchange(monkeypatch, 200, {
+        "device_code": "dc",
+        "user_code": "ABCD",
+        "verification_url": "https://www.google.com/device",
+        "verification_url_complete": "https://www.google.com/device?user_code=ABCD&x=1",
+        "interval": 5,
+    })
+    r = client.post("/api/auth/google/device/start")
+    assert r.json()["verification_url_complete"] == (
+        "https://www.google.com/device?user_code=ABCD&x=1"
+    )

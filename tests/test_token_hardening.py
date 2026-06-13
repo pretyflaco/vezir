@@ -333,3 +333,28 @@ def test_ratelimit_disabled_by_env(client_factory, monkeypatch):
     for _ in range(60):
         resp = client.get("/api/sessions", headers=_team_headers(tok))
         assert resp.status_code != 429
+
+
+# ── DST/UTC: _parse_iso must interpret the timestamp as UTC ───────────────────
+
+
+def test_parse_iso_is_utc_not_local_dst():
+    """``_parse_iso`` parses ``...Z`` as UTC regardless of host TZ/DST.
+
+    The pre-0.8.2 impl used ``mktime(...) - time.timezone`` which is off by
+    the DST offset for part of the year.  Cross-check against calendar.timegm.
+    """
+    import calendar
+    import time as _time
+
+    from vezir.server.auth import _parse_iso
+
+    ts = "2026-07-01T12:00:00Z"  # a date inside DST for northern TZs
+    expected = float(calendar.timegm(_time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")))
+    assert _parse_iso(ts) == expected
+    # And a winter date too.
+    ts2 = "2026-01-01T12:00:00Z"
+    expected2 = float(calendar.timegm(_time.strptime(ts2, "%Y-%m-%dT%H:%M:%SZ")))
+    assert _parse_iso(ts2) == expected2
+    assert _parse_iso(None) is None
+    assert _parse_iso("garbage") is None

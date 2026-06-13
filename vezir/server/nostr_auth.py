@@ -112,14 +112,25 @@ def verify_session_jwt(token: str) -> tuple[str, bool] | None:
 
 
 def _login_url(request: Request) -> str:
-    """Reconstruct the absolute URL the NIP-98 ``u`` tag must match.
+    """Resolve the absolute URL the NIP-98 ``u`` tag must match.
 
     Behind Caddy/nftables the client signs the *public* URL
     (``https://vezir.example.com/api/auth/nostr/login``), but the app
-    sees the proxied request.  We honor ``X-Forwarded-Proto`` / ``Host``
-    so the reconstructed URL matches what the client signed.  Caddy sets
-    these; direct/tunnel callers fall back to the request's own view.
+    sees the proxied request.
+
+    Preferred: when ``VEZIR_PUBLIC_URL`` (config ``public_url``) is set,
+    build the URL from that fixed base + the request path.  This is
+    header-independent, so a caller reaching uvicorn directly cannot spoof
+    ``X-Forwarded-Proto`` / ``Host`` to make an event signed for an
+    arbitrary URL pass verification.  **Set this in any prod deployment.**
+
+    Fallback (no public_url configured): honor ``X-Forwarded-Proto`` /
+    ``Host`` (set by Caddy), else the request's own view — the pre-0.8.2
+    behavior, kept for local/dev where no public URL is configured.
     """
+    base = config.public_url()
+    if base:
+        return f"{base}{request.url.path}"
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
     host = request.headers.get("host") or request.url.netloc
     return f"{proto}://{host}{request.url.path}"

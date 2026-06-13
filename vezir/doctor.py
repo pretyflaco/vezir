@@ -524,6 +524,7 @@ def _check_tokens_json(r: _Results) -> None:
     is still present (S1) — that would mean the migration hasn't run or
     someone hand-restored the old file.
     """
+    import calendar
     import sqlite3
     import time
 
@@ -570,9 +571,8 @@ def _check_tokens_json(r: _Results) -> None:
         if not exp:
             continue
         try:
-            exp_epoch = (
-                time.mktime(time.strptime(exp, "%Y-%m-%dT%H:%M:%SZ"))
-                - time.timezone
+            exp_epoch = calendar.timegm(
+                time.strptime(exp, "%Y-%m-%dT%H:%M:%SZ")
             )
             if now >= exp_epoch:
                 expired.append(t)
@@ -729,6 +729,7 @@ def _check_server_json(r: _Results) -> None:
 
 def _check_stale_jobs(r: _Results) -> None:
     """S7: jobs stuck in non-terminal status for >30 minutes."""
+    import calendar
     import sqlite3
     import time
 
@@ -759,9 +760,8 @@ def _check_stale_jobs(r: _Results) -> None:
             stale.append(row)
             continue
         try:
-            ts = (
-                time.mktime(time.strptime(updated, "%Y-%m-%dT%H:%M:%SZ"))
-                - time.timezone
+            ts = calendar.timegm(
+                time.strptime(updated, "%Y-%m-%dT%H:%M:%SZ")
             )
             if ts < threshold:
                 stale.append(row)

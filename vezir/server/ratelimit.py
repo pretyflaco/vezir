@@ -105,6 +105,20 @@ def _disabled() -> bool:
     return os.environ.get("VEZIR_DISABLE_RATELIMIT", "").lower() in ("1", "true", "yes")
 
 
+def warn_if_disabled(log: logging.Logger | None = None) -> None:
+    """Emit a loud warning at startup if rate limiting is disabled.
+
+    ``VEZIR_DISABLE_RATELIMIT=1`` removes ALL auth rate limiting (it exists
+    for tests).  If it ever leaks from a CI/test env into a real deployment,
+    brute-force protection vanishes silently — so make it noisy.
+    """
+    if _disabled():
+        (log or logging.getLogger("vezir.ratelimit")).warning(
+            "VEZIR_DISABLE_RATELIMIT is set: ALL auth/API rate limiting is "
+            "OFF. This is for tests only — never set it in production."
+        )
+
+
 def _client_key(request: Request, name_prefix: str) -> str:
     """Build a stable key for this request.
 

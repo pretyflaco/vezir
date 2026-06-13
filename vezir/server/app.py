@@ -20,6 +20,7 @@ from . import (
     migrations,
     nostr_auth,
     queue,
+    ratelimit,
     sessions,
     teams,
     uploads,
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
     log = logging.getLogger("vezir")
 
     config.ensure_dirs()
+    ratelimit.warn_if_disabled(log)
     migrations.run_pending_migrations()
     for _t in queue.list_teams():
         voiceprints.ensure_db_exists(_t["id"])
@@ -63,10 +65,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
+        # Unauthenticated: expose only liveness + version.  (Pre-0.8.2 this
+        # also returned the absolute data_dir path — dropped to avoid
+        # filesystem-path disclosure to anonymous callers.)
         return {
             "status": "ok",
             "version": __version__,
-            "data_dir": str(config.data_dir()),
         }
 
     @app.get("/ca.crt")
