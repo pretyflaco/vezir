@@ -91,6 +91,10 @@ server = [
     # clients present a signed event / bearer JWT but never verify signatures.
     "coincurve>=20",
     "pyjwt>=2.8",
+    # Google sign-in (server-side): verify Google ID tokens obtained by the
+    # client via the OAuth 2.0 Device Authorization Grant, mapping a verified
+    # @<domain> email to a member.  See vezir/server/google_auth.py.
+    "google-auth>=2.0",
     # MLX Whisper ASR backend, auto-detected on Apple Silicon by
     # vezir.config.meet_asr_backend(). Pulled only on Darwin/arm64;
     # pip skips this line on Linux/Windows via the environment marker.

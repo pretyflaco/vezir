@@ -806,6 +806,117 @@ def npub_remove(npub_str):
         click.echo("(no matching nostr key; nothing removed)")
 
 
+# ── google (Google sign-in allowlist) ───────────────────────────────────────
+
+
+@main.group()
+def google():
+    """Manage the Google sign-in allowlist (server-side).
+
+    A google member authenticates with their Workspace account (e.g.
+    ``@blinkbtc.com``) via `vezir login --method google` instead of a
+    nostr key or ``vzr_`` token.  This group maps a verified email to a
+    GitHub handle + privilege tier so the rest of the auth chain works
+    identically.  The user must still be a member of every team they
+    operate on (``vezir team add-member``).
+
+    Requires Google sign-in to be configured on the server
+    (VEZIR_GOOGLE_CLIENT_ID + secret).
+    """
+
+
+@google.command("add")
+@click.option(
+    "--email", required=True,
+    help="The user's Google account email (e.g. alice@blinkbtc.com).",
+)
+@click.option("--github", required=True, help="GitHub handle to bind this email to.")
+@click.option(
+    "--admin", "is_admin", is_flag=True, default=False,
+    help="Mark this member as admin-tier (gates /admin/* routes).",
+)
+@click.option(
+    "--label", default=None,
+    help="Free-text annotation; shown by `google list`.",
+)
+def google_add(email, github, is_admin, label):
+    """Authorize a Google email to log in as a given GitHub handle.
+
+    Idempotent: re-running with the same email updates github/admin/label.
+    """
+    from .server import google_members
+
+    try:
+        google_members.add(email, github, is_admin=is_admin, label=label)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--email") from exc
+
+    click.echo(f"Authorized google email for github={github}")
+    click.echo(f"  email:  {email.strip().lower()}")
+    if is_admin:
+        click.echo("  role:   admin (can reach /admin/* routes)")
+    if label:
+        click.echo(f"  label:  {label}")
+    click.echo()
+    click.echo(
+        "NOTE: this email has no team scope.  Ensure the user is a member "
+        f"of each team they need: `vezir team add-member --github {github} "
+        "--team <id>`.  They can now run `vezir login --method google`."
+    )
+
+
+@google.command("list")
+def google_list():
+    """List authorized Google emails (email, github, role, label, added)."""
+    from .server import google_members
+
+    rows = google_members.list_members()
+    if not rows:
+        click.echo("(no google emails authorized)")
+        return
+
+    def _w(items, min_w):
+        return max([min_w] + [len(s) for s in items])
+
+    githubs = [str(r.get("github") or "?") for r in rows]
+    labels = [str(r.get("label") or "-") for r in rows]
+    roles = ["admin" if r.get("is_admin") else "scribe" for r in rows]
+    g_w = _w(githubs, len("github"))
+    l_w = _w(labels, len("label"))
+    r_w = _w(roles, len("role"))
+
+    click.echo(
+        f"  {'github':<{g_w}}  {'role':<{r_w}}  {'label':<{l_w}}  "
+        f"{'added':<20}  email"
+    )
+    for entry in rows:
+        github = str(entry.get("github") or "?")
+        role = "admin" if entry.get("is_admin") else "scribe"
+        label = str(entry.get("label") or "-")
+        added = str(entry.get("added_at") or "?")
+        email = str(entry.get("email") or "?")
+        click.echo(
+            f"  {github:<{g_w}}  {role:<{r_w}}  {label:<{l_w}}  "
+            f"{added:<20}  {email}"
+        )
+
+
+@google.command("remove")
+@click.option("--email", required=True, help="The Google email to de-authorize.")
+def google_remove(email):
+    """Remove a Google email from the allowlist.  Idempotent."""
+    from .server import google_members
+
+    try:
+        removed = google_members.remove(email)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--email") from exc
+    if removed:
+        click.echo(f"Removed google email {email.strip().lower()}")
+    else:
+        click.echo("(no matching google email; nothing removed)")
+
+
 # ── team ──────────────────────────────────────────────────────────────────────
 
 @main.group()
@@ -1223,20 +1334,27 @@ def team_config_remove(team_id):
     help="Seconds to wait for you to approve in your signer.",
 )
 @click.option(
+    "--method", "method", type=click.Choice(["nostr", "google"]), default="nostr",
+    show_default=True,
+    help="Sign-in method: 'nostr' (remote signer / Amber) or 'google' "
+         "(@<workspace-domain> account via the device-code flow).",
+)
+@click.option(
     "--verbose", "verbose", is_flag=True, default=False,
     help="Print NIP-46 handshake debug logs (which relay events arrive, "
          "their encryption scheme, and why any are skipped).",
 )
-def login(url, team_id, relay, timeout, verbose):
-    """Log in with your nostr key via a remote signer (Amber / nsec.app).
+def login(url, team_id, relay, timeout, method, verbose):
+    """Log in via nostr (Amber / nsec.app) or Google, and store a session.
 
-    Generates a ``nostrconnect://`` request (shown as a URI + QR).  Open
-    or scan it in your signer, approve the connection and the signing
-    prompt, and vezir stores a short-lived session token.  No nsec ever
-    touches this machine.
+    Default (`--method nostr`) generates a ``nostrconnect://`` request
+    (URI + QR); approve it in your signer.  `--method google` runs the
+    OAuth device-code flow for your ``@blinkbtc.com`` account.  Either way
+    vezir stores a short-lived session token; no key/password touches this
+    machine.
 
-    Your npub must be authorized server-side first
-    (``vezir npub add --npub … --github …``).
+    Authorize server-side first: `vezir npub add …` (nostr) or
+    `vezir google add …` (Google).
     """
     import logging
     import os
@@ -1262,6 +1380,10 @@ def login(url, team_id, relay, timeout, verbose):
             err=True,
         )
         sys.exit(2)
+
+    if method == "google":
+        _login_google(resolved_url, resolved_team, timeout, client_config)
+        return
 
     try:
         from .client.nostr import login as nostr_login
@@ -1357,6 +1479,56 @@ def _login_verify():
         if path and os.path.isfile(path):
             return path
     return True
+
+
+def _login_google(resolved_url, resolved_team, timeout, client_config) -> None:
+    """Google device-code sign-in: prompt, poll, store the session."""
+    try:
+        from .client import google_login
+    except Exception as exc:  # pragma: no cover - import guard
+        click.echo(f"error: Google login support unavailable ({exc}).", err=True)
+        sys.exit(2)
+
+    verify = _login_verify()
+    click.echo(f"Logging in to {resolved_url} (team: {resolved_team}) via Google")
+    click.echo()
+
+    def _on_prompt(user_code: str, verification_url: str) -> None:
+        click.echo("To sign in, open this URL and enter the code:")
+        click.echo()
+        click.echo(f"   {verification_url}")
+        click.echo(f"   code: {user_code}")
+        click.echo()
+        click.echo("Waiting for you to approve in the browser…")
+
+    try:
+        # Device-grant timeout is generous; let the user finish in a browser.
+        body = google_login.login(
+            resolved_url,
+            verify=verify,
+            timeout=max(timeout, 300),
+            on_prompt=_on_prompt,
+        )
+    except google_login.GoogleLoginError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+
+    client_config.set_team_session(
+        resolved_team,
+        resolved_url,
+        body["session_jwt"],
+        body.get("email", ""),
+        label=resolved_team,
+    )
+    click.echo()
+    click.echo(f"Logged in as github={body.get('github')} "
+               f"(admin={body.get('is_admin')}) via {body.get('email')}.")
+    hours = int(body.get("expires_in", 0)) // 3600
+    click.echo(f"Session stored for team '{resolved_team}'; valid ~{hours}h.")
+    memberships = body.get("memberships") or []
+    if memberships:
+        names = ", ".join(m.get("slug") or m.get("team_id") for m in memberships)
+        click.echo(f"Team memberships: {names}")
 
 
 def _clock_unsynced_warning() -> str | None:

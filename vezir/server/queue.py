@@ -135,6 +135,16 @@ CREATE TABLE IF NOT EXISTS nostr_members (
 );
 
 CREATE INDEX IF NOT EXISTS idx_nostr_members_github ON nostr_members(github);
+
+CREATE TABLE IF NOT EXISTS google_members (
+    email         TEXT PRIMARY KEY,   -- lowercased verified Google email
+    github        TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    label         TEXT,
+    added_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_google_members_github ON google_members(github);
 """
 
 
