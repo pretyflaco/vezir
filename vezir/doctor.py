@@ -215,6 +215,12 @@ def _check_token_format(r: _Results, token: str | None) -> None:
     if not token:
         return  # already reported in C1
 
+    # Session JWTs (nostr/Google sign-in) are valid bearers, not vzr_
+    # tokens; report and skip the opaque-token heuristics.
+    if token.count(".") == 2 and token.startswith("eyJ"):
+        r.ok("token is a session JWT (identity sign-in)")
+        return
+
     prefix = "vzr_"
     if not token.startswith(prefix):
         if token.startswith("nvpn://"):
@@ -255,11 +261,14 @@ def _check_ssl_cert(r: _Results, url: str | None) -> None:
     caddy_cert = os.environ.get("VEZIR_CADDY_ROOT_CERT_PATH")
 
     if not ssl_cert and not caddy_cert:
-        r.warn(
-            f"server URL is HTTPS ({url}) but neither SSL_CERT_FILE nor "
-            "VEZIR_CADDY_ROOT_CERT_PATH is set.  If the server uses an "
-            "internal CA (e.g. Caddy), httpx will reject the certificate.  "
-            "Set SSL_CERT_FILE=/path/to/caddy-root.pem"
+        # A missing internal-CA var is normal: a public (Let's Encrypt)
+        # cert validates against the system store with no extra config.
+        # Only set these for an internal-CA server (e.g. Caddy).  Informational,
+        # not a warning — the connectivity check below proves TLS either way.
+        r.ok(
+            f"server URL is HTTPS ({url}); using the public CA store. "
+            "Set SSL_CERT_FILE / VEZIR_CADDY_ROOT_CERT_PATH only if the "
+            "server uses an internal CA (e.g. Caddy)."
         )
         return
 

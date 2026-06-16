@@ -3,6 +3,36 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.4 — quiet false-positive token/TLS warnings for identity sign-in
+
+After a `vezir login` (Nostr/Google), the client emitted warnings written
+for the old `vzr_`-token + internal-CA world. They were misleading, not
+errors — the JWT bearer and public HTTPS cert work fine. This release
+teaches the client and `vezir doctor` to recognise the 0.8.x setup.
+
+### Fixed
+
+* **`vzr_` token warning no longer fires for session JWTs.**
+  `vezir scribe` / `upload` / `pull` printed
+  `token does not start with 'vzr_'` even though a session JWT is the
+  correct bearer. `config.validate_token_format` now recognises a JWT
+  (`a.b.c` with an `eyJ` payload prefix, matching the server's fast-path)
+  and skips the opaque-token heuristics.
+* **`vezir doctor` understands session JWTs.** Reports
+  `token is a session JWT (identity sign-in)` instead of the spurious
+  `vzr_` warning.
+* **`vezir doctor` no longer warns about `SSL_CERT_FILE` on public-cert
+  servers.** A missing `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` is
+  normal when the server uses a public (Let's Encrypt) cert; the no-cert
+  case is now an informational line, not a warning. (Set those vars only
+  for an internal-CA server, e.g. Caddy.)
+
+### Notes
+
+* Purely diagnostic wording — no behaviour change. Clients and servers
+  work identically against any vezir ≥ 0.8.0; these were misleading
+  warnings, not failures.
+
 ## 0.8.3 — Google device-flow DNS resilience
 
 ### Fixed

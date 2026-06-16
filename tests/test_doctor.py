@@ -189,6 +189,22 @@ def test_c5_wrong_prefix(tmp_data):
     assert any("does not start with" in msg for _, msg in r.rows)
 
 
+def test_c5_session_jwt_recognised(tmp_data):
+    from vezir.doctor import _check_token_format, _Results
+
+    # 3-segment JWT with an `eyJ` payload prefix (matches the server path).
+    jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ".eyJpc3MiOiJ2ZXppciIsInN1YiI6Ims5ZXJ0In0"
+        ".c2lnbmF0dXJl"
+    )
+    r = _Results()
+    _check_token_format(r, jwt)
+    # No vzr_ warning; an informational OK instead.
+    assert all("does not start with" not in msg for _, msg in r.rows)
+    assert any(sev == "OK" and "session JWT" in msg for sev, msg in r.rows)
+
+
 # ── C9: token membership (slug/UUID matching, v0.7.4) ───────────────────────
 
 
@@ -248,7 +264,12 @@ def test_c6_https_no_cert(monkeypatch, tmp_data):
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
     r = _Results()
     _check_ssl_cert(r, "https://example.com")
-    assert any("neither SSL_CERT_FILE" in msg for _, msg in r.rows)
+    # v0.8.4: a missing internal-CA var is normal for a public cert, so this
+    # is now an informational OK (not a WARN), with guidance to set the vars
+    # only for an internal CA.
+    assert any(
+        sev == "OK" and "public CA store" in msg for sev, msg in r.rows
+    )
 
 
 def test_c6_http_url_no_check(monkeypatch, tmp_data):

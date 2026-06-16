@@ -276,3 +276,42 @@ def test_meet_compute_type_warns_for_unknown_env_override(monkeypatch, caplog):
         "VEZIR_MILLET_COMPUTE_TYPE='float9000' is not one of the known values"
         in caplog.text
     )
+
+
+# ── validate_token_format ──
+
+# A representative 3-segment JWT: header/payload both start with the
+# base64 of `{"...` (i.e. `eyJ`). Signature segment content is irrelevant.
+_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJpc3MiOiJ2ZXppciIsInN1YiI6Ims5ZXJ0IiwiZXhwIjoxNzAwMDAwMDAwfQ"
+    ".c2lnbmF0dXJl"
+)
+
+
+def test_validate_token_format_jwt_is_silent(capsys):
+    """A session JWT is a valid bearer; no vzr_ warning should print."""
+    config.validate_token_format(_JWT)
+    assert capsys.readouterr().err == ""
+
+
+def test_validate_token_format_good_vzr_is_silent(capsys):
+    """A well-formed vzr_ token passes without warnings."""
+    import secrets
+
+    token = "vzr_" + secrets.token_urlsafe(32)
+    config.validate_token_format(token)
+    assert capsys.readouterr().err == ""
+
+
+def test_validate_token_format_non_jwt_non_vzr_warns(capsys):
+    """A bare string that's neither a JWT nor a vzr_ token still warns."""
+    config.validate_token_format("randomtokenvalue")
+    assert "does not start with 'vzr_'" in capsys.readouterr().err
+
+
+def test_validate_token_format_dotted_vzr_not_mistaken_for_jwt(capsys):
+    """A vzr_ value with dots must NOT be treated as a JWT (no eyJ prefix),
+    so the vzr_ heuristics still run (here: length warning)."""
+    config.validate_token_format("vzr_a.b.c")
+    assert "token length is" in capsys.readouterr().err

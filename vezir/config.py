@@ -807,6 +807,14 @@ def validate_token_format(token: str) -> None:
     """
     import sys
 
+    # Session JWTs (nostr/Google `vezir login`) are valid bearers but are
+    # not `vzr_` opaque tokens; recognise them and skip the vzr_-oriented
+    # heuristics.  Mirrors the server's JWT fast-path (nostr_auth.py), with
+    # an extra `eyJ` (base64 `{"`) guard so a stray dotted `vzr_` value is
+    # still validated rather than mistaken for a JWT.
+    if token.count(".") == 2 and token.startswith("eyJ"):
+        return
+
     if not token.startswith(_TOKEN_PREFIX):
         if token.startswith("nvpn://"):
             print(
