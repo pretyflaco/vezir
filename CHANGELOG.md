@@ -3,6 +3,28 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.7 — TUI import picker lists all recordings (fixes "only one recording")
+
+### Fixed
+
+* **TUI Import picker (`^u` / Upload) showed only a single recording and
+  couldn't navigate.**  `ImportScreen` mounted a `DirectoryTree` rooted at
+  `last_import_dir`, which the previous import persisted as the *leaf session
+  directory* of the file just picked (e.g.
+  `~/vezir-meetings/<team>/meeting-YYYYMMDD-HHMMSS/`).  A `DirectoryTree`
+  cannot navigate above its root, so the picker was trapped showing the one
+  `.ogg` in that folder.
+
+  The picker now defaults to a **flat, scrollable, newest-first `OptionList`
+  of every recording under `~/vezir-meetings/`** (all teams), labeled
+  `<team>/<session>  ·  <size>  ·  <date>` and sorted by the
+  `meeting-YYYYMMDD-HHMMSS` timestamp.  Both `.ogg` and `.wav` files are
+  listed.  Pressing **`b`** toggles a "browse files" `DirectoryTree`
+  fallback (rooted at the last browsed dir / recordings base / `~`) for
+  importing an arbitrary audio file from elsewhere.  The first row is
+  pre-highlighted so **Enter** selects immediately.  `last_import_dir` is no
+  longer used to root the primary view (only the browse fallback honors it).
+
 ## 0.8.6 — `vezir upload` sends X-Team-Id (fixes 400) + `--team` flag
 
 ### Fixed

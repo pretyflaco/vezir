@@ -32,9 +32,11 @@ blocking I/O happens so the event loop stays responsive.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from textual import work
@@ -49,9 +51,11 @@ from textual.widgets import (
     DirectoryTree,
     Input,
     Label,
+    OptionList,
     Select,
     Static,
 )
+from textual.widgets.option_list import Option
 
 from ... import config
 from ..config import load_client_prefs, save_client_prefs
@@ -176,6 +180,87 @@ class SessionUploadComplete(Message):
 
 _AUDIO_EXTS = {".wav", ".ogg"}
 
+_MEETING_TS_RE = re.compile(r"meeting-(\d{8})-(\d{6})")
+
+
+def _recordings_base() -> Path:
+    """The base dir that holds all teams' recordings: ``~/vezir-meetings/``.
+
+    ``config.recordings_dir()`` returns ``<base>/<team>``; its parent is the
+    base that contains every team's recordings.  Honors ``VEZIR_RECORD_DIR``.
+    """
+    try:
+        return config.recordings_dir().parent
+    except Exception:
+        return Path.home() / "vezir-meetings"
+
+
+def _recording_sort_key(path: Path) -> tuple[float, float]:
+    """Newest-first sort key for a recording file.
+
+    Prefer the ``meeting-YYYYMMDD-HHMMSS`` timestamp parsed from the session
+    directory name (stable, matches the displayed date); fall back to the
+    file mtime when the name can't be parsed.
+    """
+    for part in (path.parent.name, path.name):
+        m = _MEETING_TS_RE.search(part)
+        if m:
+            try:
+                dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                return (dt.timestamp(), dt.timestamp())
+            except ValueError:
+                pass
+    try:
+        mt = path.stat().st_mtime
+    except OSError:
+        mt = 0.0
+    return (mt, mt)
+
+
+def _recording_label(path: Path, base: Path) -> str:
+    """Human row label: ``<team>/<session>  ·  <size>  ·  <date>``."""
+    try:
+        rel = path.relative_to(base)
+        # rel is usually <team>/<session-dir>/<file>; show team/session.
+        parts = rel.parts
+        descr = "/".join(parts[:-1]) if len(parts) > 1 else rel.name
+    except ValueError:
+        descr = path.parent.name
+    try:
+        size = _fmt_bytes(path.stat().st_size)
+    except OSError:
+        size = "?"
+    when = ""
+    m = _MEETING_TS_RE.search(path.parent.name) or _MEETING_TS_RE.search(path.name)
+    if m:
+        try:
+            dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+            when = dt.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            when = ""
+    bits = [descr or path.name, size]
+    if when:
+        bits.append(when)
+    return "  ·  ".join(bits)
+
+
+def _scan_recordings(base: Path) -> list[Path]:
+    """All ``.wav``/``.ogg`` recordings under *base*, newest-first.
+
+    Recurses (teams → session dirs → audio), skips dot-directories, dedupes.
+    Resilient to a missing base (returns []).
+    """
+    if not base.is_dir():
+        return []
+    found: set[Path] = set()
+    for ext in _AUDIO_EXTS:
+        for p in base.rglob(f"*{ext}"):
+            if any(part.startswith(".") for part in p.relative_to(base).parts):
+                continue
+            if p.is_file():
+                found.add(p)
+    return sorted(found, key=_recording_sort_key, reverse=True)
+
 
 class _AudioOnlyDirectoryTree(DirectoryTree):
     """DirectoryTree that hides non-audio non-directory entries.
@@ -205,11 +290,17 @@ class _AudioOnlyDirectoryTree(DirectoryTree):
 
 
 class ImportScreen(ModalScreen["Path | None"]):
-    """Modal file picker for selecting an audio file (.wav/.ogg) to upload.
+    """Modal picker for selecting an audio file (.wav/.ogg) to upload.
+
+    Default view: a flat, scrollable, newest-first list of *every* recording
+    under ``~/vezir-meetings/`` (all teams) — so the user can see and pick any
+    of their recordings, not just one folder.  A "Browse files…" fallback
+    (``b``) opens a directory tree rooted at ``~`` for importing an arbitrary
+    ``.wav``/``.ogg`` from elsewhere.
 
     Dismisses with the selected ``Path`` on confirmation, or ``None`` on
-    cancel.  Validation: only `.wav` and `.ogg` are accepted; invalid
-    selections keep the modal open with an inline hint.
+    cancel.  Only ``.wav`` and ``.ogg`` are accepted; an invalid browse
+    selection keeps the modal open with an inline hint.
     """
 
     DEFAULT_CSS = """
@@ -228,8 +319,15 @@ class ImportScreen(ModalScreen["Path | None"]):
         margin-bottom: 1;
         text-style: bold;
     }
+    #picker-list {
+        height: 1fr;
+    }
     #picker-tree {
         height: 1fr;
+    }
+    #picker-empty {
+        height: 1fr;
+        color: $text-muted;
     }
     #picker-hint {
         height: 1;
@@ -244,20 +342,107 @@ class ImportScreen(ModalScreen["Path | None"]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("enter", "select", "Select"),
+        Binding("b", "toggle_browse", "Browse files"),
     ]
 
-    def __init__(self, start_path: Path) -> None:
+    def __init__(self, browse_start: Path | None = None) -> None:
         super().__init__()
-        self._start_path = start_path
+        self._browse_start = browse_start or Path.home()
+        self._recordings: list[Path] = _scan_recordings(_recordings_base())
+        self._browsing = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
-            yield Static(
-                "Import audio file (.wav or .ogg)  —  Enter: select  ·  Esc: cancel",
-                id="picker-title",
-            )
-            yield _AudioOnlyDirectoryTree(str(self._start_path), id="picker-tree")
+            yield Static("", id="picker-title")
+            if self._recordings:
+                ol = OptionList(id="picker-list")
+                base = _recordings_base()
+                for p in self._recordings:
+                    ol.add_option(Option(_recording_label(p, base), id=str(p)))
+                yield ol
+            else:
+                yield Static(
+                    "No recordings found under ~/vezir-meetings/.\n\n"
+                    "Press 'b' to browse the filesystem for a .wav/.ogg file.",
+                    id="picker-empty",
+                )
             yield Static("", id="picker-hint")
+
+    def on_mount(self) -> None:
+        self._refresh_title()
+        if self._recordings:
+            try:
+                ol = self.query_one("#picker-list", OptionList)
+                # Highlight the first (newest) option so Enter works immediately
+                # without requiring an initial arrow-key press.
+                if ol.option_count and ol.highlighted is None:
+                    ol.highlighted = 0
+                ol.focus()
+            except Exception:
+                pass
+
+    def _refresh_title(self) -> None:
+        try:
+            title = self.query_one("#picker-title", Static)
+        except Exception:
+            return
+        if self._browsing:
+            title.update(
+                "Browse for audio (.wav/.ogg)  —  Enter: select  ·  "
+                "b: back to recordings  ·  Esc: cancel"
+            )
+        else:
+            n = len(self._recordings)
+            title.update(
+                f"Import a recording ({n})  —  Enter: select  ·  "
+                "b: browse files  ·  Esc: cancel"
+            )
+
+    # ── flat recordings list ──
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        if event.option.id:
+            self.dismiss(Path(event.option.id))
+
+    # ── browse-mode directory tree ──
+    def action_toggle_browse(self) -> None:
+        box = self.query_one("#picker-box", Vertical)
+        if not self._browsing:
+            self._browsing = True
+            for wid in ("#picker-list", "#picker-empty"):
+                try:
+                    self.query_one(wid).remove()
+                except Exception:
+                    pass
+            tree = _AudioOnlyDirectoryTree(str(self._browse_start), id="picker-tree")
+            box.mount(tree, after=self.query_one("#picker-title", Static))
+            tree.focus()
+        else:
+            self._browsing = False
+            try:
+                self.query_one("#picker-tree", _AudioOnlyDirectoryTree).remove()
+            except Exception:
+                pass
+            base = _recordings_base()
+            if self._recordings:
+                ol = OptionList(id="picker-list")
+                for p in self._recordings:
+                    ol.add_option(Option(_recording_label(p, base), id=str(p)))
+                box.mount(ol, after=self.query_one("#picker-title", Static))
+                if ol.option_count and ol.highlighted is None:
+                    ol.highlighted = 0
+                ol.focus()
+            else:
+                box.mount(
+                    Static(
+                        "No recordings found under ~/vezir-meetings/.\n\n"
+                        "Press 'b' to browse the filesystem for a .wav/.ogg file.",
+                        id="picker-empty",
+                    ),
+                    after=self.query_one("#picker-title", Static),
+                )
+        self._refresh_title()
 
     def on_directory_tree_file_selected(
         self, event: DirectoryTree.FileSelected
@@ -277,19 +462,31 @@ class ImportScreen(ModalScreen["Path | None"]):
         self.dismiss(None)
 
     def action_select(self) -> None:
-        """Triggered by Enter; treats the cursor node as the selection."""
+        """Enter handling for whichever pane is active."""
+        if self._browsing:
+            try:
+                tree = self.query_one("#picker-tree", _AudioOnlyDirectoryTree)
+            except Exception:
+                return
+            node = tree.cursor_node
+            if node is None or node.data is None:
+                return
+            path = Path(node.data.path)
+            if path.is_file() and path.suffix.lower() in _AUDIO_EXTS:
+                self.dismiss(path)
+            # directory: let the tree's own Enter expand it.
+            return
+        # flat list: select the highlighted recording.
         try:
-            tree = self.query_one("#picker-tree", _AudioOnlyDirectoryTree)
+            ol = self.query_one("#picker-list", OptionList)
         except Exception:
             return
-        node = tree.cursor_node
-        if node is None or node.data is None:
+        idx = ol.highlighted
+        if idx is None:
             return
-        path = Path(node.data.path)
-        if path.is_file() and path.suffix.lower() in _AUDIO_EXTS:
-            self.dismiss(path)
-        # If it's a directory, the tree's own Enter handling expands it;
-        # we noop here.
+        opt = ol.get_option_at_index(idx)
+        if opt and opt.id:
+            self.dismiss(Path(opt.id))
 
 
 # ─── Screen ──────────────────────────────────────────────────────────────────
@@ -652,18 +849,16 @@ class RecordBody(Vertical):
             self._style_toggle(sync_btn, restored)
 
     def action_import_file(self) -> None:
-        """Open a file-picker modal to import an existing .wav/.ogg
-        recording from disk and upload it through the same pipeline
-        used by in-TUI recordings.
+        """Open the import picker to select an existing .wav/.ogg recording
+        and upload it through the same pipeline used by in-TUI recordings.
 
-        v0.5.0 repurposed the Upload button + ^u binding from
-        "re-upload the last in-TUI recording" to "import a file".
-        Auto-upload on Stop is unchanged: fresh in-TUI recordings
-        still upload automatically when the recorder finishes.  The
-        manual retry path for a failed auto-upload is now: open the
-        picker, navigate to the recording (default location
-        ~/vezir-data/recordings/), select it.  Or: `vezir upload
-        <path>` from the CLI.
+        v0.8.7: the picker shows a flat, newest-first list of every recording
+        under ``~/vezir-meetings/`` (all teams) so the user can pick any of
+        their recordings, plus a "browse files" fallback (``b``) for an
+        arbitrary path.  (Earlier versions rooted a directory tree at the last
+        imported folder — a leaf session dir with one file and no way to
+        navigate out.)  Auto-upload on Stop is unchanged.  CLI alternative:
+        ``vezir upload <path>``.
         """
         if self.is_uploading:
             self.error_text = "upload in progress; wait for it to finish"
@@ -672,15 +867,19 @@ class RecordBody(Vertical):
             self.error_text = "stop the current recording before importing"
             return
 
-        start = self._prefs.get("last_import_dir") or str(Path.home())
-        start_path = Path(start)
-        if not start_path.is_dir():
-            start_path = Path.home()
+        # Browse fallback starts at the last browsed dir (if still valid), else
+        # the recordings base, else home.  Never a leaf session dir as the
+        # primary view — the flat list always covers all recordings.
+        browse = self._prefs.get("last_import_dir")
+        browse_start = Path(browse) if browse else _recordings_base()
+        if not browse_start.is_dir():
+            browse_start = Path.home()
 
         def _after_pick(picked: Path | None) -> None:
             if picked is None:
                 return  # silent cancel
-            # Remember the parent directory for next open.
+            # Remember the browsed directory only (so "Browse" reopens there);
+            # the flat list is always rebuilt from the recordings base.
             try:
                 self._prefs["last_import_dir"] = str(picked.parent)
                 save_client_prefs(self._prefs)
@@ -690,7 +889,7 @@ class RecordBody(Vertical):
             self.status_text = f"importing {picked.name}"
             self._kick_upload(picked)
 
-        self.app.push_screen(ImportScreen(start_path), _after_pick)
+        self.app.push_screen(ImportScreen(browse_start), _after_pick)
 
     # ── recording lifecycle ──
 
