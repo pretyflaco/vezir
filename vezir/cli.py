@@ -134,6 +134,9 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
               help="Server URL (default $VEZIR_URL)")
 @click.option("--token", default=None,
               help="Bearer token (default $VEZIR_TOKEN)")
+@click.option("--team", "team", default=None,
+              help="Team slug/id to upload to (default: active team in "
+                   "teams.json or $VEZIR_TEAM_ID)")
 @click.option("--title", default=None,
               help="Optional meeting title")
 @click.option("--compress", is_flag=True,
@@ -160,7 +163,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
+def upload_cmd(server_url, token, team, title, compress, preset, auto_label, sync,
                wait, wait_timeout, personal, audio_file):
     """Upload an existing WAV/OGG recording to vezir."""
     from .client import uploader
@@ -204,12 +207,44 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
             f"retrying from byte 0: {exc}"
         )
 
+    # Resolve credentials + the active team so the upload carries the
+    # X-Team-Id header (required by v0.7.0+ servers; a missing header is a
+    # hard 400).  Precedence: explicit --server/--token/--team overrides,
+    # then --team's teams.json entry, then resolve_credentials() (env →
+    # teams.json active → client.json).
+    from .client.config import resolve_credentials, team_credentials
+
+    team_id: str | None = None
+    if team:
+        t_id, t_url, t_token = team_credentials(team)
+        if t_id is None:
+            # Not in teams.json locally; still pass the slug through — the
+            # server resolves slugs to uuids.  url/token must come from
+            # elsewhere (--server/--token/env).
+            team_id = team
+        else:
+            team_id = t_id
+            server_url = server_url or t_url
+            token = token or t_token
+    if server_url is None or token is None or team_id is None:
+        r_url, r_token, r_team, _src = resolve_credentials()
+        server_url = server_url or r_url
+        token = token or r_token
+        if team_id is None:
+            team_id = r_team
     server_url = server_url or config.server_url()
     token = token or config.client_token()
     if not token:
         click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
         sys.exit(1)
     config.validate_token_format(token)
+    if not team_id:
+        click.echo(
+            "vezir: error: no team selected; pass --team <slug>, set "
+            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
+            err=True,
+        )
+        sys.exit(1)
 
     try:
         audio_file = uploader.validate_audio_path(audio_file)
@@ -229,10 +264,7 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
             # log honest about it.
             sync = False
         click.echo(f"vezir: uploading {audio_file} to {server_url} ...")
-        result = uploader.upload(
-            server_url,
-            token,
-            audio_file,
+        upload_kwargs = dict(
             title=title,
             summary_preset=preset,
             auto_label=auto_label,
@@ -240,7 +272,19 @@ def upload_cmd(server_url, token, title, compress, preset, auto_label, sync,
             personal=personal,
             progress=progress,
             on_retry=on_retry,
+            team_id=team_id,
         )
+        # Prefer the resumable protocol (the original failure was on a
+        # resumable endpoint; it's the more robust path), fall back to the
+        # one-shot endpoint when the server is too old to expose it.
+        if uploader.server_supports_resumable(server_url, token, team_id=team_id):
+            result = uploader.upload_resumable(
+                server_url, token, audio_file, **upload_kwargs
+            )
+        else:
+            result = uploader.upload(
+                server_url, token, audio_file, **upload_kwargs
+            )
         click.echo()
     except Exception as exc:
         click.echo(f"vezir: error: {exc}", err=True)

@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.6 — `vezir upload` sends X-Team-Id (fixes 400) + `--team` flag
+
+### Fixed
+
+* **`vezir upload <file>` failed with HTTP 400 Bad Request.**  The
+  after-the-fact CLI upload resolved credentials via the team-less
+  `config.server_url()` / `config.client_token()` and called
+  `uploader.upload()` without `team_id=`, so the request carried **no
+  `X-Team-Id` header**.  Every team-scoped endpoint has required that header
+  since 0.7.0 — a missing one is a hard 400 (`require_team_context`), which
+  fires *after* the body streams, hence "uploads to 100% then 400".
+  `vezir scribe` / TUI were fixed in 0.7.2 but the `upload` command was
+  never updated (regression-by-omission).
+
+  `upload_cmd` now resolves the active team (via `resolve_credentials()` —
+  env `VEZIR_TEAM_ID` → teams.json active → client.json) and threads
+  `team_id` into the uploader, so `X-Team-Id` is sent.  It also **prefers
+  the resumable endpoint** (with one-shot fallback), matching `scribe`.
+  When no team can be resolved it now **fails fast with a clear message**
+  instead of letting the server 400.
+
+### Added
+
+* **`vezir upload --team <slug|id>`** — target a specific team (resolved
+  against `teams.json`; an unknown slug is passed through and resolved
+  server-side).  Parity with the other team-scoped commands.
+
 ## 0.8.5 — fresh-Mac onboarding: Python cap, doctor recorder preflight, CI publish
 
 Follow-up to the first-teammate Mac onboarding pain (k9ert, then

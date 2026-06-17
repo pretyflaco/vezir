@@ -137,6 +137,20 @@ def active_team_credentials() -> tuple[str | None, str | None, str | None]:
     return None, None, None
 
 
+def team_credentials(team: str) -> tuple[str | None, str | None, str | None]:
+    """Resolve a named team (slug/id) from teams.json to ``(team_id, url, token)``.
+
+    Returns ``(None, None, None)`` when *team* is not configured locally.
+    The match is on the teams.json entry ``id`` (which is the slug, e.g.
+    ``"blink"``).  Callers should NEVER persist the returned token.
+    """
+    cfg = load_teams_config()
+    for t in cfg["teams"]:
+        if t["id"] == team:
+            return t["id"], t.get("url"), t.get("token")
+    return None, None, None
+
+
 def resolve_credentials() -> tuple[
     str | None, str | None, str | None, str | None,
 ]:
