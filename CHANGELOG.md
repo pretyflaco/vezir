@@ -3,6 +3,38 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.5 — fresh-Mac onboarding: Python cap, doctor recorder preflight, CI publish
+
+Follow-up to the first-teammate Mac onboarding pain (k9ert, then
+destinysmart, who lost an evening to undocumented install blockers).
+Most of those were the empty-`_bin/` packaging bug (fixed in millet-record
+0.4.3/0.4.4) — this release closes the remaining software gaps.
+
+### Fixed
+
+* **`requires-python` capped at `>=3.10,<3.14`.**  `brew install python3`
+  on a fresh Mac gives 3.14, for which `coincurve` (via the `[nostr]`
+  extra) has no wheel — the install fell back to a failing source build.
+  pip/pipx now select 3.13 or refuse with a clear message instead.  Relax
+  once coincurve ships cp314 wheels.
+
+### Added
+
+* **`vezir doctor` macOS recorder preflight.**  On Apple Silicon, `doctor`
+  now shells out to `millet check` and reports ffmpeg, the bundled
+  `meet-record-mac` sidecar, and Microphone/System-Audio permission status
+  as a single check — plus a Gatekeeper-quarantine hint
+  (`xattr -d com.apple.quarantine …`) when the sidecar resolves but won't
+  run.  Advisory (warn, never error).
+
+### Changed
+
+* **Pin `millet-record>=0.4.4`** so a fresh install gets the recorder wheel
+  that actually bundles the macOS binary (and is itself capped at <3.14).
+* **CI: tag-triggered PyPI publish via Trusted Publishing.**  New
+  `release.yml` builds the wheel + sdist and publishes on a `v*` tag (OIDC,
+  no stored token), replacing the manual `twine upload` step.
+
 ## 0.8.4 — quiet false-positive token/TLS warnings for identity sign-in
 
 After a `vezir login` (Nostr/Google), the client emitted warnings written

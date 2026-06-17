@@ -597,3 +597,62 @@ def test_run_doctor_all_clean_no_server(monkeypatch, tmp_data, capsys):
     captured = capsys.readouterr().out
     assert code == 0
     assert "all" in captured and "passed" in captured
+
+
+# ── C6b: macOS recorder preflight (v0.8.5) ──────────────────────────────────
+
+
+def test_macos_recorder_noop_off_darwin(monkeypatch):
+    from vezir.doctor import _check_macos_recorder, _Results
+
+    monkeypatch.setattr("vezir.doctor.sys.platform", "linux")
+    r = _Results()
+    _check_macos_recorder(r)
+    assert r.rows == []  # silent on non-macOS
+
+
+def test_macos_recorder_warns_when_millet_missing(monkeypatch):
+    from vezir.doctor import _check_macos_recorder, _Results
+
+    monkeypatch.setattr("vezir.doctor.sys.platform", "darwin")
+    monkeypatch.delenv("VEZIR_MILLET_BIN", raising=False)
+    monkeypatch.delenv("VEZIR_MEET_BIN", raising=False)
+    monkeypatch.setattr("vezir.doctor._which", lambda name: None)
+    r = _Results()
+    _check_macos_recorder(r)
+    assert any(sev == "WARN" and "millet` CLI not found" in msg for sev, msg in r.rows)
+
+
+def test_macos_recorder_ok_when_check_passes(monkeypatch):
+    from vezir.doctor import _check_macos_recorder, _Results
+
+    monkeypatch.setattr("vezir.doctor.sys.platform", "darwin")
+    monkeypatch.setattr("vezir.doctor._which", lambda name: "/usr/local/bin/millet")
+
+    class _Proc:
+        returncode = 0
+        stdout = "ffmpeg: OK\nmic permission: OK\nsystem audio perm: OK\n"
+        stderr = ""
+
+    monkeypatch.setattr("vezir.doctor.subprocess.run", lambda *a, **k: _Proc())
+    r = _Results()
+    _check_macos_recorder(r)
+    assert any(sev == "OK" and "macOS recorder" in msg for sev, msg in r.rows)
+
+
+def test_macos_recorder_gatekeeper_hint_on_killed(monkeypatch):
+    from vezir.doctor import _check_macos_recorder, _Results
+
+    monkeypatch.setattr("vezir.doctor.sys.platform", "darwin")
+    monkeypatch.setattr("vezir.doctor._which", lambda name: "/usr/local/bin/millet")
+
+    class _Proc:
+        returncode = 1
+        stdout = "meet-record-mac: killed (Gatekeeper?)\n"
+        stderr = ""
+
+    monkeypatch.setattr("vezir.doctor.subprocess.run", lambda *a, **k: _Proc())
+    r = _Results()
+    _check_macos_recorder(r)
+    assert any(sev == "WARN" and "reported issues" in msg for sev, msg in r.rows)
+    assert any("quarantine" in msg for sev, msg in r.rows)

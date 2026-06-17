@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from . import __version__, config
@@ -293,6 +295,81 @@ def _check_ssl_cert(r: _Results, url: str | None) -> None:
                     r.ok(f"{var_name}: {path_str} (PEM)")
             except PermissionError:
                 r.warn(f"{var_name}={path_str}: permission denied reading file")
+
+
+def _check_macos_recorder(r: _Results) -> None:
+    """C6b: macOS recording prerequisites (Apple Silicon only).
+
+    Surfaces the things that bit fresh-Mac onboarders: missing ffmpeg, the
+    bundled ``meet-record-mac`` sidecar not being installed/resolvable, and
+    ungranted Microphone / System Audio TCC permissions.
+
+    Implemented by shelling out to ``millet check`` (millet-record's own
+    prerequisite probe — ffmpeg + recorder resolution + TCC status) and
+    mapping its result to a doctor row, rather than re-implementing the
+    platform probing here. Advisory only (warn, never error): recording
+    can still be fixed interactively, and a non-recording client (e.g.
+    ``vezir pull`` / ``tui`` browsing) doesn't need the sidecar.
+    """
+    if sys.platform != "darwin":
+        return
+
+    # Locate the millet CLI the same way `vezir scribe` does.
+    millet_bin = (
+        os.environ.get("VEZIR_MILLET_BIN")
+        or os.environ.get("VEZIR_MEET_BIN")
+        or _which("millet")
+        or _which("meet")
+    )
+    if not millet_bin:
+        r.warn(
+            "macOS recorder: `millet` CLI not found — the capture wrapper "
+            "(millet-record) isn't installed.  `pipx install 'vezir[tui]' "
+            "--python python3.13` pulls it (>=0.4.4 bundles the sidecar)."
+        )
+        return
+
+    try:
+        proc = subprocess.run(
+            [millet_bin, "check"],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except FileNotFoundError:
+        r.warn(f"macOS recorder: `{millet_bin} check` could not be executed")
+        return
+    except subprocess.TimeoutExpired:
+        r.warn(
+            "macOS recorder: `millet check` timed out (>45 s) — a permission "
+            "dialog may be waiting behind another window; grant Microphone + "
+            "System Audio Recording and re-run."
+        )
+        return
+
+    if proc.returncode == 0:
+        r.ok("macOS recorder: ffmpeg + meet-record-mac + mic/system-audio OK")
+        return
+
+    detail = (proc.stdout + proc.stderr).strip()
+    first = detail.splitlines()[0] if detail else "see `millet check`"
+    r.warn(f"macOS recorder: `millet check` reported issues — {first}")
+    # Gatekeeper hint: a bundled binary that resolves but won't run (killed
+    # / "can't be opened") is almost always quarantine on first launch.
+    low = detail.lower()
+    if "killed" in low or "can't be opened" in low or "cannot be opened" in low:
+        r.warn(
+            "macOS recorder: the sidecar may be Gatekeeper-quarantined.  "
+            "Clear it with: xattr -d com.apple.quarantine "
+            "\"$(python3 -c 'from millet_record.capture import "
+            "_resolve_darwin_recorder as f; print(f())')\""
+        )
+
+
+def _which(name: str) -> str | None:
+    import shutil
+
+    return shutil.which(name)
 
 
 def _check_file_perms(r: _Results, path: Path, label: str) -> None:
@@ -806,6 +883,7 @@ def run_doctor() -> int:
     _check_teams_json_schema(r)
     _check_token_format(r, token)
     _check_ssl_cert(r, url)
+    _check_macos_recorder(r)
     _check_client_file_perms(r)
     _check_deprecated_env_vars(r)
     _check_nvpn(r)

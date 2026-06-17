@@ -7,7 +7,12 @@ name = "vezir"
 dynamic = ["version"]
 description = "Internal scribe service that wraps meetscribe for team-scale meeting capture, transcription, summarization, and speaker labeling"
 readme = "README.md"
-requires-python = ">=3.10"
+# Upper bound: coincurve (via the [nostr] extra, pulled by [tui]) has no
+# cp314 wheel yet, so a 3.14 install falls back to a failing source build.
+# Cap at <3.14 so pip/pipx select 3.13 (or refuse with a clear message)
+# instead of a cryptic coincurve build error. Relax once coincurve ships
+# cp314 wheels.
+requires-python = ">=3.10,<3.14"
 license = {text = "MIT"}
 authors = [{name = "Blink"}]
 keywords = [
@@ -40,7 +45,7 @@ dependencies = [
     "click>=8.0",
     "httpx>=0.27",
     "ulid-py>=1.1",
-    "millet-record>=0.4.0",
+    "millet-record>=0.4.4",
 ]
 
 [project.scripts]
