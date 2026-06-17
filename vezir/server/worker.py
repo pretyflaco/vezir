@@ -477,9 +477,33 @@ def _dns_warmup() -> None:
 _UPLOAD_SWEEP_INTERVAL_SEC = 60 * 60  # hourly
 
 
+def _recover_orphaned_jobs() -> None:
+    """Re-queue jobs left mid-pipeline by a previous restart/crash.
+
+    Single-worker invariant: at startup nothing is being processed yet, so any
+    job still in an in-progress state (``transcribing`` / ``summarizing`` /
+    ``syncing``) was interrupted (e.g. the service was restarted for a deploy
+    while a transcription was running).  ``claim_next`` only picks up ``queued``
+    jobs, so such a job would otherwise stay stuck forever.  Reset it to
+    ``queued`` so the poll loop re-claims and replays it.
+    """
+    try:
+        ids = queue.requeue_orphans()
+    except Exception:
+        log.exception("orphan-recovery failed (non-fatal)")
+        return
+    if ids:
+        log.warning(
+            "recovered %d orphaned job(s) interrupted by a previous "
+            "restart/crash; re-queued: %s",
+            len(ids), ", ".join(ids),
+        )
+
+
 def _loop() -> None:
     log.info("vezir worker started")
     _dns_warmup()
+    _recover_orphaned_jobs()
     next_sweep = 0.0
     while not _stop_flag.is_set():
         # Periodically sweep abandoned resumable-upload staging files.

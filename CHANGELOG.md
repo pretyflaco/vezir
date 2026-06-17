@@ -3,6 +3,30 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.8 — worker recovers jobs orphaned by a restart/crash
+
+### Fixed
+
+* **A job interrupted mid-transcription got stuck in `transcribing` forever.**
+  The single worker claims jobs with `claim_next()`, which only selects
+  `status = 'queued'`.  If the service was restarted (e.g. for a deploy) or
+  crashed while `millet transcribe` was running, the millet subprocess was
+  killed and the job was left in `transcribing` — a state no code path ever
+  re-claims.  The session showed "transcribing" indefinitely even though no
+  work was happening; the uploaded audio was intact on disk but never
+  re-processed.
+
+  The worker now runs **`_recover_orphaned_jobs()` at startup** (after the DNS
+  warmup, before the poll loop): any job still in an in-progress state
+  (`transcribing` / `summarizing` / `syncing`) is reset to `queued` and logged
+  loudly, so the poll loop re-claims and replays it.  This is safe under the
+  single-writer model — at startup the worker isn't processing anything, so an
+  in-progress row is by definition orphaned — and `millet transcribe` is
+  idempotent (it re-runs from the audio and overwrites artifacts).
+
+  New `queue.requeue_orphans()` helper performs the atomic reset and returns
+  the affected job ids.
+
 ## 0.8.7 — TUI import picker lists all recordings (fixes "only one recording")
 
 ### Fixed

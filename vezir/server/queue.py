@@ -328,6 +328,44 @@ def claim_next() -> dict | None:
         return out
 
 
+# In-progress states that only the single worker ever drives.  If any job is
+# left in one of these at worker startup, no worker is running it (the previous
+# process died / was restarted mid-pipeline) — it is orphaned and must be
+# re-queued so it gets picked up again.
+_ORPHANABLE_STATUSES = ("transcribing", "summarizing", "syncing")
+
+
+def requeue_orphans() -> list[str]:
+    """Reset orphaned in-progress jobs back to ``queued``.
+
+    Called once at worker startup (single-writer model: at startup the worker
+    is not yet processing anything, so any job still in ``transcribing`` /
+    ``summarizing`` / ``syncing`` was interrupted by a previous restart/crash
+    and is orphaned).  ``claim_next`` only picks up ``queued`` jobs, so without
+    this an interrupted job would stay stuck forever.
+
+    Re-queuing is safe: ``millet transcribe`` is idempotent (it re-runs from the
+    audio and overwrites artifacts), and a re-queued job replays the full
+    pipeline (transcribe → label → sync) from scratch.
+
+    Returns the list of job ids that were re-queued (empty if none).
+    """
+    placeholders = ",".join("?" for _ in _ORPHANABLE_STATUSES)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT id FROM jobs WHERE status IN ({placeholders})",
+            _ORPHANABLE_STATUSES,
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        if ids:
+            c.execute(
+                f"UPDATE jobs SET status = 'queued', updated_at = ? "
+                f"WHERE status IN ({placeholders})",
+                (_now(), *_ORPHANABLE_STATUSES),
+            )
+    return ids
+
+
 def update_status(
     job_id: str,
     status: str,
