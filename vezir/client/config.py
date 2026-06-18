@@ -137,6 +137,24 @@ def active_team_credentials() -> tuple[str | None, str | None, str | None]:
     return None, None, None
 
 
+def active_team_expiry() -> float | None:
+    """Return the active team's stored session expiry (unix seconds), or None.
+
+    Used by clients (TUI) to proactively warn before a session JWT expires
+    (0.8.9).  ``None`` when teams.json has no active entry or the entry predates
+    expiry tracking (older logins).
+    """
+    cfg = load_teams_config()
+    active = cfg.get("active")
+    if not active:
+        return None
+    for t in cfg["teams"]:
+        if t["id"] == active:
+            exp = t.get("expires_at")
+            return float(exp) if exp is not None else None
+    return None
+
+
 def team_credentials(team: str) -> tuple[str | None, str | None, str | None]:
     """Resolve a named team (slug/id) from teams.json to ``(team_id, url, token)``.
 
@@ -252,6 +270,7 @@ def set_team_session(
     label: str | None = None,
     *,
     activate: bool = True,
+    expires_at: float | None = None,
 ) -> dict:
     """Store a nostr-login session for a team in teams.json.
 
@@ -262,6 +281,10 @@ def set_team_session(
     the ``npub`` so ``vezir login`` can recognize a re-login candidate and
     show whose key is bound.  Upserts on ``team_id`` like
     :func:`add_team_credentials`.
+
+    ``expires_at`` (unix seconds, optional): the session JWT's expiry, stored
+    so clients can proactively warn before a request 401s (0.8.9).  ``None``
+    leaves any existing value untouched on update.
     """
     cfg = load_teams_config()
     teams: list = cfg["teams"]
@@ -273,16 +296,21 @@ def set_team_session(
             t["npub"] = npub
             if label is not None:
                 t["label"] = label
+            if expires_at is not None:
+                t["expires_at"] = expires_at
             break
     else:
-        teams.append({
+        entry = {
             "id": team_id,
             "url": url,
             "token": session_jwt,
             "auth": "nostr",
             "npub": npub,
             "label": label or team_id,
-        })
+        }
+        if expires_at is not None:
+            entry["expires_at"] = expires_at
+        teams.append(entry)
     if activate or not cfg.get("active"):
         cfg["active"] = team_id
     save_teams_config(cfg)

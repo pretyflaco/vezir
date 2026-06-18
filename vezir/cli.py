@@ -1502,6 +1502,7 @@ def login(url, team_id, relay, timeout, method, verbose):
         body["session_jwt"],
         body.get("npub", client.user_pubkey or ""),
         label=resolved_team,
+        expires_at=_expires_at_from_body(body),
     )
     click.echo()
     click.echo(f"Logged in as github={body.get('github')} "
@@ -1512,6 +1513,20 @@ def login(url, team_id, relay, timeout, method, verbose):
     if memberships:
         names = ", ".join(m.get("slug") or m.get("team_id") for m in memberships)
         click.echo(f"Team memberships: {names}")
+
+
+def _expires_at_from_body(body: dict) -> float | None:
+    """Compute a unix-seconds expiry from a login body's ``expires_in``.
+
+    Stored in teams.json so clients can proactively warn before a session
+    JWT expires (0.8.9).  Returns None when the server didn't report it.
+    """
+    import time as _time
+    exp_in = body.get("expires_in")
+    try:
+        return _time.time() + int(exp_in) if exp_in else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _login_verify():
@@ -1563,6 +1578,7 @@ def _login_google(resolved_url, resolved_team, timeout, client_config) -> None:
         body["session_jwt"],
         body.get("email", ""),
         label=resolved_team,
+        expires_at=_expires_at_from_body(body),
     )
     click.echo()
     click.echo(f"Logged in as github={body.get('github')} "

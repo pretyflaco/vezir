@@ -3,6 +3,31 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.9 — in-TUI re-auth + session-expiry warning (no more CLI round-trip on 401)
+
+### Added
+
+* **Sign in again from inside the TUI when your session expires.**  The ~24h
+  session JWT expiring used to mean: the upload failed with a generic 401, and
+  the only fix was to quit the TUI, run `vezir login` in a shell, then re-run
+  `vezir upload <path>` (a non-copyable path from the TUI).  Now an expired
+  upload is recognized as a 401 and opens an in-TUI re-auth modal
+  (`ReauthScreen`): sign in with **nostr (NIP-46)** or **Google** without
+  leaving the TUI.  On success the new session is persisted and re-bound in
+  memory, and **the failed upload is retried automatically** — no restart.
+  Bound to `^g` on the record pane (also offered automatically on a 401).
+
+* **Proactive session-expiry warning.**  Login now stores the session's expiry
+  (`expires_at`) in `teams.json`; the record pane warns when the session is
+  expired or expiring within 30 minutes, so you can `^g` re-auth *before*
+  recording/uploading instead of discovering it after.
+
+### Fixed
+
+* The upload path now classifies HTTP 401 specifically (previously every
+  failure surfaced the same generic "Retry with: vezir upload …" hint, never
+  the auth-aware path).
+
 ## 0.8.8 — worker recovers jobs orphaned by a restart/crash
 
 ### Fixed

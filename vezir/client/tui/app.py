@@ -537,6 +537,44 @@ class VezirTuiApp(App):
         )
         return True
 
+    def apply_reauth_session(self, body: dict) -> None:
+        """Persist + re-bind a fresh session JWT after in-TUI re-auth (0.8.9).
+
+        Called by the re-auth modal's callback on success.  Stores the new JWT
+        for the active team in teams.json and re-binds the in-memory token +
+        API client so the running TUI uses it immediately — no restart.
+        """
+        jwt = body.get("session_jwt")
+        if not jwt:
+            raise ValueError("re-auth body missing session_jwt")
+        team = self.active_team_id or ""
+        # Persist for config-backed teams (best-effort; discovered-only teams
+        # still get the in-memory rebind below).
+        if team:
+            try:
+                import time as _time
+
+                from ..config import set_team_session
+                exp_in = body.get("expires_in")
+                exp_at = (
+                    _time.time() + int(exp_in) if exp_in else None
+                )
+                set_team_session(
+                    team, self.server_url, jwt,
+                    body.get("npub", body.get("email", "")), label=team,
+                    expires_at=exp_at,
+                )
+            except Exception:
+                log.warning("could not persist re-auth session", exc_info=True)
+        # Re-bind in memory.
+        self.token = jwt
+        self.api = VezirClient(
+            self.server_url,
+            self.token,
+            team_id=self.active_team_id,
+        )
+        self._refresh_identity()
+
     def action_switch_team(self) -> None:
         """Cycle ^t to the next team in the MERGED list (v0.7.6).
 

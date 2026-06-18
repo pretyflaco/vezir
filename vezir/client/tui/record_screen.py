@@ -94,6 +94,19 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / (1024 * 1024 * 1024):.1f} GB"
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """True if ``exc`` is (or wraps) an HTTP 401 from the uploader.
+
+    The uploader raises ``httpx.HTTPStatusError`` via ``raise_for_status()``
+    (not a typed error), so we inspect the attached response status code.
+    Falls back to a string check for defensiveness.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 401:
+        return True
+    return "401" in str(exc) and "unauth" in str(exc).lower()
+
+
 # ─── Messages posted from workers back to the screen ─────────────────────────
 #
 # v0.7.0: every message carries a ``gen`` (generation) field.  When the
@@ -141,6 +154,9 @@ class UploadFailed(Message):
     error: str
     audio_path: Path | None
     gen: int = 0
+    auth_expired: bool = False
+    """True when the failure was an HTTP 401 (expired session JWT), so the
+    screen can offer in-TUI re-auth + retry instead of the CLI hint."""
 
 
 @dataclass
@@ -500,6 +516,7 @@ class RecordBody(Vertical):
         Binding("ctrl+p", "toggle_pause", "Pause/Resume"),
         Binding("ctrl+x", "toggle_personal", "Personal"),
         Binding("ctrl+u", "import_file", "Import"),
+        Binding("ctrl+g", "reauth", "Sign in", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -682,6 +699,32 @@ class RecordBody(Vertical):
         # Personal always starts off (not persisted).
         pe = self.query_one("#personal-btn", Button)
         self._style_toggle(pe, False, personal=True)
+        self._warn_if_session_expiring()
+
+    def _warn_if_session_expiring(self) -> None:
+        """Proactively warn when the stored session JWT is expired / near-expiry.
+
+        Avoids the surprise mid-/post-upload 401: the user can ^g to sign in
+        before recording.  Best-effort and silent on any error (older logins
+        have no stored expiry → no warning).
+        """
+        try:
+            from ..config import active_team_expiry
+            exp = active_team_expiry()
+        except Exception:
+            return
+        if not exp:
+            return
+        remaining = exp - time.time()
+        if remaining <= 0:
+            self.error_text = (
+                "session expired — press ^g to sign in again before uploading"
+            )
+        elif remaining < 1800:  # < 30 min
+            mins = int(remaining // 60)
+            self.status_text = (
+                f"session expires in ~{mins} min — ^g to sign in again"
+            )
 
     # ── reactive watchers ──
 
@@ -1123,6 +1166,7 @@ class RecordBody(Vertical):
                 error=f"upload failed: {exc}",
                 audio_path=audio_path,
                 gen=gen,
+                auth_expired=_is_auth_error(exc),
             ))
             return
 
@@ -1363,9 +1407,50 @@ class RecordBody(Vertical):
             return
         self.is_uploading = False
         self.status_text = "upload failed"
+
+        if message.auth_expired and message.audio_path is not None:
+            # Session JWT expired (401): offer in-TUI re-auth + auto-retry
+            # instead of forcing the user out to the CLI.
+            self.error_text = (
+                "session expired (401) — press ^g to sign in again and retry "
+                f"this upload, or run: vezir upload {message.audio_path}"
+            )
+            self._pending_reauth_upload = message.audio_path
+            self._open_reauth_and_retry(message.audio_path)
+            return
+
         suffix = ""
         if message.audio_path is not None:
             suffix = (
                 f"\nRetry with: vezir upload {message.audio_path}"
             )
         self.error_text = message.error + suffix
+
+    def action_reauth(self) -> None:
+        """^l: open the re-auth modal.  Retries a pending upload on success."""
+        pending = getattr(self, "_pending_reauth_upload", None)
+        self._open_reauth_and_retry(pending)
+
+    def _open_reauth_and_retry(self, audio_path: Path | None) -> None:
+        from .reauth_screen import ReauthScreen
+
+        server_url = self.app.server_url
+        team_id = getattr(self.app, "active_team_id", None)
+
+        def _after(body: dict | None) -> None:
+            if not body or not body.get("session_jwt"):
+                return  # cancelled / failed; message already shown
+            # Persist + re-bind the new session in memory so the running TUI
+            # uses it immediately (no restart).
+            try:
+                self.app.apply_reauth_session(body)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.error_text = f"re-auth succeeded but rebind failed: {exc}"
+                return
+            self.status_text = "signed in; retrying upload"
+            self.error_text = ""
+            if audio_path is not None:
+                self._pending_reauth_upload = None
+                self._kick_upload(audio_path)
+
+        self.app.push_screen(ReauthScreen(server_url, team_id), _after)
