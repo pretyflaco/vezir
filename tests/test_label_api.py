@@ -39,8 +39,17 @@ def _bearer(token: str, team: str = "blink") -> dict:
 
 
 def _seed_session(tmp_data, session_id: str, status: str = "needs_labeling"):
-    """Create a minimal session row in the queue for testing."""
+    """Create a minimal session row in the queue for testing.
+
+    Ensures the ``blink`` team exists WITH a sync_remote so the sync-exercising
+    tests below reach ``meet_runner.sync`` (0.8.10 added a guard that skips sync
+    entirely for remote-less teams).
+    """
     from vezir.server import queue
+    if queue.get_team("blink") is None:
+        queue.create_team("blink", "Blink", sync_remote="https://git.example/blink.git")
+    else:
+        queue.update_team_sync("blink", sync_remote="https://git.example/blink.git")
     queue.enqueue(session_id, "alice", "test meeting", team_id="blink")
     queue.update_status(session_id, status)
 

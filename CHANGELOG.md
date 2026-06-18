@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.10 — don't attempt sync for teams without a git remote
+
+### Fixed
+
+* **Sessions for teams with no `sync_remote` ended in `sync_failed` /
+  `sync_error`, even though no sync should be attempted.**  The worker's sync
+  gate only checked `VEZIR_SKIP_SYNC` and the per-job `sync_enabled` flag — it
+  never checked whether the team actually has a git remote.  For a remote-less
+  team, `_resolve_team_sync_config` fell through to the operator's personal
+  `~/.config/meet/sync_config.json`, which on a typical install holds millet's
+  placeholder `https://example.com/global.git`; millet then tried to clone it
+  and failed.  Affected every team without a `sync_remote` (only `blink` had
+  one configured).
+
+  Now:
+  * New `meet_runner.team_has_sync_target(team_id)` — True only when a real,
+    team-scoped target exists (per-team override file, non-empty
+    `team.sync_remote`, or the legacy global `~/vezir-data/sync_config.json`).
+  * The worker (main pipeline, post-label finalize, summary-retry re-sync)
+    skips sync entirely for remote-less teams and keeps the session
+    **`done`, local-only, with no `sync_error`** — not a failure.
+  * `_resolve_team_sync_config` **no longer falls back** to the operator's
+    personal `~/.config/meet/sync_config.json` for team jobs (it could only
+    ever supply a non-team-scoped — and here placeholder — remote).
+  * `POST /session/{id}/sync` now returns **409** with a clear message when the
+    team has no remote, instead of queueing a job that would fail.
+
 ## 0.8.9 — in-TUI re-auth + session-expiry warning (no more CLI round-trip on 401)
 
 ### Added

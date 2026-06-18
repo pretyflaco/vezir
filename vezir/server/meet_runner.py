@@ -130,7 +130,7 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
 def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
     """Pick a sync_config.json source for this team's HOME shim.
 
-    Precedence (v0.6.2+):
+    Precedence (v0.6.2+; step 4 removed in 0.8.10):
 
     1. ``~/vezir-data/teams/<team_id>/sync_config.json`` — the B2
        escape hatch.  If present, used verbatim; ``team.sync_remote``
@@ -143,10 +143,17 @@ def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
     3. Legacy global ``~/vezir-data/sync_config.json`` — preserves
        pre-v0.6.2 behavior for installs that never set per-team
        sync.
-    4. Real ``~/.config/meet/sync_config.json`` — final fallback when
-       vezir hasn't been configured for sync at all.
 
-    Returns the chosen source path, or None if no source exists.
+    Returns the chosen source path, or None if no team-scoped sync target
+    exists.
+
+    **0.8.10:** the real user-level ``~/.config/meet/sync_config.json`` is NO
+    LONGER a fallback.  That file is the operator's personal millet config and
+    on a typical install holds millet's placeholder ``example.com/global.git``;
+    using it for a team job made every remote-less team attempt a doomed clone
+    and land in ``sync_failed``/``sync_error``.  A team syncs only when it has a
+    real, team-scoped target (steps 1-3).  ``real_meet`` is retained for
+    signature compatibility but intentionally unused.
     """
     # 1. Per-team override file (escape hatch).
     override = config.team_sync_config_path(team_id)
@@ -167,12 +174,30 @@ def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
     if legacy.exists():
         return legacy
 
-    # 4. Real user config.
-    real = real_meet / "sync_config.json"
-    if real.exists():
-        return real
-
     return None
+
+
+def team_has_sync_target(team_id: str) -> bool:
+    """True if this team has a real, team-scoped git sync target configured.
+
+    Mirrors :func:`_resolve_team_sync_config`'s team-scoped precedence
+    (per-team override file > ``team.sync_remote`` > legacy global), WITHOUT
+    materializing anything or touching the operator's personal
+    ``~/.config/meet/sync_config.json``.  Callers (the worker) use this to skip
+    sync entirely for remote-less teams instead of invoking millet, which would
+    otherwise fall back to its placeholder remote and fail.
+    """
+    override = config.team_sync_config_path(team_id)
+    if override.exists():
+        return True
+
+    from . import queue as _queue
+    team = _queue.get_team(team_id)
+    if team and (team.get("sync_remote") or "").strip():
+        return True
+
+    legacy = config.data_dir() / "sync_config.json"
+    return legacy.exists()
 
 
 def _materialize_team_sync_config(team_id: str, team: dict) -> Path | None:

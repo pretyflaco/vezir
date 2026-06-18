@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .. import config
-from . import auth, queue, ratelimit, worker
+from . import auth, meet_runner, queue, ratelimit, worker
 
 log = logging.getLogger("vezir.sessions")
 router = APIRouter()
@@ -183,6 +183,15 @@ def sync_now(
             409,
             f"session status '{row['status']}' does not admit retroactive sync; "
             "wait for transcription/labeling to complete first",
+        )
+    # No team-scoped git remote → there is nothing to sync to.  Fail fast with
+    # a clear message instead of queueing a job that would clone millet's
+    # placeholder remote and land in sync_failed (0.8.10).
+    if not meet_runner.team_has_sync_target(row.get("team_id") or team_id):
+        raise HTTPException(
+            409,
+            "this team has no git sync remote configured; an admin can set one "
+            "with `vezir team set-sync --team <slug> --remote <git-url>`",
         )
 
     meeting_type: str | None = None

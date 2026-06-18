@@ -4,12 +4,15 @@ Covers:
 
 * ``_meeting_type_base_for_team`` prefers ``team.sync_meeting_type``
   over the legacy VEZIR_SYNC_MEETING_TYPE env var.
-* ``_resolve_team_sync_config`` precedence:
+* ``_resolve_team_sync_config`` precedence (0.8.10: real ~/.config/meet
+  fallback removed — a remote-less team must not borrow the operator's
+  personal placeholder config):
   1. per-team file override (teams/<id>/sync_config.json)
   2. materialized from team.sync_remote
   3. legacy VEZIR_DATA/sync_config.json
-  4. real ~/.config/meet/sync_config.json
-  5. None
+  4. None
+* ``team_has_sync_target`` mirrors that precedence as a bool gate the worker
+  uses to skip sync for remote-less teams.
 * ``_materialize_team_sync_config`` writes a minimal JSON with
   ``remote_url`` and is idempotent across runs.
 * ``build_home_shim`` materializes per-team sync_config and symlinks
@@ -176,9 +179,56 @@ def test_sync_config_returns_none_when_nothing_configured(tmp_data):
     resolved = meet_runner._resolve_team_sync_config(
         "blink", Path("/nonexistent/meet"),
     )
-    # No per-team override, no team.sync_remote, no legacy file, no
-    # real ~/.config/meet/sync_config.json under the bogus path.
+    # No per-team override, no team.sync_remote, no legacy file.
     assert resolved is None
+
+
+def test_sync_config_ignores_real_user_meet_config(tmp_data, tmp_path):
+    """0.8.10: a remote-less team must NOT borrow the operator's personal
+    ~/.config/meet/sync_config.json (which often holds a placeholder remote)."""
+    from vezir.server import meet_runner, queue
+    queue.create_team("twentyone", "Twentyone")  # no sync_remote
+    # Simulate the operator's personal millet config (placeholder remote).
+    real_meet = tmp_path / "meet"
+    real_meet.mkdir()
+    (real_meet / "sync_config.json").write_text(
+        json.dumps({"repo_url": "https://example.com/global.git"})
+    )
+    resolved = meet_runner._resolve_team_sync_config("twentyone", real_meet)
+    assert resolved is None  # step-4 fallback removed
+
+
+# ── team_has_sync_target gate ───────────────────────────────────────────────
+
+
+def test_team_has_sync_target_false_when_no_remote(tmp_data):
+    from vezir.server import meet_runner, queue
+    queue.create_team("twentyone", "Twentyone")  # no sync_remote
+    assert meet_runner.team_has_sync_target("twentyone") is False
+
+
+def test_team_has_sync_target_true_with_remote(tmp_data):
+    from vezir.server import meet_runner, queue
+    queue.create_team("blink", "Blink", sync_remote="https://git.example/b.git")
+    assert meet_runner.team_has_sync_target("blink") is True
+
+
+def test_team_has_sync_target_true_with_per_team_override(tmp_data):
+    from vezir import config
+    from vezir.server import meet_runner, queue
+    queue.create_team("twentyone", "Twentyone")  # no sync_remote
+    override = config.team_sync_config_path("twentyone")
+    config.secure_mkdir(override.parent)
+    override.write_text(json.dumps({"repo_url": "https://ops.example/x.git"}))
+    assert meet_runner.team_has_sync_target("twentyone") is True
+
+
+def test_team_has_sync_target_true_with_legacy_global(tmp_data):
+    from vezir import config
+    from vezir.server import meet_runner, queue
+    queue.create_team("twentyone", "Twentyone")  # no sync_remote
+    (config.data_dir() / "sync_config.json").write_text(json.dumps({"x": 1}))
+    assert meet_runner.team_has_sync_target("twentyone") is True
 
 
 # ── HOME shim symlinks per-team sync_config (integration) ───────────────────
@@ -218,3 +268,116 @@ def test_build_home_shim_symlinks_per_team_sync_config(tmp_data):
     )
     assert blink_payload["remote_url"] == "https://blink.example/x.git"
     assert t21_payload["remote_url"] == "https://21.example/y.git"
+
+
+# ── worker skips sync for remote-less teams (0.8.10) ────────────────────────
+
+
+def test_worker_skips_sync_when_team_has_no_remote(tmp_data, monkeypatch):
+    """process_one must NOT call millet sync (and must end `done` with no
+    sync_error) when the team has no git remote."""
+    from vezir.server import meet_runner, queue, worker
+
+    queue.create_team("twentyone", "Twentyone")  # no sync_remote
+    queue.enqueue("01HZ0000000000000NOSYNC01", github="alice", team_id="twentyone")
+    job = queue.claim_next()
+
+    # Mock the millet stages so we don't need torch/a real session.
+    monkeypatch.setattr(meet_runner, "transcribe", lambda *a, **k: 0)
+    monkeypatch.setattr(meet_runner, "label_auto", lambda *a, **k: 0)
+    monkeypatch.setattr(meet_runner, "cleanup_home_shim", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_find_artifacts", lambda sd: {"txt": "x.txt"})
+    monkeypatch.setattr(worker, "_has_unresolved_speakers", lambda sd: False)
+
+    sync_calls = []
+    monkeypatch.setattr(
+        meet_runner, "sync",
+        lambda *a, **k: sync_calls.append(a) or 0,
+    )
+
+    worker.process_one(job)
+
+    assert sync_calls == []  # sync never attempted
+    row = queue.get("01HZ0000000000000NOSYNC01")
+    assert row["status"] == "done"
+    assert not row["sync_error"]
+
+
+def test_worker_syncs_when_team_has_remote(tmp_data, monkeypatch):
+    """Control: a team WITH a remote still invokes millet sync."""
+    from vezir.server import meet_runner, queue, worker
+
+    queue.create_team("blink", "Blink", sync_remote="https://git.example/b.git")
+    queue.enqueue("01HZ00000000000000SYNC001", github="alice", team_id="blink")
+    job = queue.claim_next()
+
+    monkeypatch.setattr(meet_runner, "transcribe", lambda *a, **k: 0)
+    monkeypatch.setattr(meet_runner, "label_auto", lambda *a, **k: 0)
+    monkeypatch.setattr(meet_runner, "cleanup_home_shim", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_find_artifacts", lambda sd: {"txt": "x.txt"})
+    monkeypatch.setattr(worker, "_has_unresolved_speakers", lambda sd: False)
+    monkeypatch.setattr(worker, "_sync_log_indicates_failure", lambda lp: None)
+
+    sync_calls = []
+    monkeypatch.setattr(
+        meet_runner, "sync",
+        lambda *a, **k: sync_calls.append(a) or 0,
+    )
+
+    worker.process_one(job)
+
+    assert len(sync_calls) == 1  # sync attempted exactly once
+    row = queue.get("01HZ00000000000000SYNC001")
+    assert row["status"] == "done"
+
+
+# ── sync_now endpoint refuses remote-less teams (0.8.10) ────────────────────
+
+
+def _client_and_token(tmp_data):
+    from fastapi.testclient import TestClient
+
+    from vezir.server import auth
+    from vezir.server.app import create_app
+
+    # Build the app FIRST so startup migrations seed teams with stable UUIDs;
+    # issuing/enqueueing before would create a team that migrate_0_7_4 then
+    # remaps to a different UUID, orphaning the row.
+    client = TestClient(create_app(), follow_redirects=False)
+    token = auth.issue("alice", team_id="twentyone")  # shim adds membership
+    return client, token
+
+
+def test_sync_now_409_when_team_has_no_remote(tmp_data, monkeypatch):
+    from vezir.server import queue
+    client, token = _client_and_token(tmp_data)
+    # twentyone exists from the auth shim with no sync_remote.
+    queue.enqueue("01HZ0000000000000SYNCNOW1", github="alice", team_id="twentyone")
+    queue.update_status("01HZ0000000000000SYNCNOW1", "done")
+
+    r = client.post(
+        "/session/01HZ0000000000000SYNCNOW1/sync",
+        headers={"Authorization": f"Bearer {token}", "X-Team-Id": "twentyone"},
+    )
+    assert r.status_code == 409
+    assert "no git sync remote" in r.json()["detail"]
+    # Status untouched (no failing job queued).
+    assert queue.get("01HZ0000000000000SYNCNOW1")["status"] == "done"
+
+
+def test_sync_now_proceeds_when_team_has_remote(tmp_data, monkeypatch):
+    from vezir.server import queue, worker
+    client, token = _client_and_token(tmp_data)
+    queue.update_team_sync("twentyone", sync_remote="https://git.example/x.git")
+    queue.enqueue("01HZ0000000000000SYNCNOW2", github="alice", team_id="twentyone")
+    queue.update_status("01HZ0000000000000SYNCNOW2", "done")
+
+    # Don't actually run millet in the background thread.
+    monkeypatch.setattr(worker, "finalize_after_labeling", lambda *a, **k: None)
+
+    r = client.post(
+        "/session/01HZ0000000000000SYNCNOW2/sync",
+        headers={"Authorization": f"Bearer {token}", "X-Team-Id": "twentyone"},
+    )
+    assert r.status_code == 200
+    assert r.json()["queued"] is True

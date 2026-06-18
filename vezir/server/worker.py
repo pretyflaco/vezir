@@ -390,6 +390,14 @@ def process_one(job: dict) -> None:
                 "job %s: sync_enabled=0; keeping session local-only",
                 job_id,
             )
+        elif not meet_runner.team_has_sync_target(team_id):
+            # No team-scoped git remote configured: keep the session local-only
+            # instead of invoking millet, which would fall back to its
+            # placeholder remote and fail (0.8.10).  Not an error.
+            log.info(
+                "job %s: team %s has no sync remote; keeping session local-only",
+                job_id, team_id,
+            )
         else:
             queue.update_status(job_id, "syncing", artifacts=artifacts)
             rc = meet_runner.sync(sd, job_id, team_id, log_path)
@@ -665,6 +673,11 @@ def retry_summary_for_session(
             log.info("retry-summary %s: VEZIR_SKIP_SYNC set", session_id)
         elif not sync_enabled:
             log.info("retry-summary %s: sync_enabled=0", session_id)
+        elif not meet_runner.team_has_sync_target(team_id):
+            log.info(
+                "retry-summary %s: team %s has no sync remote; local-only",
+                session_id, team_id,
+            )
         else:
             queue.update_status(session_id, "syncing", artifacts=artifacts)
             src = meet_runner.sync(sd, session_id, team_id, log_path)
@@ -877,6 +890,12 @@ def finalize_after_labeling(
             log.info(
                 "post-labeling: sync_enabled=0; keeping session %s local-only",
                 session_id,
+            )
+        elif not meet_runner.team_has_sync_target(team_id):
+            log.info(
+                "post-labeling: team %s has no sync remote; keeping session "
+                "%s local-only",
+                team_id, session_id,
             )
         else:
             queue.update_status(session_id, "syncing")
