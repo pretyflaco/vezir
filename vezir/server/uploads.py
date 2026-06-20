@@ -2,7 +2,7 @@
 
 POST /upload
     multipart/form-data with:
-        audio: the .wav/.ogg file produced by `millet record` or `vezir upload`
+        audio: the .wav/.ogg/.mp3 file produced by `millet record` or `vezir upload`
         title: optional meeting title
 
     Returns: { "session_id": "<ulid>", "bytes": <n> }
@@ -42,9 +42,9 @@ TUS_VERSION = "1.0.0"
 # Abandoned .part sessions older than this are swept (24h, per plan).
 RESUMABLE_TTL_SEC = 24 * 60 * 60
 
-# Audio extensions vezir accepts. Meetscribe handles both WAV and OGG natively
-# (see meet/cli.py:389-390 and meet/label.py:66-70).
-ACCEPTED_EXTS = {".wav", ".ogg"}
+# Audio extensions vezir accepts. millet decodes all of these via ffmpeg
+# (whisperx.load_audio is ffmpeg-backed); MP3 is supported end-to-end since 0.8.11.
+ACCEPTED_EXTS = {".wav", ".ogg", ".mp3"}
 CONTENT_TYPE_EXTS = {
     "audio/wav": ".wav",
     "audio/wave": ".wav",
@@ -52,6 +52,8 @@ CONTENT_TYPE_EXTS = {
     "audio/vnd.wave": ".wav",
     "audio/ogg": ".ogg",
     "application/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
 }
 
 
@@ -73,7 +75,7 @@ def _pick_extension(upload_filename: str | None, content_type: str | None) -> st
 
 
 def _validate_magic(ext: str, chunk: bytes) -> None:
-    """Reject obvious filename/MIME spoofing for WAV and OGG uploads."""
+    """Reject obvious filename/MIME spoofing for WAV, OGG, and MP3 uploads."""
     if not chunk:
         return
     ok = False
@@ -81,6 +83,12 @@ def _validate_magic(ext: str, chunk: bytes) -> None:
         ok = len(chunk) >= 12 and chunk[:4] == b"RIFF" and chunk[8:12] == b"WAVE"
     elif ext == ".ogg":
         ok = chunk.startswith(b"OggS")
+    elif ext == ".mp3":
+        # MP3 has no single fixed prefix: either an ID3v2 tag ("ID3") or a raw
+        # MPEG audio frame sync (11 set bits: 0xFF followed by 0xE0-mask high bits).
+        ok = chunk.startswith(b"ID3") or (
+            len(chunk) >= 2 and chunk[0] == 0xFF and (chunk[1] & 0xE0) == 0xE0
+        )
     if not ok:
         raise HTTPException(status_code=415, detail=f"invalid {ext} audio header")
 

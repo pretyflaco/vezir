@@ -148,6 +148,22 @@ def test_bad_magic_rejected(client_and_token):
     assert r.status_code == 415
 
 
+def test_resumable_accepts_mp3(client_and_token):
+    client, token, tmp_data = client_and_token
+    data = b"ID3" + b"\x00" * 256
+
+    resp = _create(client, token, data, fname="m.mp3", ctype="audio/mpeg")
+    assert resp.status_code == 201
+    upload_id = resp.json()["upload_id"]
+
+    resp = _patch(client, token, upload_id, data, 0)
+    assert resp.status_code == 200, resp.text
+    session_id = resp.json()["session_id"]
+    out = tmp_data / "sessions" / session_id / f"{session_id}.mp3"
+    assert out.exists()
+    assert out.read_bytes() == data
+
+
 def test_other_user_cannot_access_session(client_and_token):
     client, token, tmp_data = client_and_token
     from vezir.server import auth, queue

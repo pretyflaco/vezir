@@ -3,6 +3,29 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.11 — accept MP3 uploads
+
+### Added
+
+* **MP3 audio uploads.**  The service now accepts `.mp3` alongside `.wav` and
+  `.ogg`, end-to-end:
+  * Server (`uploads.py`): `.mp3` added to `ACCEPTED_EXTS`; `audio/mpeg` and
+    `audio/mp3` added to the Content-Type allowlist.  Magic-byte validation
+    accepts either an ID3v2 tag (`ID3`) or a raw MPEG frame sync
+    (`0xFF`, high-3-bits-set) — MP3 has no single fixed prefix — on both the
+    one-shot and resumable (tus.io) paths.
+  * Client (`uploader.py`): `.mp3` added to `ACCEPTED_AUDIO_EXTS` and the
+    Content-Type map.  The WAV-only pre-upload compression step no-ops on MP3,
+    so MP3 uploads untouched.
+  * TUI file picker (`record_screen.py`): `.mp3` shown and selectable.
+  * Server-side audio discovery for speaker-clip extraction (`labels.py`) and
+    audio cleanup (`worker.py`) now include `*.mp3`.
+* Decoding already worked — millet's audio loader is ffmpeg-backed.  Native
+  MP3 *discovery* in millet session directories ships in millet-pipeline
+  0.12.13 (companion release).
+* Tests: added one-shot MP3 accept (ID3 + frame-sync variants), spoofed-MP3
+  rejection, and resumable MP3 accept.
+
 ## 0.8.10 — don't attempt sync for teams without a git remote
 
 ### Fixed

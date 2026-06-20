@@ -266,14 +266,14 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
 
 
 def _delete_audio(session_dir: Path) -> None:
-    """Optionally delete audio (.wav, .ogg) after artifacts are produced.
+    """Optionally delete audio (.wav, .ogg, .mp3) after artifacts are produced.
 
     Disabled by default during the pilot (see _delete_audio_enabled()).
     """
     if not _delete_audio_enabled():
         log.debug("audio deletion disabled (VEZIR_DELETE_AUDIO not set)")
         return
-    for pattern in ("*.wav", "*.ogg"):
+    for pattern in ("*.wav", "*.ogg", "*.mp3"):
         for f in session_dir.glob(pattern):
             try:
                 f.unlink()

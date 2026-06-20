@@ -85,6 +85,37 @@ def test_upload_accepts_ogg(client_and_token):
     assert uploaded.exists()
 
 
+def test_upload_accepts_mp3_id3(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        files={"audio": ("foo.mp3", b"ID3" + b"\x00" * 64, "audio/mpeg")},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    uploaded = tmp_data / "sessions" / body["session_id"] / f"{body['session_id']}.mp3"
+    assert uploaded.exists()
+
+
+def test_upload_accepts_mp3_frame_sync(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    # No ID3 tag: a raw MPEG audio frame sync (0xFF 0xFB).
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        files={"audio": ("foo.mp3", b"\xff\xfb" + b"\x00" * 64, "audio/mpeg")},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    uploaded = tmp_data / "sessions" / body["session_id"] / f"{body['session_id']}.mp3"
+    assert uploaded.exists()
+
+
 def test_upload_rejects_unknown_type(client_and_token):
     client, token, tmp_data = client_and_token
 
@@ -105,6 +136,19 @@ def test_upload_rejects_invalid_wav_header(client_and_token):
         "/upload",
         headers=_bearer(token),
         files={"audio": ("foo.wav", b"not a real wav", "audio/wav")},
+    )
+
+    assert resp.status_code == 415
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
+def test_upload_rejects_invalid_mp3_header(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        files={"audio": ("foo.mp3", b"not a real mp3", "audio/mpeg")},
     )
 
     assert resp.status_code == 415

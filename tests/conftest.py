@@ -21,7 +21,18 @@ def pytest_configure(config):  # noqa: ARG001 - pytest hook signature
     """Run before any test imports the app."""
     os.environ.setdefault("VEZIR_DISABLE_RATELIMIT", "1")
     # Prevent host production env vars from leaking into tests.
-    for var in ("VEZIR_COOKIE_SECURE", "VEZIR_CADDY_ROOT_CERT_PATH", "VEZIR_PUBLIC_URL"):
+    # The Google vars must be stripped too: an operator's host that has Google
+    # sign-in configured would otherwise make the "unconfigured" auth tests
+    # (test_google_auth.py) fail spuriously.
+    for var in (
+        "VEZIR_COOKIE_SECURE",
+        "VEZIR_CADDY_ROOT_CERT_PATH",
+        "VEZIR_PUBLIC_URL",
+        "VEZIR_GOOGLE_CLIENT_ID",
+        "VEZIR_GOOGLE_CLIENT_SECRET_FILE",
+        "VEZIR_GOOGLE_CLIENT_SECRET",
+        "VEZIR_GOOGLE_ALLOWED_DOMAIN",
+    ):
         os.environ.pop(var, None)
 
 

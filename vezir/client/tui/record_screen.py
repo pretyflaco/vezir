@@ -194,7 +194,7 @@ class SessionUploadComplete(Message):
 # ─── Import file picker (v0.5.0+) ───────────────────────────────────────────
 
 
-_AUDIO_EXTS = {".wav", ".ogg"}
+_AUDIO_EXTS = {".wav", ".ogg", ".mp3"}
 
 _MEETING_TS_RE = re.compile(r"meeting-(\d{8})-(\d{6})")
 
@@ -261,7 +261,7 @@ def _recording_label(path: Path, base: Path) -> str:
 
 
 def _scan_recordings(base: Path) -> list[Path]:
-    """All ``.wav``/``.ogg`` recordings under *base*, newest-first.
+    """All ``.wav``/``.ogg``/``.mp3`` recordings under *base*, newest-first.
 
     Recurses (teams → session dirs → audio), skips dot-directories, dedupes.
     Resilient to a missing base (returns []).
@@ -282,7 +282,7 @@ class _AudioOnlyDirectoryTree(DirectoryTree):
     """DirectoryTree that hides non-audio non-directory entries.
 
     Shows directories so the user can navigate; filters files to
-    .wav and .ogg only so the picker is uncluttered.  Hidden files
+    .wav, .ogg and .mp3 only so the picker is uncluttered.  Hidden files
     (dot-prefixed) are also hidden, which matches typical OS file
     pickers and prevents the tree from being dominated by .cache /
     .config / .git noise.
@@ -469,7 +469,7 @@ class ImportScreen(ModalScreen["Path | None"]):
             hint.add_class("error")
             hint.update(
                 f"unsupported file type {path.suffix or '(none)'}; "
-                f"expected .wav or .ogg"
+                f"expected .wav, .ogg or .mp3"
             )
             return
         self.dismiss(path)

@@ -10,10 +10,11 @@ import httpx
 
 log = logging.getLogger("vezir.client.uploader")
 
-ACCEPTED_AUDIO_EXTS = {".wav", ".ogg"}
+ACCEPTED_AUDIO_EXTS = {".wav", ".ogg", ".mp3"}
 CONTENT_TYPES = {
     ".wav": "audio/wav",
     ".ogg": "audio/ogg",
+    ".mp3": "audio/mpeg",
 }
 
 ProgressCallback = Callable[[int, int, float], None]
