@@ -438,6 +438,42 @@ def test_submit_labels_sends_labels_dict(mocked_client):
     assert body == {"labels": {"REMOTE_0": "alice", "REMOTE_1": "bob"}}
 
 
+def test_delete_session_issues_delete(mocked_client):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        assert request.headers["x-team-id"] == "blink"
+        return httpx.Response(200, json={"ok": True, "warning": None})
+
+    client = mocked_client(handler)
+    result = client.delete_session("01X")
+    assert result.is_ok()
+    assert seen["method"] == "DELETE"
+    assert seen["path"] == "/api/sessions/01X"
+
+
+def test_delete_session_surfaces_warning(mocked_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "warning": "git copy remains"})
+
+    client = mocked_client(handler)
+    result = client.delete_session("01X")
+    assert result.is_ok()
+    assert result.ok["warning"] == "git copy remains"
+
+
+def test_delete_session_propagates_403(mocked_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": "not permitted"})
+
+    client = mocked_client(handler)
+    result = client.delete_session("01X")
+    assert not result.is_ok()
+    assert result.http_error[0] == 403
+
+
 def test_get_team_returns_list(mocked_client):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/team"

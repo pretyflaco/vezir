@@ -53,6 +53,7 @@ _HELP_TEXT = """\
   [b]y[/b]       Sync now
   [b]e[/b]       Retry summary
   [b]p[/b]       Share with team (un-personal)
+  [b]ctrl+d[/b]  Delete session (admin or uploader; confirms first)
   [b]escape[/b]  Back to sessions
 
 [b cyan]Artifact view[/b cyan]

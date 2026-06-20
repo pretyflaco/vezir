@@ -359,6 +359,27 @@ class VezirClient:
         except Exception:
             return ApiResult.success(True)
 
+    def _delete(
+        self,
+        path: str,
+        *,
+        timeout: httpx.Timeout | None = None,
+    ) -> ApiResult:
+        url = f"{self.base_url}{path}"
+        try:
+            with httpx.Client(
+                timeout=timeout or self._timeout, verify=self._verify,
+            ) as c:
+                r = c.request("DELETE", url, headers=self._headers())
+        except httpx.HTTPError as exc:
+            return ApiResult.network(exc)
+        if not (200 <= r.status_code < 300):
+            return ApiResult.http(r.status_code, r.text[:200])
+        try:
+            return ApiResult.success(r.json())
+        except Exception:
+            return ApiResult.success(True)
+
     # ── sessions ──
 
     def get_sessions(
@@ -396,6 +417,16 @@ class VezirClient:
     def share_with_team(self, session_id: str) -> ApiResult:
         return self._post(
             f"/api/sessions/{quote(session_id, safe='')}/share",
+        )
+
+    def delete_session(self, session_id: str) -> ApiResult:
+        """Remove a session (admin or original uploader only).
+
+        On success ``.ok`` is the server's JSON dict, which may carry a
+        ``warning`` about a git copy that remains after a local-only delete.
+        """
+        return self._delete(
+            f"/api/sessions/{quote(session_id, safe='')}",
         )
 
     def retry_summary(

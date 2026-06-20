@@ -3,6 +3,30 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.12 — remove sessions from a team
+
+### Added
+
+* **Delete a session.**  An admin or the session's original uploader can now
+  permanently remove a session and its on-disk artifacts.
+  * New endpoint `DELETE /api/sessions/{id}`.  Authorization: the server-wide
+    admin token bit **OR** `row.github == caller` (the original uploader).
+    A same-team non-owner non-admin gets **403**; a caller from another team
+    gets **404** (existence-hiding, matching `_enforce_team_visibility`).
+  * New `queue.delete_session()` — hard delete, modeled on `delete_team`:
+    removes the `jobs` row, `session_teams` rows, the on-disk
+    `sessions/<id>/` directory, and the `logs/<id>.log` file.
+  * New CLI `vezir session rm <id>` — confirms first (`--yes`/`-y` to skip);
+    talks to the server over HTTP.
+  * New TUI action: `ctrl+d` on the session-detail screen (plus a `[^d]
+    Delete` button) shows a confirm modal before deleting.
+  * Client API: `VezirClient.delete_session()` + a new `_delete` plumbing
+    helper.
+* **Local-only delete (documented limitation).**  Deletion does not un-sync:
+  artifacts already pushed to the team's git remote remain.  The response
+  carries a `warning` when the session looks synced; remove the git copy
+  manually if needed.
+
 ## 0.8.11 — accept MP3 uploads
 
 ### Added

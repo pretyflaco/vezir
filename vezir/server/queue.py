@@ -436,6 +436,95 @@ def set_personal(job_id: str, personal: bool) -> None:
         )
 
 
+def _session_was_synced(row: dict) -> bool:
+    """Best-effort guess whether a session's artifacts reached the team git repo.
+
+    There is no stored remote commit/path, so we infer from the row.  A sync
+    was attempted (and may have pushed something) when the status is
+    ``syncing``/``sync_failed``, when ``sync_error`` is set, or when a
+    sync-enabled job reached the terminal ``done`` state (the pipeline runs
+    sync as the last step before marking ``done``).  Used only to drive the
+    "git copy remains" backwash warning on delete; a false positive just
+    shows a harmless extra warning.
+    """
+    status = (row.get("status") or "").lower()
+    if status in ("syncing", "sync_failed"):
+        return True
+    if row.get("sync_error"):
+        return True
+    if status == "done" and row.get("sync_enabled"):
+        return True
+    return False
+
+
+def delete_session(session_id: str) -> dict:
+    """Hard-delete a session: DB rows + on-disk artifacts + log.
+
+    Ordered child-then-parent (FKs are enforced, see ``_conn``), mirroring
+    ``delete_team``.  Removes:
+
+      * ``session_teams`` rows (cross-team shares),
+      * the ``jobs`` row itself,
+      * the on-disk ``sessions/<id>/`` directory,
+      * the ``logs/<id>.log`` file,
+      * any leftover HOME-shim ``jobs/<id>/`` dir (normally already cleaned
+        by ``meet_runner.cleanup_home_shim``).
+
+    This is local-only: artifacts already pushed to a team's git remote are
+    NOT removed (millet sync is push-only; there is no un-sync).  Callers
+    should surface the ``was_synced`` hint as a backwash warning.
+
+    Returns a stats dict; ``db_deleted`` is False if the row did not exist.
+    """
+    import shutil as _shutil
+
+    row = get(session_id)
+    if row is None:
+        return {
+            "session_id": session_id,
+            "db_deleted": False,
+            "dir_removed": False,
+            "log_removed": False,
+            "was_synced": False,
+        }
+
+    was_synced = _session_was_synced(row)
+
+    # 1. Remove DB rows (children first; FKs enforced).
+    with _conn() as c:
+        c.execute("DELETE FROM session_teams WHERE session_id = ?", (session_id,))
+        c.execute("DELETE FROM jobs WHERE id = ?", (session_id,))
+
+    # 2. On-disk cleanup (best-effort; the DB is the source of truth).
+    session_dir = config.sessions_dir() / session_id
+    dir_removed = False
+    if session_dir.exists():
+        _shutil.rmtree(session_dir, ignore_errors=True)
+        dir_removed = not session_dir.exists()
+
+    log_file = config.logs_dir() / f"{session_id}.log"
+    log_removed = False
+    if log_file.exists():
+        try:
+            log_file.unlink()
+            log_removed = True
+        except OSError:
+            log_removed = False
+
+    # Leftover HOME-shim dir (normally already removed by cleanup_home_shim).
+    shim_dir = config.jobs_dir() / session_id
+    if shim_dir.exists():
+        _shutil.rmtree(shim_dir, ignore_errors=True)
+
+    return {
+        "session_id": session_id,
+        "db_deleted": True,
+        "dir_removed": dir_removed,
+        "log_removed": log_removed,
+        "was_synced": was_synced,
+    }
+
+
 def list_recent(
     limit: int = 50,
     github: str | None = None,

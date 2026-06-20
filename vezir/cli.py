@@ -1694,6 +1694,96 @@ def session_move(session_id, to_team, confirm):
     )
 
 
+@session.command("rm")
+@click.argument("session_id")
+@click.option("--server", "server_url", default=None,
+              help="Server URL (default $VEZIR_URL)")
+@click.option("--token", default=None,
+              help="Bearer token (default $VEZIR_TOKEN)")
+@click.option("--team", "team", default=None,
+              help="Team slug/id the session belongs to (default: active "
+                   "team in teams.json or $VEZIR_TEAM_ID)")
+@click.option(
+    "--yes", "-y", "confirm", is_flag=True, default=False,
+    help="Skip the interactive confirmation prompt.",
+)
+def session_rm(session_id, server_url, token, team, confirm):
+    """Permanently remove a session from a team (v0.8.12+).
+
+    Hard delete: removes the session's database row and its on-disk
+    artifacts (audio, transcript, summary, PDF) on the server.  Only the
+    server-wide admin or the session's original uploader may delete it.
+
+    This is local-only: if the session was already synced to the team's
+    git repo, that pushed copy is NOT removed — clean it up in the repo
+    manually if needed (the server returns a warning when this applies).
+    """
+    from .client.api import VezirClient
+    from .client.config import (
+        resolve_credentials,
+        team_credentials,
+    )
+
+    team_id: str | None = None
+    if team:
+        t_id, t_url, t_token = team_credentials(team)
+        if t_id is None:
+            team_id = team
+        else:
+            team_id = t_id
+            server_url = server_url or t_url
+            token = token or t_token
+    if server_url is None or token is None or team_id is None:
+        r_url, r_token, r_team, _src = resolve_credentials()
+        server_url = server_url or r_url
+        token = token or r_token
+        if team_id is None:
+            team_id = r_team
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
+        sys.exit(1)
+    config.validate_token_format(token)
+    if not team_id:
+        click.echo(
+            "vezir: error: no team selected; pass --team <slug>, set "
+            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not confirm:
+        click.confirm(
+            f"Permanently delete session {session_id}? This cannot be undone.",
+            abort=True,
+        )
+
+    api = VezirClient(server_url, token, team_id=team_id)
+    result = api.delete_session(session_id)
+    if not result.is_ok():
+        code = result.http_error[0] if result.http_error else None
+        if code == 404:
+            click.echo(
+                f"vezir: error: session {session_id} not found in this team",
+                err=True,
+            )
+        elif code == 403:
+            click.echo(
+                "vezir: error: not permitted — only an admin or the original "
+                "uploader can delete this session",
+                err=True,
+            )
+        else:
+            click.echo(f"vezir: error: {result.error_message()}", err=True)
+        sys.exit(1)
+
+    click.echo(f"vezir: deleted session {session_id}")
+    payload = result.ok
+    if isinstance(payload, dict) and payload.get("warning"):
+        click.echo(f"vezir: warning: {payload['warning']}")
+
+
 # ── voiceprints ───────────────────────────────────────────────────────────────
 
 @main.group()

@@ -1,9 +1,10 @@
 """Session metadata + API endpoints.
 
-GET  /api/sessions           → JSON list (for clients)
-GET  /api/sessions/<id>      → JSON session detail
-GET  /artifact/<id>/<name>   → download a generated artifact
-POST /session/<id>/sync      → retroactive sync of a local-only session
+GET    /api/sessions           → JSON list (for clients)
+GET    /api/sessions/<id>      → JSON session detail
+DELETE /api/sessions/<id>      → remove a session (admin or original uploader)
+GET    /artifact/<id>/<name>   → download a generated artifact
+POST   /session/<id>/sync      → retroactive sync of a local-only session
 """
 from __future__ import annotations
 
@@ -343,6 +344,55 @@ def share_with_team(
     queue.set_personal(session_id, False)
     log.info("session=%s shared with team by %s", session_id, github)
     return {"ok": True, "session_id": session_id}
+
+
+# ── DELETE /api/sessions/{id} (v0.8.12) ──────────────────────────────────────
+
+
+@router.delete(
+    "/api/sessions/{session_id}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def delete_session(
+    session_id: str,
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Remove a session from a team. Hard delete: DB row + on-disk artifacts.
+
+    Authorization: the server-wide admin (token ``is_admin`` bit) OR the
+    original uploader of the session.  A non-admin, non-uploader member of
+    the same team gets 403; a caller from a different team gets 404 (the
+    same existence-hiding convention as ``_enforce_team_visibility``).
+
+    This is local-only.  If the session was already synced to the team's git
+    repo, that pushed copy is NOT removed (millet sync is push-only); the
+    response carries a ``warning`` to that effect.
+    """
+    github, team_id, is_admin = auth_triple
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
+    if not is_admin and row.get("github") != github:
+        raise HTTPException(
+            403,
+            "only an admin or the original uploader can delete this session",
+        )
+
+    stats = queue.delete_session(session_id)
+    log.info(
+        "session=%s deleted by %s (admin=%s, team=%s)",
+        session_id, github, is_admin, team_id,
+    )
+
+    warning = None
+    if stats.get("was_synced"):
+        warning = (
+            "this session was synced to the team git repo; the local copy "
+            "is removed but the pushed copy remains — remove it from the "
+            "repo manually if needed."
+        )
+    return {"ok": True, "session_id": session_id, "warning": warning}
 
 
 # ── /api/me (v0.6.1) ────────────────────────────────────────────────────────

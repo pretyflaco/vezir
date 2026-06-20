@@ -12,6 +12,7 @@ Layout (top to bottom):
       [y] sync now
       [p] share with team (un-personal)
       [l] open labeling
+      [ctrl+d] delete session (admin or uploader; confirm dialog)
       [escape] back
 """
 from __future__ import annotations
@@ -89,6 +90,13 @@ class ActionDone(Message):
     label: str
     ok: bool
     detail: str = ""
+
+
+@dataclass
+class SessionDeleted(Message):
+    ok: bool
+    detail: str = ""
+    warning: str | None = None
 
 
 class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
@@ -229,6 +237,55 @@ class SyncAsScreen(ModalScreen[str | None | object]):
             self.dismiss(str(sel))
 
 
+class ConfirmDeleteScreen(ModalScreen[bool]):
+    """Modal: confirm a destructive, irreversible session deletion.
+
+    Dismisses with ``True`` on confirm, ``False`` on cancel.  ``escape``
+    cancels.  The confirm button is the non-default so an accidental Enter
+    doesn't delete.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss(False)", "Cancel")]
+
+    CSS = """
+    ConfirmDeleteScreen { align: center middle; }
+    #confirm-del-box {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        border: solid $error;
+        padding: 1 2;
+        background: $surface;
+    }
+    #confirm-del-box Label { margin-top: 1; }
+    """
+
+    def __init__(self, session_id: str, title: str | None) -> None:
+        super().__init__()
+        self._session_id = session_id
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        name = self._title or self._session_id
+        with Vertical(id="confirm-del-box"):
+            yield Label("[b]Delete this session?[/b]")
+            yield Label(f"  {name}")
+            yield Label(f"  id: {self._session_id}")
+            yield Label(
+                "[red]This permanently removes the session and its "
+                "artifacts. This cannot be undone.[/red]"
+            )
+            with Horizontal():
+                yield Button("Cancel", id="cancel-btn", variant="primary")
+                yield Button("Delete", id="confirm-btn", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-btn":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+
 class DetailScreen(Screen):
     """One session's metadata + artifacts + actions."""
 
@@ -242,6 +299,7 @@ class DetailScreen(Screen):
         Binding("c", "copy_session_id", "Copy id"),
         Binding("f", "open_folder", "Open folder"),
         Binding("d", "copy_path", "Copy path"),
+        Binding("ctrl+d", "delete_session", "Delete"),
         # NOTE: do NOT bind "enter" here.  DataTable has its own
         # built-in `enter -> select_cursor` binding which fires
         # RowSelected (handled by `on_data_table_row_selected` below).
@@ -290,6 +348,7 @@ class DetailScreen(Screen):
             yield Button("[y] Sync now", id="sync-btn")
             yield Button("[p] Share with team", id="share-btn")
             yield Button("[l] Label speakers", id="label-btn", variant="primary")
+            yield Button("[^d] Delete", id="delete-btn", variant="error")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -371,6 +430,19 @@ class DetailScreen(Screen):
             )
             return
         self._action_worker("share with team", "share_with_team")
+
+    def action_delete_session(self) -> None:
+        title = self.session.title if self.session else None
+        self.app.push_screen(
+            ConfirmDeleteScreen(self.session_id, title),
+            self._on_delete_confirmed,
+        )
+
+    def _on_delete_confirmed(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self.notify("Deleting session...", severity="information", timeout=3)
+        self._delete_worker()
 
     def action_copy_session_id(self) -> None:
         """Copy the session id to the system clipboard (OSC 52)."""
@@ -533,6 +605,8 @@ class DetailScreen(Screen):
             self.action_share_with_team()
         elif bid == "label-btn":
             self.action_open_labeling()
+        elif bid == "delete-btn":
+            self.action_delete_session()
 
     # ── workers ──
 
@@ -560,6 +634,19 @@ class DetailScreen(Screen):
                 label=label, ok=False, detail=result.error_message(),
             ))
 
+    @work(thread=True, exclusive=True, group="detail-delete")
+    def _delete_worker(self) -> None:
+        result = self.app.api.delete_session(self.session_id)
+        if result.is_ok():
+            warning = None
+            if isinstance(result.ok, dict):
+                warning = result.ok.get("warning")
+            self.post_message(SessionDeleted(ok=True, warning=warning))
+        else:
+            self.post_message(SessionDeleted(
+                ok=False, detail=result.error_message(),
+            ))
+
     # ── message handlers ──
 
     def on_detail_loaded(self, message: DetailLoaded) -> None:
@@ -582,6 +669,20 @@ class DetailScreen(Screen):
         else:
             self.notify(
                 f"{message.label} failed: {message.detail}",
+                severity="error",
+            )
+
+    def on_session_deleted(self, message: SessionDeleted) -> None:
+        if message.ok:
+            self.notify("Session deleted.", severity="information")
+            if message.warning:
+                self.notify(message.warning, severity="warning", timeout=10)
+            # The session no longer exists: leave the detail screen and let
+            # the sessions list refresh on its own.
+            self.app.pop_screen()
+        else:
+            self.notify(
+                f"Delete failed: {message.detail}",
                 severity="error",
             )
 
