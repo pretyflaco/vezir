@@ -40,6 +40,12 @@ Environment variables:
     VEZIR_SUMMARY_PRESET    Summary quality preset (high-quality|confidential|alternative)
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
+    VEZIR_TINY_SPEAKER_MAX_SECONDS  Max total speech (seconds) for an
+                        unresolved raw speaker to be treated as spurious
+                        noise and ignored when routing to needs_labeling
+                        (default 5.0)
+    VEZIR_TINY_SPEAKER_MAX_SEGMENTS Max segment count for an unresolved raw
+                        speaker to count as tiny noise (default 3)
 
 All ``VEZIR_MEET_*`` aliases continue to work for two minor versions
 (through vezir 0.5.x) and emit a one-time ``DeprecationWarning`` on

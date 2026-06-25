@@ -570,11 +570,23 @@ def test_finalize_after_labeling_passes_meeting_type_override(tmp_data):
 
 
 def _write_transcript(sd, session_id, speakers):
-    """Write a minimal millet-style transcript JSON with the given speakers."""
+    """Write a minimal millet-style transcript JSON with the given speakers.
+
+    Each speaker gets 4 segments totaling ~24s of speech so that a raw
+    placeholder counts as a *substantial* unlabeled participant (above the
+    tiny-noise thresholds), exercising the real needs_labeling path rather
+    than the tiny-noise short-circuit.
+    """
     import json
     sd.mkdir(parents=True, exist_ok=True)
+    segments = []
+    base = 0.0
+    for s in speakers:
+        for _ in range(4):
+            segments.append({"start": base, "end": base + 6.0, "text": "x", "speaker": s})
+            base += 6.0
     (sd / f"{session_id}.json").write_text(json.dumps({
-        "segments": [],
+        "segments": segments,
         "speakers": [{"id": s, "label": s} for s in speakers],
     }))
 

@@ -49,6 +49,51 @@ def _delete_audio_enabled() -> bool:
     return os.environ.get("VEZIR_DELETE_AUDIO", "").lower() in ("1", "true", "yes")
 
 
+def _tiny_speaker_thresholds() -> tuple[float, int]:
+    """Thresholds below which an unresolved raw speaker is treated as noise.
+
+    The dual-diarize path can split a backchannel one-liner or a distorted
+    blip on the system channel into its own ``REMOTE``/``SPEAKER_n`` cluster
+    that voiceprint never matches.  A single such cluster otherwise forces an
+    otherwise-clean session into ``needs_labeling``.  We ignore any unresolved
+    raw speaker with ``<=`` this much speech AND ``<=`` this many segments.
+
+    Defaults (5.0s, 3 segments) match the millet-side ``absorb_tiny_speakers``
+    constants.  Override with ``VEZIR_TINY_SPEAKER_MAX_SECONDS`` /
+    ``VEZIR_TINY_SPEAKER_MAX_SEGMENTS``.
+    """
+    try:
+        secs = float(os.environ.get("VEZIR_TINY_SPEAKER_MAX_SECONDS", "5.0"))
+    except ValueError:
+        secs = 5.0
+    try:
+        segs = int(os.environ.get("VEZIR_TINY_SPEAKER_MAX_SEGMENTS", "3"))
+    except ValueError:
+        segs = 3
+    return secs, segs
+
+
+def _speaker_segment_stats(data: dict) -> dict[str, tuple[int, float]]:
+    """Per-speaker ``(segment_count, total_speech_seconds)`` from a transcript.
+
+    Reads the flat ``segments`` array (each ``{start, end, speaker, ...}``).
+    Used to distinguish a substantial unlabeled participant (needs a human)
+    from a tiny noise cluster (safe to ignore).
+    """
+    stats: dict[str, tuple[int, float]] = {}
+    for seg in data.get("segments", []) or []:
+        sid = seg.get("speaker") or ""
+        if not sid:
+            continue
+        try:
+            dur = max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
+        except (TypeError, ValueError):
+            dur = 0.0
+        count, total = stats.get(sid, (0, 0.0))
+        stats[sid] = (count + 1, total + dur)
+    return stats
+
+
 # `millet sync` exits 0 even on git clone/push failures (it catches the
 # RuntimeError and just prints a warning). Vezir scans the log tail for
 # these markers to detect silent failures.
@@ -201,11 +246,29 @@ def _find_artifacts(session_dir: Path) -> dict:
 _UNRESOLVED_RE = re.compile(r"^(YOU|REMOTE(?:_\d+)?|SPEAKER_\d+)$")
 
 
+def _is_tiny_speaker(sid: str, stats: dict[str, tuple[int, float]]) -> bool:
+    """True if speaker ``sid`` is a spurious tiny noise cluster.
+
+    A speaker counts as tiny when its total speech and segment count are both
+    at/below the configured thresholds (see :func:`_tiny_speaker_thresholds`).
+    Such clusters are backchannel one-liners or distorted blips, not a real
+    participant that warrants a human labeling round.
+    """
+    max_secs, max_segs = _tiny_speaker_thresholds()
+    count, total = stats.get(sid, (0, 0.0))
+    return total <= max_secs and count <= max_segs
+
+
 def _has_unresolved_speakers(session_dir: Path) -> bool:
-    """True if any speaker label still looks auto-generated.
+    """True if a *substantial* speaker label still looks auto-generated.
 
     Uses the JSON transcript to inspect the actual speaker IDs after the
-    --auto labeling pass.
+    --auto labeling pass.  An unresolved raw placeholder
+    (``YOU``/``REMOTE``/``REMOTE_N``/``SPEAKER_N``) that is *tiny* — a noise
+    blip or one-line backchannel below the
+    :func:`_tiny_speaker_thresholds` limits — is ignored, so a single
+    unmatchable noise cluster no longer forces the whole session into
+    ``needs_labeling``.  A substantial unlabeled participant still does.
 
     Fix for #6: previously glob'd for ``*.json`` and skipped known
     non-transcript suffixes, but ``.frontmatter.json`` (and any future
@@ -224,14 +287,20 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
     except Exception:
         return False
 
+    stats = _speaker_segment_stats(data)
     speakers = data.get("speakers", []) or []
     for sp in speakers:
         sid = sp.get("id") or ""
         label = sp.get("label") or ""
         # If no label set, fall back to id which will likely be a placeholder.
         effective = label if label else sid
-        if _UNRESOLVED_RE.match(effective):
-            return True
+        if not _UNRESOLVED_RE.match(effective):
+            continue
+        # Ignore spurious tiny noise clusters; only a substantial unlabeled
+        # speaker forces needs_labeling.
+        if _is_tiny_speaker(sid, stats):
+            continue
+        return True
     return False
 
 
@@ -240,7 +309,11 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
 
     ``matched_names`` are confirmed human labels; ``unresolved_ids`` are the
     raw placeholders (``YOU``/``REMOTE``/``SPEAKER_N``) still needing a name.
-    Used by :func:`reauto_label_session` for per-session CLI reporting.
+    Tiny noise clusters (see :func:`_is_tiny_speaker`) are not reported as
+    unresolved — they're ignored exactly as in :func:`_has_unresolved_speakers`
+    — so ``vezir relabel`` reporting stays consistent with the routing
+    decision.  Used by :func:`reauto_label_session` for per-session CLI
+    reporting.
     """
     import json as _json
 
@@ -252,6 +325,7 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
     except Exception:
         return [], []
 
+    stats = _speaker_segment_stats(data)
     matched: list[str] = []
     unresolved: list[str] = []
     for sp in data.get("speakers", []) or []:
@@ -259,6 +333,8 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
         label = sp.get("label") or ""
         effective = label if label else sid
         if _UNRESOLVED_RE.match(effective):
+            if _is_tiny_speaker(sid, stats):
+                continue
             unresolved.append(effective)
         elif effective:
             matched.append(effective)

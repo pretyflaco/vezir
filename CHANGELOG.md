@@ -3,6 +3,30 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.13 — don't route to needs_labeling on a spurious tiny REMOTE
+
+### Fixed
+
+* **A single near-empty, noisy `REMOTE` (or raw `SPEAKER_n`) repeatedly sent
+  sessions to `needs_labeling`.**  In practice every session picked up one
+  REMOTE with a handful of seconds of backchannel ("Thank you.", "Fine.") or
+  heavily distorted noise that voiceprint never matched; that lone placeholder
+  forced a human labeling round even when the real conversation was fine.
+
+  `_has_unresolved_speakers()` now ignores an unresolved raw speaker
+  (`YOU`/`REMOTE`/`REMOTE_N`/`SPEAKER_N`) that is *tiny* — at or below
+  `VEZIR_TINY_SPEAKER_MAX_SECONDS` (default 5.0 s) of speech **and**
+  `VEZIR_TINY_SPEAKER_MAX_SEGMENTS` (default 3) segments.  A session routes to
+  `needs_labeling` only when a *substantial* speaker is still unlabeled.
+  `_speaker_resolution()` (used by `vezir relabel`) applies the same rule so
+  reporting stays consistent.
+
+  This is the service-layer safety net for the millet-side `0.12.15`
+  `absorb_tiny_speakers()` fix; it takes effect immediately for new sessions
+  and, via `vezir relabel`, clears already-stuck sessions.  Two new env vars
+  (`VEZIR_TINY_SPEAKER_MAX_SECONDS`, `VEZIR_TINY_SPEAKER_MAX_SEGMENTS`) let
+  operators tune the noise threshold.
+
 ## 0.8.12 — remove sessions from a team
 
 ### Added
