@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -349,13 +350,87 @@ def _delete_audio(session_dir: Path) -> None:
     if not _delete_audio_enabled():
         log.debug("audio deletion disabled (VEZIR_DELETE_AUDIO not set)")
         return
-    for pattern in ("*.wav", "*.ogg", "*.mp3"):
+    for pattern in ("*.wav", "*.ogg", "*.mp3", "*.part-*"):
         for f in session_dir.glob(pattern):
             try:
                 f.unlink()
                 log.info("deleted audio: %s", f)
             except Exception as exc:
                 log.warning("could not delete %s: %s", f, exc)
+
+
+def _merge_multi_audio(session_dir: Path, job_id: str, log_path: Path) -> None:
+    """Concatenate ``<id>.part-NNN<ext>`` files into the canonical ``<id><ext>``.
+
+    A multi-audio meeting (v0.9.0) lands as several ordered part files (one
+    upload per Telegram voicenote, etc.).  Before transcribe we stitch them,
+    in filename order, into the single audio file millet expects.
+
+    Uses ffmpeg's concat demuxer with ``-c copy`` (all parts share a codec, so
+    this is a fast remux); falls back to re-encoding to Opus if the stream copy
+    fails (e.g. mismatched parameters).  Idempotent: a single part is renamed,
+    and a no-part dir is left untouched.
+    """
+    parts = sorted(session_dir.glob(f"{job_id}.part-*"))
+    if not parts:
+        return  # not a multi-audio session (or already merged)
+
+    ext = parts[0].suffix
+    out = session_dir / f"{job_id}{ext}"
+
+    log.info("merging %d audio part(s) for session %s -> %s",
+             len(parts), job_id, out.name)
+
+    if len(parts) == 1:
+        parts[0].replace(out)
+        config.secure_chmod_file(out)
+        return
+
+    # Write a concat list file (ffmpeg concat demuxer, safe mode off so we can
+    # use absolute paths).  Single-quote-escape per ffmpeg's syntax.
+    concat_list = session_dir / f"{job_id}.concat.txt"
+    lines = []
+    for p in parts:
+        esc = str(p).replace("'", r"'\''")
+        lines.append(f"file '{esc}'")
+    config.secure_write_text(concat_list, "\n".join(lines) + "\n")
+
+    copy_cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_list), "-c", "copy", str(out),
+    ]
+    reencode_cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_list), "-c:a", "libopus", "-b:a", "48k", str(out),
+    ]
+
+    def _run(cmd: list[str]) -> int:
+        with log_path.open("a", encoding="utf-8") as lf:
+            lf.write(f"\n[merge] {' '.join(cmd)}\n")
+            lf.flush()
+            proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        return proc.returncode
+
+    rc = _run(copy_cmd)
+    if rc != 0 or not out.exists() or out.stat().st_size == 0:
+        log.warning(
+            "concat -c copy failed for %s (rc=%s); re-encoding to opus",
+            job_id, rc,
+        )
+        out.unlink(missing_ok=True)
+        rc = _run(reencode_cmd)
+        if rc != 0 or not out.exists() or out.stat().st_size == 0:
+            raise RuntimeError(
+                f"ffmpeg failed to merge {len(parts)} audio parts "
+                f"for session {job_id} (rc={rc}); see {log_path}"
+            )
+
+    config.secure_chmod_file(out)
+    concat_list.unlink(missing_ok=True)
+    for p in parts:
+        p.unlink(missing_ok=True)
+    log.info("merged session %s into %s (%d bytes)",
+             job_id, out.name, out.stat().st_size)
 
 
 def process_one(job: dict) -> None:
@@ -381,6 +456,19 @@ def process_one(job: dict) -> None:
         return
 
     try:
+        # 0. multi-audio: stitch ordered part files into one canonical audio
+        # file before transcribe.  Gated on the job flag, but the helper also
+        # no-ops when no part files are present, so a re-run is safe.
+        if job.get("multi_audio"):
+            try:
+                _merge_multi_audio(sd, job_id, log_path)
+            except Exception as exc:
+                queue.update_status(
+                    job_id, "error",
+                    error=f"audio merge failed: {exc}",
+                )
+                return
+
         # 1. transcribe
         requested_preset = job.get("summary_preset")
         rc = meet_runner.transcribe(

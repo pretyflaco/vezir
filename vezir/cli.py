@@ -300,6 +300,161 @@ def upload_cmd(server_url, token, team, title, compress, preset, auto_label, syn
         poll_status(server_url, token, result["session_id"], timeout=float(wait_timeout))
 
 
+@main.command("upload-multi")
+@click.option("--server", "server_url", default=None,
+              help="Server URL (default $VEZIR_URL)")
+@click.option("--token", default=None,
+              help="Bearer token (default $VEZIR_TOKEN)")
+@click.option("--team", "team", default=None,
+              help="Team slug/id to upload to (default: active team in "
+                   "teams.json or $VEZIR_TEAM_ID)")
+@click.option("--title", default=None,
+              help="Optional meeting title")
+@click.option("--dir", "from_dir", default=None,
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              help="Directory of audio files to treat as one meeting "
+                   "(.wav/.ogg/.mp3, merged in filename order)")
+@click.option("--preset",
+    type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
+    default=None,
+    help="Summarization quality/privacy preset")
+@click.option("--auto-label/--no-auto-label", "auto_label", default=None,
+              help="Auto-label speakers against the central voiceprint DB "
+                   "(default: on; persists across launches)")
+@click.option("--sync/--no-sync", "sync", default=None,
+              help="Sync session artifacts to the configured destination "
+                   "repo (default: on; persists across launches)")
+@click.option("--wait/--no-wait", default=False,
+              help="Wait for server processing and report status (default: off)")
+@click.option("--wait-timeout", default=600, type=int,
+              help="Max seconds to wait for processing (default: 600)")
+@click.option("--personal", is_flag=True, default=False,
+              help="Mark upload as personal (private to you, never synced).")
+@click.argument(
+    "audio_files",
+    nargs=-1,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+def upload_multi_cmd(server_url, token, team, title, from_dir, preset, auto_label,
+                     sync, wait, wait_timeout, personal, audio_files):
+    """Upload several audio files as ONE meeting.
+
+    Pass multiple files, or a directory via --dir.  Files are merged in
+    filename order (e.g. timestamped Telegram voicenotes) into a single
+    meeting on the server before transcription.
+
+        vezir upload-multi a.ogg b.ogg c.ogg --title "Standup"
+        vezir upload-multi --dir ./voicenotes/ --no-auto-label
+    """
+    from .client import uploader
+    from .client.config import load_client_prefs, save_client_prefs
+
+    prefs = load_client_prefs()
+    if auto_label is None:
+        auto_label = prefs.get("auto_label", True)
+    else:
+        prefs["auto_label"] = auto_label
+        save_client_prefs(prefs)
+    if sync is None:
+        sync = prefs.get("sync", True)
+    else:
+        prefs["sync"] = sync
+        save_client_prefs(prefs)
+
+    # Collect + order the input files (filename order).
+    paths: list[Path] = list(audio_files)
+    if from_dir:
+        for ext in (".wav", ".ogg", ".mp3"):
+            paths.extend(sorted(Path(from_dir).glob(f"*{ext}")))
+    # De-dup while preserving order, then sort by filename for determinism.
+    seen: set = set()
+    deduped: list[Path] = []
+    for p in paths:
+        rp = p.resolve()
+        if rp not in seen:
+            seen.add(rp)
+            deduped.append(p)
+    paths = sorted(deduped, key=lambda p: p.name)
+    if not paths:
+        click.echo(
+            "vezir: error: no audio files given; pass files or --dir <dir>",
+            err=True,
+        )
+        sys.exit(1)
+
+    def on_retry(attempt: int, retries: int, exc: Exception) -> None:
+        click.echo(
+            f"\nvezir: upload attempt {attempt}/{retries} failed; "
+            f"retrying: {exc}"
+        )
+
+    from .client.config import resolve_credentials, team_credentials
+
+    team_id: str | None = None
+    if team:
+        t_id, t_url, t_token = team_credentials(team)
+        if t_id is None:
+            team_id = team
+        else:
+            team_id = t_id
+            server_url = server_url or t_url
+            token = token or t_token
+    if server_url is None or token is None or team_id is None:
+        r_url, r_token, r_team, _src = resolve_credentials()
+        server_url = server_url or r_url
+        token = token or r_token
+        if team_id is None:
+            team_id = r_team
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
+        sys.exit(1)
+    config.validate_token_format(token)
+    if not team_id:
+        click.echo(
+            "vezir: error: no team selected; pass --team <slug>, set "
+            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
+            err=True,
+        )
+        sys.exit(1)
+
+    if personal:
+        sync = False
+
+    click.echo(
+        f"vezir: uploading {len(paths)} file(s) as one meeting to "
+        f"{server_url} ..."
+    )
+    for i, p in enumerate(paths):
+        click.echo(f"  [{i:03d}] {p.name}")
+    try:
+        result = uploader.upload_multi(
+            server_url, token, paths,
+            title=title,
+            summary_preset=preset,
+            auto_label=auto_label,
+            sync=sync,
+            personal=personal,
+            on_retry=on_retry,
+            team_id=team_id,
+        )
+    except Exception as exc:
+        click.echo(f"vezir: error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"vezir: uploaded as session {result['session_id']}")
+    if "parts" in result:
+        click.echo(f"vezir: parts: {result['parts']}")
+    if "bytes" in result:
+        click.echo(f"vezir: bytes uploaded: {result['bytes']:,}")
+
+    if wait:
+        from .client.scribe import poll_status
+        click.echo("vezir: waiting for processing ...")
+        poll_status(server_url, token, result["session_id"], timeout=float(wait_timeout))
+
+
 # ── tui ───────────────────────────────────────────────────────────────────────
 
 @main.command()

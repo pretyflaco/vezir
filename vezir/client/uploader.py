@@ -224,6 +224,118 @@ def upload(
     raise RuntimeError(f"upload failed after {retries} attempts")
 
 
+def upload_multi(
+    server_url: str,
+    token: str,
+    audio_paths: list[Path],
+    title: str | None = None,
+    summary_preset: str | None = None,
+    auto_label: bool = True,
+    sync: bool = True,
+    personal: bool = False,
+    timeout: float = 600.0,
+    retries: int = 5,
+    on_retry: RetryCallback | None = None,
+    verify: bool | str | None = None,
+    team_id: str | None = None,
+) -> dict:
+    """POST multiple audio files as one meeting to <server_url>/upload/multi.
+
+    The files are sent in the order given; the server preserves that order
+    and the worker concatenates them (filename order on disk) before
+    transcribe.  Returns the JSON response: {session_id, bytes, parts}.
+
+    Whole-batch retry on connection errors / 5xx (one bucket hit per
+    meeting).  A 404/405 means the server predates v0.9.0; the caller
+    should surface a clear "server too old" message.
+    """
+    if not audio_paths:
+        raise ValueError("upload_multi requires at least one audio file")
+
+    url = server_url.rstrip("/") + "/upload/multi"
+    headers = _auth_headers(token, team_id)
+
+    paths = [validate_audio_path(p) for p in audio_paths]
+    exts = {p.suffix.lower() for p in paths}
+    if len(exts) > 1:
+        raise ValueError(
+            f"all parts must share one audio type; got {sorted(exts)}"
+        )
+    expected_bytes = sum(p.stat().st_size for p in paths)
+
+    from .api import VezirClient
+    resolved_verify = VezirClient._resolve_verify(verify)
+
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        opened: list = []
+        try:
+            files = []
+            for p in paths:
+                f = p.open("rb")
+                opened.append(f)
+                files.append(
+                    ("audio", (p.name, f, CONTENT_TYPES[p.suffix.lower()]))
+                )
+            data = {"audio_bytes": str(expected_bytes)}
+            if title:
+                data["title"] = title
+            if summary_preset:
+                data["summary_preset"] = summary_preset
+            data["auto_label"] = "true" if auto_label else "false"
+            data["sync"] = "true" if sync else "false"
+            if personal:
+                data["personal"] = "true"
+            with httpx.Client(timeout=timeout, verify=resolved_verify) as client:
+                resp = client.post(url, headers=headers, files=files, data=data)
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get("bytes") != expected_bytes:
+                    raise RuntimeError(
+                        f"upload byte mismatch: server received "
+                        f"{result.get('bytes')} but local parts total "
+                        f"{expected_bytes} bytes"
+                    )
+                return result
+            if resp.status_code in (404, 405):
+                raise RuntimeError(
+                    "server does not support multi-audio uploads "
+                    "(requires vezir >= 0.9.0)"
+                )
+            if 500 <= resp.status_code < 600:
+                log.warning(
+                    "multi upload attempt %d/%d: server %d %s",
+                    attempt, retries, resp.status_code, resp.text[:200],
+                )
+            else:
+                resp.raise_for_status()
+                return resp.json()
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
+            will_retry = attempt < retries
+            log.warning(
+                "multi upload attempt %d/%d failed%s: %s",
+                attempt, retries,
+                "; retrying" if will_retry else "", exc,
+            )
+            if will_retry and on_retry is not None:
+                on_retry(attempt, retries, exc)
+            last_exc = exc
+        finally:
+            for f in opened:
+                f.close()
+        if attempt < retries:
+            time.sleep(min(2 ** attempt, 30))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"multi upload failed after {retries} attempts")
+
+
 # ─── Resumable upload client (tus subset, v0.7.3+) ───────────────────────────
 
 _RESUMABLE_NET_ERRORS = (

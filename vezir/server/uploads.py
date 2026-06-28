@@ -206,6 +206,133 @@ async def upload(
     }
 
 
+# ─── Multi-audio upload (v0.9.0) ─────────────────────────────────────────────
+#
+# A single meeting split across several audio files (e.g. a batch of Telegram
+# voicenotes).  All parts are uploaded in one multipart request, stored as
+# ``<session_id>.part-NNN<ext>`` in filename/upload order, and stitched into the
+# canonical ``<session_id><ext>`` by the worker (filename order) before
+# transcribe.  One upload -> one session -> one job (multi_audio=1).
+
+
+@router.post("/upload/multi", dependencies=[Depends(ratelimit.limit_upload)])
+async def upload_multi(
+    request: Request,
+    audio: list[UploadFile] = File(...),
+    title: str | None = Form(default=None),
+    summary_preset: str | None = Form(default=None),
+    auto_label: str | None = Form(default=None),
+    sync: str | None = Form(default=None),
+    personal: str | None = Form(default=None),
+    audio_bytes: int | None = Form(default=None),
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Accept multiple audio files as a single meeting.
+
+    The client is responsible for ordering the files (it sends them in the
+    desired order); the server preserves that order via a zero-padded
+    ``.part-NNN`` suffix.  The worker concatenates them before transcribe.
+    """
+    github, team_id, _admin = auth_triple
+    auto_label_enabled = _parse_bool_form(auto_label, default=True)
+    sync_enabled = _parse_bool_form(sync, default=True)
+    is_personal = _parse_bool_form(personal, default=False)
+
+    if not audio:
+        raise HTTPException(status_code=400, detail="no audio files provided")
+
+    config.ensure_dirs()
+    max_bytes = config.max_upload_bytes()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="upload too large")
+        except ValueError:
+            pass
+
+    session_id = ulid.new().str
+    sdir = config.sessions_dir() / session_id
+    config.secure_mkdir(sdir)
+
+    # All parts must share one extension so the concatenated output has a
+    # single, unambiguous container.  We pick the extension from the first
+    # part and require the rest to agree.
+    first_ext = _pick_extension(audio[0].filename, audio[0].content_type)
+
+    total_written = 0
+    try:
+        for idx, part_file in enumerate(audio):
+            ext = _pick_extension(part_file.filename, part_file.content_type)
+            if ext != first_ext:
+                raise HTTPException(
+                    status_code=415,
+                    detail=(
+                        f"all parts must share one audio type; part {idx} is "
+                        f"{ext}, expected {first_ext}"
+                    ),
+                )
+            out = sdir / f"{session_id}.part-{idx:03d}{ext}"
+            with out.open("wb") as f:
+                config.secure_chmod_file(out)
+                first_chunk = True
+                while True:
+                    chunk = await part_file.read(CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if first_chunk:
+                        _validate_magic(ext, chunk)
+                        first_chunk = False
+                    total_written += len(chunk)
+                    if total_written > max_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="upload too large"
+                        )
+                    f.write(chunk)
+            config.secure_chmod_file(out)
+        if audio_bytes is not None and total_written != audio_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"upload incomplete: received {total_written} bytes, "
+                    f"expected {audio_bytes}"
+                ),
+            )
+    except HTTPException:
+        for stale in sdir.glob(f"{session_id}.part-*"):
+            stale.unlink(missing_ok=True)
+        try:
+            sdir.rmdir()
+        except OSError:
+            pass
+        raise
+
+    log.info(
+        "multi upload accepted: session=%s github=%s team=%s parts=%d bytes=%d "
+        "ext=%s title=%r summary_preset=%r auto_label=%s sync=%s personal=%s",
+        session_id, github, team_id, len(audio), total_written, first_ext,
+        title, summary_preset, auto_label_enabled, sync_enabled, is_personal,
+    )
+
+    queue.enqueue(
+        session_id,
+        github=github,
+        team_id=team_id,
+        title=title,
+        summary_preset=summary_preset,
+        auto_label_enabled=auto_label_enabled,
+        sync_enabled=sync_enabled,
+        personal=is_personal,
+        multi_audio=True,
+    )
+
+    return {
+        "session_id": session_id,
+        "bytes": total_written,
+        "parts": len(audio),
+    }
+
+
 # ─── Resumable uploads (tus.io 1.0 subset, v0.7.3+) ──────────────────────────
 #
 # Protocol:

@@ -25,6 +25,12 @@ Tables
                          members' session lists (only the uploader sees it).
                          Personal sessions force sync_enabled=0 server-side.
                          Default 0.
+    multi_audio          0/1.  When 1, the session dir holds multiple
+                         ``<id>.part-NNN<ext>`` audio files (one meeting split
+                         across several uploads, e.g. Telegram voicenotes).
+                         The worker concatenates them in filename order into the
+                         single canonical ``<id><ext>`` before transcribe.
+                         Default 0.
     status               one of: queued, transcribing, summarizing,
                          needs_labeling, syncing, done, error
     created_at           ISO timestamp
@@ -75,6 +81,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     summary_preset      TEXT,
     auto_label_enabled  INTEGER NOT NULL DEFAULT 1,
     sync_enabled        INTEGER NOT NULL DEFAULT 1,
+    multi_audio         INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
@@ -223,6 +230,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
                 "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE jobs ADD COLUMN multi_audio INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
                 "ALTER TABLE jobs ADD COLUMN sync_error TEXT",
                 "ALTER TABLE jobs ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
@@ -269,6 +277,7 @@ def enqueue(
     auto_label_enabled: bool = True,
     sync_enabled: bool = True,
     personal: bool = False,
+    multi_audio: bool = False,
 ) -> None:
     """Add a new job in `queued` state.
 
@@ -294,14 +303,15 @@ def enqueue(
     with _conn() as c:
         c.execute(
             "INSERT INTO jobs (id, github, team_id, title, summary_preset, "
-            "auto_label_enabled, sync_enabled, personal, status, "
+            "auto_label_enabled, sync_enabled, personal, multi_audio, status, "
             "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
             (
                 job_id, github, team_id, title, summary_preset,
                 1 if auto_label_enabled else 0,
                 1 if sync_enabled else 0,
                 1 if personal else 0,
+                1 if multi_audio else 0,
                 _now(), _now(),
             ),
         )

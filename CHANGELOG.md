@@ -3,6 +3,50 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.9.0 — multiple audio files as one meeting
+
+### Added
+
+* **Multi-audio meetings.**  A single meeting can now be uploaded as several
+  audio files (e.g. a batch of Telegram voicenotes saved as separate `.ogg`
+  files).  The files are concatenated, in filename order, into one continuous
+  recording on the server before transcription — so the team gets one
+  transcript, one summary, and one PDF.
+
+  * New endpoint `POST /upload/multi` — multipart with repeated `audio`
+    fields.  Each part is magic-validated, stored as
+    `sessions/<id>/<id>.part-NNN<ext>` in upload order, and the aggregate size
+    is capped by `VEZIR_MAX_UPLOAD_BYTES`.  All parts must share one audio
+    type.  Enqueues a single job with the new `multi_audio` flag.
+  * New `jobs.multi_audio` column (idempotent additive migration; legacy rows
+    default `0`).
+  * Worker step 0: `_merge_multi_audio()` stitches the part files with
+    ffmpeg's concat demuxer (`-c copy`; re-encode-to-Opus fallback) into the
+    canonical `<id><ext>` before `millet transcribe`.  Idempotent and
+    safe to re-run after a restart.
+  * New CLI `vezir upload-multi <files...>` / `--dir <dir>` — orders by
+    filename, de-dups, and uploads as one meeting.  Mirrors `vezir upload`
+    options (`--title/--preset/--auto-label/--sync/--personal/--wait`).
+  * New client `uploader.upload_multi()` — whole-batch retry; a `404/405`
+    surfaces a clear "server requires vezir >= 0.9.0" message.
+
+### Changed
+
+* **`millet transcribe <dir>` no longer silently transcribes only the first of
+  several audio files.**  When a directory holds more than one audio file it
+  now errors with the file listing instead of quietly dropping the rest of the
+  meeting (millet-pipeline change, coordinated with this release).  A single
+  file in a directory still resolves as before — which is what Vezir relies on
+  after the worker merges the parts.
+
+### Tests
+
+* 780 passing (was 766 in 0.8.13).  +14 tests: `/upload/multi` ordering,
+  magic-validation per part, mixed-type rejection, aggregate size cap, the
+  `multi_audio` flag round-trip, `vezir upload-multi` filename ordering / dir
+  expansion / empty-input error, and the worker merge (order, single-part
+  rename, no-op, re-encode fallback, hard-fail).
+
 ## 0.8.13 — don't route to needs_labeling on a spurious tiny REMOTE
 
 ### Fixed

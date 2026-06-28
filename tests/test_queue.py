@@ -47,6 +47,20 @@ def test_invalid_status(tmp_data):
         queue.update_status("01HZ000000000000000000NOPE", "bogus")
 
 
+def test_multi_audio_flag_roundtrips(tmp_data):
+    from vezir.server import queue
+    queue.enqueue(
+        "01HZ00000000000000MULTI001", github="alice", team_id="blink",
+        multi_audio=True,
+    )
+    queue.enqueue(
+        "01HZ00000000000000SINGLE01", github="alice", team_id="blink",
+    )
+    assert queue.get("01HZ00000000000000MULTI001")["multi_audio"] == 1
+    # Default is 0 (single-file / legacy rows).
+    assert queue.get("01HZ00000000000000SINGLE01")["multi_audio"] == 0
+
+
 def test_connection_pragmas(tmp_data):
     """WAL + busy_timeout + foreign_keys are applied on every connection."""
     from vezir.server import queue

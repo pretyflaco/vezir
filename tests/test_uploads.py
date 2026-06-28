@@ -273,3 +273,167 @@ def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "compressing WAV" in result.output
+
+
+# ─── Multi-audio upload (v0.9.0) ─────────────────────────────────────────────
+
+
+def _ogg(marker: bytes) -> bytes:
+    return b"OggS" + marker + b"\x00" * 64
+
+
+def test_upload_multi_stores_ordered_parts(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload/multi",
+        headers=_bearer(token),
+        files=[
+            ("audio", ("a.ogg", _ogg(b"A"), "audio/ogg")),
+            ("audio", ("b.ogg", _ogg(b"B"), "audio/ogg")),
+            ("audio", ("c.ogg", _ogg(b"C"), "audio/ogg")),
+        ],
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["parts"] == 3
+    sid = body["session_id"]
+    sdir = tmp_data / "sessions" / sid
+    parts = sorted(p.name for p in sdir.glob(f"{sid}.part-*"))
+    assert parts == [
+        f"{sid}.part-000.ogg",
+        f"{sid}.part-001.ogg",
+        f"{sid}.part-002.ogg",
+    ]
+    # Order preserved: part-000 holds the first uploaded file.
+    assert (sdir / f"{sid}.part-000.ogg").read_bytes() == _ogg(b"A")
+    assert (sdir / f"{sid}.part-002.ogg").read_bytes() == _ogg(b"C")
+    assert _mode(sdir / f"{sid}.part-000.ogg") == 0o600
+
+
+def test_upload_multi_enqueues_one_multi_job(client_and_token):
+    client, token, tmp_data = client_and_token
+    from vezir.server import queue
+
+    resp = client.post(
+        "/upload/multi",
+        headers=_bearer(token),
+        files=[
+            ("audio", ("a.ogg", _ogg(b"A"), "audio/ogg")),
+            ("audio", ("b.ogg", _ogg(b"B"), "audio/ogg")),
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    sid = resp.json()["session_id"]
+    job = queue.get(sid)
+    assert job is not None
+    assert job["multi_audio"] == 1
+    assert job["status"] == "queued"
+
+
+def test_upload_multi_rejects_mixed_types(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload/multi",
+        headers=_bearer(token),
+        files=[
+            ("audio", ("a.ogg", _ogg(b"A"), "audio/ogg")),
+            ("audio", ("b.wav", _wav_bytes(), "audio/wav")),
+        ],
+    )
+    assert resp.status_code == 415
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
+def test_upload_multi_validates_each_magic(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload/multi",
+        headers=_bearer(token),
+        files=[
+            ("audio", ("a.ogg", _ogg(b"A"), "audio/ogg")),
+            ("audio", ("b.ogg", b"not ogg at all", "audio/ogg")),
+        ],
+    )
+    assert resp.status_code == 415
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
+def test_upload_multi_aggregate_size_cap(monkeypatch, client_and_token):
+    client, token, tmp_data = client_and_token
+    monkeypatch.setenv("VEZIR_MAX_UPLOAD_BYTES", "100")
+
+    resp = client.post(
+        "/upload/multi",
+        headers=_bearer(token),
+        files=[
+            ("audio", ("a.ogg", _ogg(b"A") + b"x" * 80, "audio/ogg")),
+            ("audio", ("b.ogg", _ogg(b"B") + b"y" * 80, "audio/ogg")),
+        ],
+    )
+    assert resp.status_code == 413
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
+def test_cli_upload_multi_orders_dir_by_filename(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from vezir import cli
+    from vezir.client import uploader
+
+    # Create out-of-order on disk; the CLI must sort by filename.
+    d = tmp_path / "notes"
+    d.mkdir()
+    (d / "audio_3.ogg").write_bytes(b"OggS3")
+    (d / "audio_1.ogg").write_bytes(b"OggS1")
+    (d / "audio_2.ogg").write_bytes(b"OggS2")
+
+    captured = {}
+
+    def fake_upload_multi(server_url, token, audio_paths, **kwargs):
+        captured["names"] = [p.name for p in audio_paths]
+        captured["title"] = kwargs.get("title")
+        captured["auto_label"] = kwargs.get("auto_label")
+        return {"session_id": "01MULTI", "bytes": 15, "parts": len(audio_paths)}
+
+    monkeypatch.setattr(uploader, "upload_multi", fake_upload_multi)
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "upload-multi",
+            "--dir", str(d),
+            "--server", "http://server.test",
+            "--token", "vzr_test",
+            "--team", "blink",
+            "--title", "Edwin feedback",
+            "--no-auto-label",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["names"] == ["audio_1.ogg", "audio_2.ogg", "audio_3.ogg"]
+    assert captured["title"] == "Edwin feedback"
+    assert captured["auto_label"] is False
+    assert "uploaded as session 01MULTI" in result.output
+    assert "parts: 3" in result.output
+
+
+def test_cli_upload_multi_errors_without_files(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from vezir import cli
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "upload-multi",
+            "--server", "http://server.test",
+            "--token", "vzr_test",
+            "--team", "blink",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no audio files" in result.output
