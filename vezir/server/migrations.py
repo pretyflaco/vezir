@@ -817,11 +817,39 @@ def migrate_0_7_4() -> dict:
     return summary
 
 
+def migrate_0_10_0() -> dict:
+    """Create the ``sessions`` table for rotating refresh-token sessions.
+
+    Purely additive: materializes ``queue.SCHEMA`` (which now includes the
+    ``sessions`` table and its indexes) so an existing data dir gains the
+    new table without a server restart race.  Idempotent — the schema uses
+    ``CREATE TABLE IF NOT EXISTS`` throughout, so re-running is a no-op.
+    No data is moved; existing 24h session JWTs and ``vzr_`` tokens are
+    untouched and keep working until they expire.
+    """
+    version = "0.10.0-sessions"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        c.commit()
+
+    _mark_applied(version)
+    log.info("migration %s complete; sessions table ready", version)
+    return {"version": version, "sessions_table": "ready"}
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
 ALL_MIGRATIONS = [
     migrate_0_6_0, migrate_0_6_2, migrate_0_7_0, migrate_0_7_2, migrate_0_7_4,
+    migrate_0_10_0,
 ]
 
 

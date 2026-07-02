@@ -98,8 +98,14 @@ def test_login_success_returns_jwt(client, tmp_data):
     assert body["github"] == "alice"
     assert body["is_admin"] is False
     assert body["npub"] == pubkey
-    assert body["expires_in"] == 24 * 60 * 60
+    # 0.8.10: login now mints a short-lived access token (default 60m) plus
+    # a rotating refresh token.
+    assert body["expires_in"] == 60 * 60
     assert body["session_jwt"].count(".") == 2
+    assert body["access_jwt"] == body["session_jwt"]
+    assert body["refresh_token"].startswith("vzrt_")
+    assert body["refresh_expires_in"] == 7 * 24 * 60 * 60
+    assert body["sid"]
 
 
 def test_session_jwt_works_on_api_me(client, tmp_data):

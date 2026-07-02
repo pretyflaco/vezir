@@ -643,3 +643,113 @@ def test_e2e_get_team(live_server):
     result = live_server.get_team()
     assert result.is_ok()
     assert isinstance(result.unwrap(), list)
+
+
+# ─── transparent refresh-and-retry (0.8.10) ──────────────────────────────────
+
+
+def _seed_nostr_team(monkeypatch, tmp_path, *, refresh_token=None):
+    """Write a teams.json with an active nostr team; patch HOME to it."""
+    import json as _json
+    from pathlib import Path
+
+    from vezir import config as server_config
+
+    cfgdir = tmp_path / ".config" / "vezir"
+    cfgdir.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    entry = {
+        "id": "blink", "url": "https://test", "token": "eyJ.old.access",
+        "auth": "nostr", "npub": "ab",
+    }
+    if refresh_token is not None:
+        entry["refresh_token"] = refresh_token
+    server_config.secure_write_text(
+        cfgdir / "teams.json",
+        _json.dumps({"teams": [entry], "active": "blink"}),
+    )
+
+
+def test_refresh_and_retry_on_401(monkeypatch, tmp_path, mocked_client):
+    """A 401 triggers a silent refresh, then the original call is retried."""
+    _seed_nostr_team(monkeypatch, tmp_path, refresh_token="vzrt_old")
+
+    calls = {"me": 0, "refresh": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/refresh":
+            calls["refresh"] += 1
+            body = _json_loads(request.content)
+            assert body["refresh_token"] == "vzrt_old"
+            return httpx.Response(200, json={
+                "access_jwt": "eyJ.new.access",
+                "session_jwt": "eyJ.new.access",
+                "refresh_token": "vzrt_new",
+                "expires_in": 3600,
+                "refresh_expires_in": 604800,
+            })
+        # /api/me: 401 on the first (stale) token, 200 once refreshed.
+        calls["me"] += 1
+        if request.headers["authorization"] == "Bearer eyJ.new.access":
+            return httpx.Response(200, json={"github": "alice"})
+        return httpx.Response(401, text="invalid bearer token")
+
+    client = mocked_client(handler, team_id="blink")
+    result = client.get_me()
+    assert result.is_ok(), result.error_message()
+    assert result.unwrap()["github"] == "alice"
+    assert calls["refresh"] == 1
+    assert calls["me"] == 2  # original 401 + retry
+    # In-memory token was rebound to the refreshed access token.
+    assert client.token == "eyJ.new.access"
+
+
+def test_refresh_persists_rotated_pair(monkeypatch, tmp_path, mocked_client):
+    """After a silent refresh, teams.json holds the rotated tokens."""
+    from vezir.client import config as client_config
+
+    _seed_nostr_team(monkeypatch, tmp_path, refresh_token="vzrt_old")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/refresh":
+            return httpx.Response(200, json={
+                "access_jwt": "eyJ.new.access",
+                "refresh_token": "vzrt_new",
+                "expires_in": 3600,
+                "refresh_expires_in": 604800,
+            })
+        if request.headers["authorization"] == "Bearer eyJ.new.access":
+            return httpx.Response(200, json={"github": "alice"})
+        return httpx.Response(401, text="invalid bearer token")
+
+    client = mocked_client(handler, team_id="blink")
+    client.get_me()
+
+    assert client_config.active_team_refresh_token() == "vzrt_new"
+    _team_id, _url, token = client_config.active_team_credentials()
+    assert token == "eyJ.new.access"
+
+
+def test_no_refresh_without_refresh_token(monkeypatch, tmp_path, mocked_client):
+    """A 401 with no stored refresh token surfaces as-is (no retry)."""
+    _seed_nostr_team(monkeypatch, tmp_path, refresh_token=None)
+
+    calls = {"me": 0, "refresh": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/refresh":
+            calls["refresh"] += 1
+            return httpx.Response(200, json={})
+        calls["me"] += 1
+        return httpx.Response(401, text="invalid bearer token")
+
+    client = mocked_client(handler, team_id="blink")
+    result = client.get_me()
+    assert result.is_auth_error()
+    assert calls["refresh"] == 0
+    assert calls["me"] == 1  # no retry
+
+
+def _json_loads(content):
+    import json as _json
+    return _json.loads(content)

@@ -300,34 +300,141 @@ class VezirClient:
             h["X-Team-Id"] = self.team_id
         return h
 
-    def _get(self, path: str, *, timeout: httpx.Timeout | None = None) -> ApiResult:
-        url = f"{self.base_url}{path}"
+    def _try_refresh(self) -> bool:
+        """Attempt a silent token refresh; return True iff it succeeded.
+
+        Exchanges the active team's stored refresh token at
+        ``POST /api/auth/refresh`` for a fresh access/refresh pair, rebinds
+        ``self.token`` in-memory, and persists the rotated pair to
+        teams.json.  Best-effort: any missing refresh token, network error,
+        or non-2xx response returns False so the caller surfaces the
+        original 401 (which prompts a full re-login).
+
+        Refresh tokens rotate on every use, so persisting the new one is
+        mandatory — the old one is now consumed server-side.
+        """
+        try:
+            from .config import (
+                active_team_refresh_token,
+                load_teams_config,
+                set_team_session,
+            )
+        except Exception:
+            return False
+
+        refresh_token = active_team_refresh_token()
+        if not refresh_token:
+            return False
+
+        url = f"{self.base_url}/api/auth/refresh"
         try:
             with httpx.Client(
-                timeout=timeout or self._timeout, verify=self._verify,
+                timeout=self._timeout, verify=self._verify,
             ) as c:
-                r = c.get(url, headers=self._headers())
-        except httpx.HTTPError as exc:
-            return ApiResult.network(exc)
-        if r.status_code != 200:
-            return ApiResult.http(r.status_code, r.text[:200])
+                r = c.post(
+                    url,
+                    headers={"Content-Type": "application/json"},
+                    json={"refresh_token": refresh_token},
+                )
+        except httpx.HTTPError:
+            return False
+        if not (200 <= r.status_code < 300):
+            log.info("token refresh rejected (%s); full re-login required",
+                     r.status_code)
+            return False
         try:
-            return ApiResult.success(r.json())
-        except Exception as exc:  # json decode error
-            return ApiResult.network(exc)
+            body = r.json()
+        except Exception:
+            return False
+        new_access = body.get("access_jwt") or body.get("session_jwt")
+        new_refresh = body.get("refresh_token")
+        if not new_access:
+            return False
+
+        # Rebind in-memory for the immediate retry.
+        self.token = new_access
+
+        # Persist the rotated pair against the active team so the next
+        # process (and this one after restart) uses the fresh tokens.
+        import time as _time
+        try:
+            cfg = load_teams_config()
+            active = cfg.get("active")
+            entry = next(
+                (t for t in cfg.get("teams", []) if t["id"] == active), None,
+            )
+            if entry is not None and entry.get("auth") == "nostr":
+                exp_in = body.get("expires_in")
+                r_exp_in = body.get("refresh_expires_in")
+                set_team_session(
+                    entry["id"],
+                    entry.get("url") or self.base_url,
+                    new_access,
+                    entry.get("npub") or "",
+                    expires_at=(
+                        _time.time() + int(exp_in) if exp_in else None
+                    ),
+                    refresh_token=new_refresh,
+                    refresh_expires_at=(
+                        _time.time() + int(r_exp_in) if r_exp_in else None
+                    ),
+                )
+        except Exception:
+            # Persistence failure doesn't invalidate the in-memory retry;
+            # worst case the refresh repeats next process.
+            log.debug("failed to persist refreshed session", exc_info=True)
+        return True
+
+    def _with_refresh(self, send) -> ApiResult:
+        """Run ``send()``; on a 401, refresh once and retry ``send()``.
+
+        ``send`` is a zero-arg callable returning an ``ApiResult`` that
+        reads ``self.token`` at call time (via ``self._headers()``), so the
+        retry automatically picks up a rebound token.  Only a single retry
+        is attempted — a second 401 means refresh didn't help and the
+        client must fall back to a full re-login.
+        """
+        result = send()
+        if result.is_auth_error() and self._try_refresh():
+            return send()
+        return result
+
+    def _get(self, path: str, *, timeout: httpx.Timeout | None = None) -> ApiResult:
+        url = f"{self.base_url}{path}"
+
+        def send() -> ApiResult:
+            try:
+                with httpx.Client(
+                    timeout=timeout or self._timeout, verify=self._verify,
+                ) as c:
+                    r = c.get(url, headers=self._headers())
+            except httpx.HTTPError as exc:
+                return ApiResult.network(exc)
+            if r.status_code != 200:
+                return ApiResult.http(r.status_code, r.text[:200])
+            try:
+                return ApiResult.success(r.json())
+            except Exception as exc:  # json decode error
+                return ApiResult.network(exc)
+
+        return self._with_refresh(send)
 
     def _get_bytes(self, path: str) -> ApiResult:
         url = f"{self.base_url}{path}"
-        try:
-            with httpx.Client(
-                timeout=_DOWNLOAD_TIMEOUT, verify=self._verify,
-            ) as c:
-                r = c.get(url, headers=self._headers())
-        except httpx.HTTPError as exc:
-            return ApiResult.network(exc)
-        if r.status_code != 200:
-            return ApiResult.http(r.status_code, r.text[:200])
-        return ApiResult.success(r.content)
+
+        def send() -> ApiResult:
+            try:
+                with httpx.Client(
+                    timeout=_DOWNLOAD_TIMEOUT, verify=self._verify,
+                ) as c:
+                    r = c.get(url, headers=self._headers())
+            except httpx.HTTPError as exc:
+                return ApiResult.network(exc)
+            if r.status_code != 200:
+                return ApiResult.http(r.status_code, r.text[:200])
+            return ApiResult.success(r.content)
+
+        return self._with_refresh(send)
 
     def _post(
         self,
@@ -337,27 +444,31 @@ class VezirClient:
         timeout: httpx.Timeout | None = None,
     ) -> ApiResult:
         url = f"{self.base_url}{path}"
-        try:
-            with httpx.Client(
-                timeout=timeout or self._timeout, verify=self._verify,
-            ) as c:
-                r = c.post(
-                    url,
-                    headers={
-                        **self._headers(),
-                        "Content-Type": "application/json",
-                    },
-                    json=json if json is not None else {},
-                )
-        except httpx.HTTPError as exc:
-            return ApiResult.network(exc)
-        if not (200 <= r.status_code < 300):
-            return ApiResult.http(r.status_code, r.text[:200])
-        # Many POSTs return empty / non-JSON; try JSON, fall back to True.
-        try:
-            return ApiResult.success(r.json())
-        except Exception:
-            return ApiResult.success(True)
+
+        def send() -> ApiResult:
+            try:
+                with httpx.Client(
+                    timeout=timeout or self._timeout, verify=self._verify,
+                ) as c:
+                    r = c.post(
+                        url,
+                        headers={
+                            **self._headers(),
+                            "Content-Type": "application/json",
+                        },
+                        json=json if json is not None else {},
+                    )
+            except httpx.HTTPError as exc:
+                return ApiResult.network(exc)
+            if not (200 <= r.status_code < 300):
+                return ApiResult.http(r.status_code, r.text[:200])
+            # Many POSTs return empty / non-JSON; try JSON, fall back to True.
+            try:
+                return ApiResult.success(r.json())
+            except Exception:
+                return ApiResult.success(True)
+
+        return self._with_refresh(send)
 
     def _delete(
         self,
@@ -366,19 +477,23 @@ class VezirClient:
         timeout: httpx.Timeout | None = None,
     ) -> ApiResult:
         url = f"{self.base_url}{path}"
-        try:
-            with httpx.Client(
-                timeout=timeout or self._timeout, verify=self._verify,
-            ) as c:
-                r = c.request("DELETE", url, headers=self._headers())
-        except httpx.HTTPError as exc:
-            return ApiResult.network(exc)
-        if not (200 <= r.status_code < 300):
-            return ApiResult.http(r.status_code, r.text[:200])
-        try:
-            return ApiResult.success(r.json())
-        except Exception:
-            return ApiResult.success(True)
+
+        def send() -> ApiResult:
+            try:
+                with httpx.Client(
+                    timeout=timeout or self._timeout, verify=self._verify,
+                ) as c:
+                    r = c.request("DELETE", url, headers=self._headers())
+            except httpx.HTTPError as exc:
+                return ApiResult.network(exc)
+            if not (200 <= r.status_code < 300):
+                return ApiResult.http(r.status_code, r.text[:200])
+            try:
+                return ApiResult.success(r.json())
+            except Exception:
+                return ApiResult.success(True)
+
+        return self._with_refresh(send)
 
     # ── sessions ──
 

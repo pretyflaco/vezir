@@ -45,7 +45,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 from .. import config
-from . import google_members, nostr_auth, queue, ratelimit
+from . import google_members, queue, ratelimit
 
 log = logging.getLogger("vezir.google_auth")
 
@@ -366,15 +366,15 @@ def google_device_poll(device_code: str = Body(..., embed=True)):
         )
 
     github, is_admin = resolved
-    # npub slot is empty for a Google identity; the JWT shape is identical.
-    token = nostr_auth.issue_session_jwt(github, "", is_admin)
+    # npub slot is empty for a Google identity; the session shape is identical.
+    from . import sessions_auth
+    session = sessions_auth.create_session(github, "", is_admin, "google")
     log.info("google login ok: %s (admin=%s) via %s", github, is_admin, email)
     return {
-        "session_jwt": token,
+        **session,
         "github": github,
         "is_admin": is_admin,
         "email": email,
-        "expires_in": nostr_auth.SESSION_TTL_SECONDS,
         "memberships": queue.get_memberships(github),
         "alternate_urls": config.alternate_urls(),
     }

@@ -3,6 +3,59 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.10.0 — rotating refresh-token sessions (no more 24h forced logout)
+
+### Added
+
+* **Rotating refresh-token sessions.**  An interactive login (nostr /
+  Google) now returns a **pair**: a short-lived access JWT (default 60 min)
+  reused as `Authorization: Bearer` exactly as before, plus a rotating
+  **refresh token** (`vzrt_…`).  The client silently exchanges the refresh
+  token for a fresh pair when a request 401s, so an actively-used session
+  stays signed in without a new signer prompt / Google device grant — fixing
+  the daily forced logout.  Follows RFC 9700 (OAuth 2.0 Security BCP,
+  Jan 2025) / OAuth 2.1.
+
+  * New endpoint `POST /api/auth/refresh` — `{"refresh_token": "vzrt_…"}` →
+    a new pair; the presented token is single-use.  Rate-limited on the
+    login bucket.
+  * New endpoint `POST /api/auth/logout` — revokes the caller's own session
+    family (self-serve).  New admin endpoints
+    `GET /api/auth/sessions`, `POST /api/auth/sessions/{sid}/revoke`,
+    `POST /api/auth/sessions/revoke-all`.
+  * New `sessions` table (registered migration `0.10.0-sessions`, idempotent
+    and additive) — the first server-side per-session revocation Vezir has
+    had; previously an access JWT could only be invalidated by rotating the
+    whole `.session-secret`.
+  * **Reuse detection**: a session is a token *family*; replaying a consumed
+    refresh token revokes the entire family and logs a security event.  A
+    one-generation grace window (`prev_refresh_hash`) tolerates a legitimate
+    client whose rotation response was lost.
+  * **Bounded lifetime**: refresh tokens expire on idle (default 7 days,
+    reset each rotation) and on an absolute cap from creation (default
+    30 days), after which a full re-login is required.
+  * New env vars `VEZIR_ACCESS_TTL`, `VEZIR_REFRESH_IDLE_TTL`,
+    `VEZIR_SESSION_MAX_TTL` (all optional, safe defaults).
+  * Client: `VezirClient` transparently refreshes-and-retries once on a 401
+    and persists the rotated pair to `teams.json`.  New CLI `vezir logout`;
+    operator `vezir session list` / `vezir session revoke`.  Refresh tokens
+    are stored hashed server-side (SHA-256) and `0600` client-side, the same
+    posture as `vzr_` tokens.
+  * Backward-compatible: `session_jwt` is still returned (aliased to the
+    access token); `vzr_` machine tokens and pre-refresh clients are
+    unaffected and degrade to the existing re-login-on-401 behavior.
+
+### Tests
+
+* 804 passing (was 780 in 0.9.0).  +24 refresh-session tests:
+  `test_session_refresh.py` (create/rotate, single-use refresh, reuse-
+  detection family revocation, idle + absolute-cap expiry, revoke/revoke-all,
+  the `/api/auth/refresh` + `/api/auth/logout` endpoints), `test_client_api.py`
+  (transparent refresh-and-retry, rotated-pair persistence, no-retry without a
+  refresh token), and `test_reauth.py` (refresh-token storage / read /
+  rotation / preserve-on-none).  The strict mypy allowlist gains
+  `vezir/server/sessions_auth.py`.
+
 ## 0.9.0 — multiple audio files as one meeting
 
 ### Added

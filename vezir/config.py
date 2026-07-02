@@ -46,6 +46,19 @@ Environment variables:
                         (default 5.0)
     VEZIR_TINY_SPEAKER_MAX_SEGMENTS Max segment count for an unresolved raw
                         speaker to count as tiny noise (default 3)
+    VEZIR_ACCESS_TTL    Lifetime (seconds) of a session **access** JWT minted
+                        via the refresh flow (default 3600 = 60 min).  Short
+                        by design: a leaked access token dies within this
+                        window.  The refresh token carries the long session.
+    VEZIR_REFRESH_IDLE_TTL  Idle lifetime (seconds) of a refresh token
+                        (default 604800 = 7 days).  Reset on every rotation,
+                        so an actively-refreshing session never hits it; a
+                        session left unused this long requires a fresh login.
+    VEZIR_SESSION_MAX_TTL  Absolute lifetime (seconds) of a session from its
+                        creation (default 2592000 = 30 days), regardless of
+                        refresh activity.  Bounds a compromised refresh
+                        family; a full re-login (signer prompt / Google
+                        grant) is forced once exceeded.
 
 All ``VEZIR_MEET_*`` aliases continue to work for two minor versions
 (through vezir 0.5.x) and emit a one-time ``DeprecationWarning`` on
@@ -873,6 +886,51 @@ def max_upload_bytes() -> int:
     if raw is None:
         return 2 * 1024 * 1024 * 1024
     return int(raw)
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    """Read a positive integer from ``name``; fall back to ``default``.
+
+    A missing, empty, non-integer, or non-positive value yields the
+    default (never raises), so a fat-fingered env var can't brick the
+    server's auth path.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
+def access_ttl_seconds() -> int:
+    """Session **access** JWT lifetime in seconds (default 3600 = 60 min).
+
+    From ``$VEZIR_ACCESS_TTL``.  Deliberately short: the refresh flow
+    mints a fresh access token before this elapses, so a leaked access
+    JWT is only useful for at most this window.
+    """
+    return _positive_env_int("VEZIR_ACCESS_TTL", 60 * 60)
+
+
+def refresh_idle_ttl_seconds() -> int:
+    """Refresh-token idle lifetime in seconds (default 604800 = 7 days).
+
+    From ``$VEZIR_REFRESH_IDLE_TTL``.  Reset on every rotation; a session
+    unused for longer than this forces a full re-login.
+    """
+    return _positive_env_int("VEZIR_REFRESH_IDLE_TTL", 7 * 24 * 60 * 60)
+
+
+def session_max_ttl_seconds() -> int:
+    """Absolute session lifetime in seconds (default 2592000 = 30 days).
+
+    From ``$VEZIR_SESSION_MAX_TTL``.  Measured from session creation and
+    never extended by refresh; bounds a compromised refresh family.
+    """
+    return _positive_env_int("VEZIR_SESSION_MAX_TTL", 30 * 24 * 60 * 60)
 
 
 def secure_mkdir(path: Path) -> Path:

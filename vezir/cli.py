@@ -880,6 +880,106 @@ def token_list(dormant_days, show_id):
             )
 
 
+# ── session (refresh-token sessions) ────────────────────────────────────────
+
+
+@main.group()
+def session():
+    """Manage rotating refresh-token sessions (server-side).
+
+    Each interactive login (nostr / Google) creates a *session family* with
+    a short-lived access JWT and a rotating refresh token.  These commands
+    inspect and revoke families directly against the local queue DB, the
+    same operator posture as the ``token`` group.  Revoking a session stops
+    its refresh token from minting new access tokens; any outstanding
+    access JWT still lapses within its short TTL.
+    """
+
+
+@session.command("list")
+@click.option("--github", default=None, help="Filter to one GitHub handle.")
+@click.option(
+    "--all", "show_all", is_flag=True, default=False,
+    help="Include revoked/expired sessions (default hides them).",
+)
+def session_list(github, show_all):
+    """List session families, newest first."""
+    import time as _time
+
+    from .server import sessions_auth
+
+    rows = sessions_auth.list_sessions(github)
+    now = _time.time()
+
+    def _expired(row) -> bool:
+        exp = sessions_auth._parse_iso(row.get("refresh_expires_at"))
+        cap = sessions_auth._parse_iso(row.get("absolute_max_at"))
+        return (exp is not None and now >= exp) or (
+            cap is not None and now >= cap
+        )
+
+    shown = [
+        r for r in rows
+        if show_all or (not r["revoked"] and not _expired(r))
+    ]
+    if not shown:
+        click.echo("No matching sessions.")
+        return
+
+    click.echo(
+        f"{'SID':<34}  {'GITHUB':<16}  {'METHOD':<7}  "
+        f"{'CREATED':<20}  {'STATE'}"
+    )
+    for r in shown:
+        if r["revoked"]:
+            state = "revoked"
+        elif _expired(r):
+            state = "expired"
+        else:
+            state = "active"
+        admin = "*" if r["is_admin"] else ""
+        click.echo(
+            f"{r['sid']:<34}  {r['github'] + admin:<16}  "
+            f"{r['auth_method']:<7}  {r['created_at']:<20}  {state}"
+        )
+
+
+@session.command("revoke")
+@click.option("--sid", default=None, help="Revoke one session by id.")
+@click.option(
+    "--github", default=None,
+    help="Revoke ALL active sessions for a GitHub handle.",
+)
+@click.option(
+    "--yes", "skip_confirm", is_flag=True, default=False,
+    help="Skip the confirmation prompt.",
+)
+def session_revoke(sid, github, skip_confirm):
+    """Revoke a session by --sid, or every session for a --github handle."""
+    from .server import sessions_auth
+
+    if bool(sid) == bool(github):
+        raise click.UsageError("provide exactly one of --sid or --github.")
+
+    if sid:
+        if not skip_confirm and not click.confirm(
+            f"Revoke session {sid}?"
+        ):
+            click.echo("Aborted.")
+            return
+        ok = sessions_auth.revoke_session(sid)
+        click.echo("Revoked." if ok else "No active session with that id.")
+        return
+
+    if not skip_confirm and not click.confirm(
+        f"Revoke ALL active sessions for {github!r}?"
+    ):
+        click.echo("Aborted.")
+        return
+    n = sessions_auth.revoke_all_for(github)
+    click.echo(f"Revoked {n} session(s) for {github!r}.")
+
+
 # ── npub (nostr allowlist) ──────────────────────────────────────────────────
 
 
@@ -1658,23 +1758,69 @@ def login(url, team_id, relay, timeout, method, verbose):
         body.get("npub", client.user_pubkey or ""),
         label=resolved_team,
         expires_at=_expires_at_from_body(body),
+        refresh_token=body.get("refresh_token"),
+        refresh_expires_at=_refresh_expires_at_from_body(body),
     )
     click.echo()
     click.echo(f"Logged in as github={body.get('github')} "
                f"(admin={body.get('is_admin')}).")
-    hours = int(body.get("expires_in", 0)) // 3600
-    click.echo(f"Session stored for team '{resolved_team}'; valid ~{hours}h.")
+    click.echo(_session_validity_message(body, resolved_team))
     memberships = body.get("memberships") or []
     if memberships:
         names = ", ".join(m.get("slug") or m.get("team_id") for m in memberships)
         click.echo(f"Team memberships: {names}")
 
 
+@main.command("logout")
+@click.option(
+    "--team", "team_id", default=None,
+    help="Team to log out of (default: active team).",
+)
+def logout(team_id):
+    """Log out: revoke the current session server-side and clear it locally.
+
+    Best-effort revocation — even if the server is unreachable, the local
+    session (access + refresh token) is removed so this machine can no
+    longer authenticate without a fresh `vezir login`.
+    """
+    from .client import config as client_config
+
+    cfg = client_config.load_teams_config()
+    target = team_id or cfg.get("active")
+    if not target:
+        click.echo("No active session to log out of.")
+        return
+
+    entry = next((t for t in cfg.get("teams", []) if t["id"] == target), None)
+    if entry is None:
+        click.echo(f"No local session for team {target!r}.")
+        return
+
+    url = entry.get("url")
+    token = entry.get("token")
+    if url and token:
+        try:
+            from .client.api import VezirClient
+            client = VezirClient(url, token, team_id=entry.get("id"))
+            # Hit logout directly; a 401 here just means the access token
+            # already lapsed — the server reaps the family on idle anyway.
+            client._post("/api/auth/logout")
+        except Exception:
+            click.echo(
+                "warning: could not reach server to revoke session; "
+                "clearing locally.", err=True,
+            )
+
+    client_config.remove_team_credentials(target)
+    click.echo(f"Logged out of team {target!r}.")
+
+
 def _expires_at_from_body(body: dict) -> float | None:
     """Compute a unix-seconds expiry from a login body's ``expires_in``.
 
     Stored in teams.json so clients can proactively warn before a session
-    JWT expires (0.8.9).  Returns None when the server didn't report it.
+    (access) JWT expires (0.8.9).  Returns None when the server didn't
+    report it.
     """
     import time as _time
     exp_in = body.get("expires_in")
@@ -1682,6 +1828,40 @@ def _expires_at_from_body(body: dict) -> float | None:
         return _time.time() + int(exp_in) if exp_in else None
     except (TypeError, ValueError):
         return None
+
+
+def _refresh_expires_at_from_body(body: dict) -> float | None:
+    """Compute a unix-seconds refresh-token idle expiry from a login body.
+
+    Reads ``refresh_expires_in`` (seconds).  Returns None when the server
+    didn't report it (e.g. a pre-refresh server).
+    """
+    import time as _time
+    exp_in = body.get("refresh_expires_in")
+    try:
+        return _time.time() + int(exp_in) if exp_in else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _session_validity_message(body: dict, team: str) -> str:
+    """Human-readable 'session stored' line reflecting refresh support.
+
+    With a refresh token the session stays alive across access-token
+    expiries (silent refresh), so we report the longer refresh window;
+    without one we report the access-token lifetime like the pre-refresh
+    client did.
+    """
+    if body.get("refresh_token"):
+        days = int(body.get("refresh_expires_in", 0)) // 86400
+        if days >= 1:
+            return (
+                f"Session stored for team '{team}'; stays signed in with "
+                f"use (idle re-login after ~{days}d)."
+            )
+        return f"Session stored for team '{team}'; auto-refreshes with use."
+    hours = int(body.get("expires_in", 0)) // 3600
+    return f"Session stored for team '{team}'; valid ~{hours}h."
 
 
 def _login_verify():
@@ -1734,12 +1914,13 @@ def _login_google(resolved_url, resolved_team, timeout, client_config) -> None:
         body.get("email", ""),
         label=resolved_team,
         expires_at=_expires_at_from_body(body),
+        refresh_token=body.get("refresh_token"),
+        refresh_expires_at=_refresh_expires_at_from_body(body),
     )
     click.echo()
     click.echo(f"Logged in as github={body.get('github')} "
                f"(admin={body.get('is_admin')}) via {body.get('email')}.")
-    hours = int(body.get("expires_in", 0)) // 3600
-    click.echo(f"Session stored for team '{resolved_team}'; valid ~{hours}h.")
+    click.echo(_session_validity_message(body, resolved_team))
     memberships = body.get("memberships") or []
     if memberships:
         names = ", ".join(m.get("slug") or m.get("team_id") for m in memberships)

@@ -271,20 +271,29 @@ def set_team_session(
     *,
     activate: bool = True,
     expires_at: float | None = None,
+    refresh_token: str | None = None,
+    refresh_expires_at: float | None = None,
 ) -> dict:
     """Store a nostr-login session for a team in teams.json.
 
-    The session JWT is stored in the same ``token`` field that bearer
-    tokens use, so :func:`resolve_credentials` and
+    The session (access) JWT is stored in the same ``token`` field that
+    bearer tokens use, so :func:`resolve_credentials` and
     ``api.VezirClient._headers()`` send it as ``Authorization: Bearer``
     with no special-casing.  We additionally record ``auth="nostr"`` and
     the ``npub`` so ``vezir login`` can recognize a re-login candidate and
     show whose key is bound.  Upserts on ``team_id`` like
     :func:`add_team_credentials`.
 
-    ``expires_at`` (unix seconds, optional): the session JWT's expiry, stored
-    so clients can proactively warn before a request 401s (0.8.9).  ``None``
-    leaves any existing value untouched on update.
+    ``expires_at`` (unix seconds, optional): the access JWT's expiry, stored
+    so clients can proactively warn/refresh before a request 401s (0.8.9).
+    ``None`` leaves any existing value untouched on update.
+
+    ``refresh_token`` (optional): the rotating refresh token (``vzrt_…``)
+    exchanged at ``POST /api/auth/refresh`` for a fresh pair.  Rotated on
+    every refresh, so this is upserted each time.  ``refresh_expires_at``
+    is its idle-expiry (unix seconds).  ``None`` for either leaves the
+    stored value untouched (so a plain expiry-only update doesn't wipe a
+    stored refresh token).
     """
     cfg = load_teams_config()
     teams: list = cfg["teams"]
@@ -298,6 +307,10 @@ def set_team_session(
                 t["label"] = label
             if expires_at is not None:
                 t["expires_at"] = expires_at
+            if refresh_token is not None:
+                t["refresh_token"] = refresh_token
+            if refresh_expires_at is not None:
+                t["refresh_expires_at"] = refresh_expires_at
             break
     else:
         entry = {
@@ -310,11 +323,31 @@ def set_team_session(
         }
         if expires_at is not None:
             entry["expires_at"] = expires_at
+        if refresh_token is not None:
+            entry["refresh_token"] = refresh_token
+        if refresh_expires_at is not None:
+            entry["refresh_expires_at"] = refresh_expires_at
         teams.append(entry)
     if activate or not cfg.get("active"):
         cfg["active"] = team_id
     save_teams_config(cfg)
     return cfg
+
+
+def active_team_refresh_token() -> str | None:
+    """Return the active team's stored refresh token (``vzrt_…``), or None.
+
+    ``None`` when there's no active team, the entry predates refresh
+    tokens (pre-refresh logins), or a ``vzr_`` bearer is in use.
+    """
+    cfg = load_teams_config()
+    active = cfg.get("active")
+    if not active:
+        return None
+    for t in cfg["teams"]:
+        if t["id"] == active:
+            return t.get("refresh_token")
+    return None
 
 
 def remove_team_credentials(team_id: str) -> dict:

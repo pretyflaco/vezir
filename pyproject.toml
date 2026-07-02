@@ -167,6 +167,7 @@ module = [
     "vezir.server.app",
     "vezir.server.ratelimit",
     "vezir.server.enroll",
+    "vezir.server.sessions_auth",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true

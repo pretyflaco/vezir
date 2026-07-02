@@ -54,7 +54,8 @@ jobs:
             vezir/doctor.py \
             vezir/server/app.py \
             vezir/server/ratelimit.py \
-            vezir/server/enroll.py
+            vezir/server/enroll.py \
+            vezir/server/sessions_auth.py
 
   test:
     name: pytest (py${{ matrix.python-version }})

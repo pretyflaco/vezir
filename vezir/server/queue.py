@@ -152,6 +152,26 @@ CREATE TABLE IF NOT EXISTS google_members (
 );
 
 CREATE INDEX IF NOT EXISTS idx_google_members_github ON google_members(github);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    sid                 TEXT PRIMARY KEY,   -- session/family id (uuid4 hex)
+    github              TEXT NOT NULL,
+    npub                TEXT,               -- '' for google identities
+    is_admin            INTEGER NOT NULL DEFAULT 0,
+    auth_method         TEXT NOT NULL,      -- 'nostr' | 'google'
+    refresh_hash        TEXT NOT NULL,      -- sha256(current refresh token)
+    prev_refresh_hash   TEXT,               -- one-generation grace window
+    created_at          TEXT NOT NULL,      -- ISO8601 UTC (absolute-cap anchor)
+    refresh_expires_at  TEXT NOT NULL,      -- now + idle TTL (bumped each rotation)
+    absolute_max_at     TEXT NOT NULL,      -- created_at + max TTL (never moves)
+    last_rotated_at     TEXT,
+    revoked             INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_github ON sessions(github);
+CREATE INDEX IF NOT EXISTS idx_sessions_refresh_hash ON sessions(refresh_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_prev_refresh_hash
+    ON sessions(prev_refresh_hash);
 """
 
 

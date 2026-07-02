@@ -89,6 +89,43 @@ def test_set_team_session_update_preserves_when_none(home):
     assert abs(cc.active_team_expiry() - (now + 100)) < 2
 
 
+# ── refresh-token storage/read (0.8.10) ──
+
+def test_set_team_session_stores_refresh_token(home):
+    from vezir.client import config as cc
+
+    cc.set_team_session(
+        "blink", "http://s", "jwt-1", "n",
+        refresh_token="vzrt_abc", refresh_expires_at=time.time() + 604800,
+    )
+    assert cc.active_team_refresh_token() == "vzrt_abc"
+
+
+def test_active_team_refresh_token_none_without_refresh(home):
+    from vezir.client import config as cc
+
+    cc.set_team_session("blink", "http://s", "jwt-1", "n")
+    assert cc.active_team_refresh_token() is None
+
+
+def test_set_team_session_rotates_refresh_token(home):
+    from vezir.client import config as cc
+
+    cc.set_team_session("blink", "http://s", "jwt-1", "n", refresh_token="vzrt_1")
+    # A refresh rotates the token; the new value replaces the old.
+    cc.set_team_session("blink", "http://s", "jwt-2", "n", refresh_token="vzrt_2")
+    assert cc.active_team_refresh_token() == "vzrt_2"
+
+
+def test_set_team_session_update_preserves_refresh_when_none(home):
+    from vezir.client import config as cc
+
+    cc.set_team_session("blink", "http://s", "jwt-1", "n", refresh_token="vzrt_1")
+    # An expiry-only update must not wipe the stored refresh token.
+    cc.set_team_session("blink", "http://s", "jwt-2", "n", expires_at=time.time())
+    assert cc.active_team_refresh_token() == "vzrt_1"
+
+
 # ── ReauthScreen modal flow (Textual pilot, mocked login) ──
 
 class _Harness:

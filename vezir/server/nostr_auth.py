@@ -31,9 +31,10 @@ import time
 
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel
 
 from .. import config
-from . import nip98, nostr_members, queue, ratelimit
+from . import auth, nip98, nostr_members, queue, ratelimit
 
 log = logging.getLogger("vezir.nostr_auth")
 
@@ -70,17 +71,38 @@ def _session_secret() -> bytes:
     return _secret_cache
 
 
-def issue_session_jwt(github: str, npub: str, is_admin: bool) -> str:
-    """Mint a signed session JWT for a freshly-authenticated nostr user."""
+def issue_session_jwt(
+    github: str,
+    npub: str,
+    is_admin: bool,
+    *,
+    ttl_seconds: int | None = None,
+    sid: str | None = None,
+) -> str:
+    """Mint a signed session (access) JWT for an authenticated user.
+
+    ``ttl_seconds`` overrides the default 24h lifetime — the refresh flow
+    (:mod:`vezir.server.sessions_auth`) passes a short access TTL (~60m).
+    Omitting it preserves the legacy 24h token so a client that never
+    refreshes still gets a usable (if shorter-lived) session.
+
+    ``sid`` binds the access token to a server-side session family so it
+    is traceable back to a ``sessions`` row.  A ``jti`` is always added so
+    each token is individually identifiable in logs.
+    """
     now = int(time.time())
+    ttl = SESSION_TTL_SECONDS if ttl_seconds is None else ttl_seconds
     payload = {
         "iss": _JWT_ISSUER,
         "sub": github,
         "npub": npub,
         "is_admin": bool(is_admin),
         "iat": now,
-        "exp": now + SESSION_TTL_SECONDS,
+        "exp": now + ttl,
+        "jti": secrets.token_hex(8),
     }
+    if sid is not None:
+        payload["sid"] = sid
     return jwt.encode(payload, _session_secret(), algorithm=_JWT_ALG)
 
 
@@ -148,11 +170,17 @@ def nostr_login(
 
     The client sends ``Authorization: Nostr <base64-event>`` where the
     event's ``u`` tag is this endpoint's public URL and ``method`` is
-    ``POST``.  On success returns::
+    ``POST``.  On success returns a rotating-session pair::
 
-        {"session_jwt": "...", "github": "...", "is_admin": false,
-         "npub": "<hex>", "expires_in": 86400,
-         "memberships": [...], "alternate_urls": [...]}
+        {"session_jwt": "...", "access_jwt": "...",
+         "refresh_token": "vzrt_...", "expires_in": 3600,
+         "refresh_expires_in": 604800, "session_max_ttl": 2592000,
+         "sid": "...", "github": "...", "is_admin": false,
+         "npub": "<hex>", "memberships": [...], "alternate_urls": [...]}
+
+    ``session_jwt`` and ``access_jwt`` are the same short-lived access
+    token (``session_jwt`` retained for pre-refresh clients).  The
+    ``refresh_token`` is exchanged at ``POST /api/auth/refresh``.
 
     Errors:
       * 401 if the NIP-98 event is missing/invalid (bad sig, stale, tag
@@ -184,14 +212,136 @@ def nostr_login(
         )
 
     github, is_admin = resolved
-    token = issue_session_jwt(github, pubkey, is_admin)
+    # Lazy import avoids a module-load cycle (sessions_auth imports
+    # nostr_auth for the JWT mint).
+    from . import sessions_auth
+    session = sessions_auth.create_session(github, pubkey, is_admin, "nostr")
     log.info("nostr login ok: %s (admin=%s) via %s", github, is_admin, pubkey[:12])
     return {
-        "session_jwt": token,
+        **session,
         "github": github,
         "is_admin": is_admin,
         "npub": pubkey,
-        "expires_in": SESSION_TTL_SECONDS,
         "memberships": queue.get_memberships(github),
         "alternate_urls": config.alternate_urls(),
     }
+
+
+class _RefreshBody(BaseModel):
+    refresh_token: str
+
+
+@router.post(
+    "/api/auth/refresh",
+    dependencies=[Depends(ratelimit.limit_login)],
+)
+def refresh_session(body: _RefreshBody):
+    """Rotate a refresh token → a fresh access/refresh pair.
+
+    The client sends ``{"refresh_token": "vzrt_…"}``.  On success returns
+    the same shape as login (``access_jwt``/``session_jwt``,
+    ``refresh_token``, ``expires_in``, …) with a **new** refresh token; the
+    presented one is now consumed.
+
+    Errors:
+      * 401 for any unusable token — unknown, expired (idle or absolute
+        cap), revoked, or a confirmed reuse (which additionally revokes the
+        whole session family).  The client must fall back to a full login.
+
+    Rate-limited on the shared login bucket (per-IP) as anti-abuse.
+    """
+    from . import sessions_auth
+
+    try:
+        return sessions_auth.rotate(body.refresh_token)
+    except sessions_auth.SessionError as exc:
+        if exc.reuse:
+            log.warning("refresh rejected (reuse): %s", exc)
+        else:
+            log.info("refresh rejected: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"refresh failed: {exc}",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def session_id_of(token: str) -> str | None:
+    """Return the ``sid`` claim of a valid session access JWT, or None.
+
+    Used by ``/api/auth/logout`` to find which session family to revoke.
+    Signature/expiry are verified (an expired token has no live session to
+    revoke, and the refresh idle/absolute windows will reap it anyway).
+    """
+    if not token or token.count(".") != 2:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            _session_secret(),
+            algorithms=[_JWT_ALG],
+            issuer=_JWT_ISSUER,
+            options={"require": ["exp", "sub", "iss"]},
+        )
+    except jwt.InvalidTokenError:
+        return None
+    sid = payload.get("sid")
+    return sid if isinstance(sid, str) and sid else None
+
+
+@router.post("/api/auth/logout")
+def logout(authorization: str | None = Header(default=None)):
+    """Revoke the caller's own session family (self-serve logout).
+
+    Reads the ``sid`` from the presented access JWT and revokes that
+    session, so its refresh token can no longer mint new access tokens.
+    Idempotent: returns ``{"revoked": false}`` when there's nothing live
+    to revoke (already expired, a ``vzr_`` bearer, or no sid).  Never
+    errors on a well-formed request — logout should always "succeed" from
+    the client's perspective.
+    """
+    from . import sessions_auth
+
+    token = auth._token_from_authorization(authorization)
+    sid = session_id_of(token) if token else None
+    if not sid:
+        return {"revoked": False}
+    revoked = sessions_auth.revoke_session(sid)
+    if revoked:
+        log.info("session logout: sid=%s revoked", sid)
+    return {"revoked": revoked}
+
+
+@router.get("/api/auth/sessions")
+def admin_list_sessions(
+    github: str | None = None,
+    _admin: str = Depends(auth.require_admin),
+):
+    """Admin: list session families (optionally filtered by ``github``).
+
+    Never returns token hashes — only metadata safe for display.
+    """
+    from . import sessions_auth
+    return {"sessions": sessions_auth.list_sessions(github)}
+
+
+@router.post("/api/auth/sessions/{sid}/revoke")
+def admin_revoke_session(
+    sid: str,
+    _admin: str = Depends(auth.require_admin),
+):
+    """Admin: revoke a single session family by its ``sid``."""
+    from . import sessions_auth
+    revoked = sessions_auth.revoke_session(sid)
+    return {"revoked": revoked}
+
+
+@router.post("/api/auth/sessions/revoke-all")
+def admin_revoke_all_sessions(
+    github: str,
+    _admin: str = Depends(auth.require_admin),
+):
+    """Admin: revoke every active session for ``github``."""
+    from . import sessions_auth
+    count = sessions_auth.revoke_all_for(github)
+    return {"revoked": count}
