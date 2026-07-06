@@ -63,6 +63,10 @@ def _session_secret() -> bytes:
         return _secret_cache
     path = config.session_secret_path()
     if path.is_file():
+        # Enforce 0600 on a PRE-EXISTING secret too (only newly-created
+        # files got it via secure_write_text; an accidentally
+        # world-readable file stayed that way silently).
+        config.secure_chmod_file(path)
         _secret_cache = path.read_text().strip().encode("utf-8")
         return _secret_cache
     secret = secrets.token_hex(32)
@@ -113,6 +117,12 @@ def verify_session_jwt(token: str) -> tuple[str, bool] | None:
     vezir session token — expired, wrong issuer, bad signature, or simply
     a ``vzr_`` bearer that isn't a JWT at all.  That lets the caller fall
     through to the legacy token-hash path cheaply.
+
+    v0.11.0: a ``sid``-bearing access token is also checked against the
+    in-process revoked-session cache, so revoking a session (logout,
+    admin revoke) kills its already-minted access tokens immediately
+    instead of letting them ride until ``exp``.  Still no DB hit on the
+    hot path (the cache is an in-memory set).
     """
     if not token or token.count(".") != 2:
         # Fast reject: ``vzr_…`` opaque tokens aren't 3-segment JWTs.
@@ -130,6 +140,13 @@ def verify_session_jwt(token: str) -> tuple[str, bool] | None:
     github = payload.get("sub")
     if not github:
         return None
+    sid = payload.get("sid")
+    if isinstance(sid, str) and sid:
+        # Lazy import avoids the module-load cycle (sessions_auth imports
+        # nostr_auth for the JWT mint).
+        from . import sessions_auth
+        if sessions_auth.is_sid_revoked(sid):
+            return None
     return (github, bool(payload.get("is_admin", False)))
 
 
@@ -289,7 +306,7 @@ def session_id_of(token: str) -> str | None:
     return sid if isinstance(sid, str) and sid else None
 
 
-@router.post("/api/auth/logout")
+@router.post("/api/auth/logout", dependencies=[Depends(ratelimit.limit_api)])
 def logout(authorization: str | None = Header(default=None)):
     """Revoke the caller's own session family (self-serve logout).
 

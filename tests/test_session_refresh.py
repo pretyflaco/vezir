@@ -102,8 +102,13 @@ def test_create_and_rotate(tmp_data):
     assert second["access_jwt"] != first["access_jwt"]
 
 
-def test_rotated_out_refresh_token_is_single_use(tmp_data):
+def test_rotated_out_refresh_token_is_single_use(tmp_data, monkeypatch):
+    from vezir import config
     from vezir.server import sessions_auth
+
+    # Strict mode (grace window off): any replay of a consumed token is
+    # confirmed reuse.  The grace behavior has its own tests below.
+    monkeypatch.setattr(config, "refresh_grace_seconds", lambda: 0)
 
     first = sessions_auth.create_session("alice", "", False, "nostr")
     sessions_auth.rotate(first["refresh_token"])
@@ -115,8 +120,11 @@ def test_rotated_out_refresh_token_is_single_use(tmp_data):
     assert exc.value.reuse is True
 
 
-def test_reuse_detection_revokes_family(tmp_data):
+def test_reuse_detection_revokes_family(tmp_data, monkeypatch):
+    from vezir import config
     from vezir.server import sessions_auth
+
+    monkeypatch.setattr(config, "refresh_grace_seconds", lambda: 0)
 
     first = sessions_auth.create_session("alice", "", False, "nostr")
     second = sessions_auth.rotate(first["refresh_token"])
@@ -129,6 +137,78 @@ def test_reuse_detection_revokes_family(tmp_data):
     with pytest.raises(sessions_auth.SessionError) as exc:
         sessions_auth.rotate(second["refresh_token"])
     assert "revoked" in str(exc.value)
+
+
+# ── lost-response grace window (v0.11.0) ────────────────────────────────────
+
+
+def test_grace_reissues_within_window(tmp_data):
+    """A replay of the one-generation-old token WITHIN the grace window
+    (default 60s) is a lost-response retry: re-issue instead of revoking.
+    Flaky-link clients no longer lose their whole session to a dropped
+    /refresh response."""
+    from vezir.server import sessions_auth
+
+    first = sessions_auth.create_session("alice", "", False, "nostr")
+    second = sessions_auth.rotate(first["refresh_token"])
+    sid = second["sid"]
+
+    # The rotation response was "lost"; the client retries with the token
+    # it still holds.  This is within seconds of the rotation → grace.
+    retried = sessions_auth.rotate(first["refresh_token"])
+    assert retried["sid"] == sid  # same family, not revoked
+    assert retried["refresh_token"] not in (
+        first["refresh_token"], second["refresh_token"],
+    )
+
+    # The re-issued pair works normally afterwards.
+    nxt = sessions_auth.rotate(retried["refresh_token"])
+    assert nxt["sid"] == sid
+
+
+def test_grace_retry_is_repeatable_within_window(tmp_data):
+    """The SAME lost-response token can be retried more than once inside
+    the window (the presented hash stays in prev_refresh_hash)."""
+    from vezir.server import sessions_auth
+
+    first = sessions_auth.create_session("alice", "", False, "nostr")
+    sessions_auth.rotate(first["refresh_token"])
+
+    a = sessions_auth.rotate(first["refresh_token"])
+    b = sessions_auth.rotate(first["refresh_token"])
+    assert a["sid"] == b["sid"]
+
+
+def test_grace_expired_window_revokes(tmp_data, monkeypatch):
+    """Outside the grace window the replay is confirmed reuse → family
+    revoked (RFC 9700)."""
+    from vezir.server import sessions_auth
+
+    first = sessions_auth.create_session("alice", "", False, "nostr")
+    second = sessions_auth.rotate(first["refresh_token"])
+
+    # Jump time forward past the 60s window.
+    real_now = sessions_auth._now()
+    monkeypatch.setattr(sessions_auth, "_now", lambda: real_now + 3600)
+
+    with pytest.raises(sessions_auth.SessionError) as exc:
+        sessions_auth.rotate(first["refresh_token"])
+    assert exc.value.reuse is True
+
+    # The whole family is dead, including the legitimate current token.
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(second["refresh_token"])
+
+
+def test_grace_never_applies_to_revoked_family(tmp_data):
+    from vezir.server import sessions_auth
+
+    first = sessions_auth.create_session("alice", "", False, "nostr")
+    second = sessions_auth.rotate(first["refresh_token"])
+    sessions_auth.revoke_session(second["sid"])
+
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(first["refresh_token"])
 
 
 def test_unknown_refresh_token_rejected(tmp_data):
@@ -202,7 +282,14 @@ def test_refresh_endpoint_rotates(client, tmp_data):
     assert me.json()["github"] == "alice"
 
 
-def test_refresh_endpoint_reuse_returns_401(client, tmp_data):
+def test_refresh_endpoint_reuse_returns_401(client, tmp_data, monkeypatch):
+    from vezir import config
+
+    # Strict mode: with the grace window disabled, an immediate replay of
+    # the consumed refresh token is a 401 (with grace on it would be a
+    # lost-response re-issue — covered by the grace tests above).
+    monkeypatch.setattr(config, "refresh_grace_seconds", lambda: 0)
+
     body = _login(client)
     client.post(REFRESH_PATH, json={"refresh_token": body["refresh_token"]})
     # Replay the consumed refresh token.

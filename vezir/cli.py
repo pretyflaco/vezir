@@ -41,6 +41,14 @@ def serve(host, port, reload):
         host=h,
         port=p,
         reload=reload,
+        # Honor X-Forwarded-For/-Proto from the loopback Caddy proxy ONLY.
+        # Without this every request behind Caddy carried the proxy's IP,
+        # so all teammates shared one per-IP login rate bucket (one
+        # runaway client locked out everyone) and log attribution was
+        # useless.  forwarded_allow_ips pins trust to localhost so a
+        # caller reaching uvicorn directly cannot spoof its IP.
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1",
     )
 
 

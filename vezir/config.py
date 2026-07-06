@@ -59,6 +59,15 @@ Environment variables:
                         refresh activity.  Bounds a compromised refresh
                         family; a full re-login (signer prompt / Google
                         grant) is forced once exceeded.
+    VEZIR_REFRESH_GRACE  Lost-response grace window (seconds) after a refresh
+                        rotation (default 60).  The one-generation-old
+                        refresh token presented within this window re-issues
+                        the pair instead of revoking the family.  0 = strict
+                        (any reuse revokes).
+    VEZIR_MILLET_TIMEOUT  Hard timeout (seconds) for each millet subprocess
+                        step (default 14400 = 4 h).  A wedged transcription
+                        no longer blocks the single worker forever; the job
+                        is marked error on expiry.
 
 All ``VEZIR_MEET_*`` aliases continue to work for two minor versions
 (through vezir 0.5.x) and emit a one-time ``DeprecationWarning`` on
@@ -516,6 +525,64 @@ def meet_supports_option(option: str) -> bool:
     )
 
 
+@lru_cache(maxsize=1)
+def _meet_label_help() -> str:
+    """Return cached `millet label --help` output (same caveats as
+    :func:`_meet_transcribe_help`: restart vezir after upgrading millet)."""
+    try:
+        meet = meet_binary()
+    except Exception:
+        return ""
+    try:
+        proc = subprocess.run(
+            [meet, "label", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    return "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+
+
+def meet_label_supports_apply_json() -> bool:
+    """True if the installed millet's `label` command has `--apply-json`.
+
+    vezir >= 0.11.0 applies speaker labels through the
+    ``millet label --apply-json`` subprocess boundary (millet-pipeline
+    >= 0.13.0) instead of importing millet in-process.  Callers use this
+    probe to fail loudly with an actionable upgrade message rather than
+    a confusing argv error.
+    """
+    help_text = _meet_label_help()
+    if not help_text:
+        return False
+    return any(
+        line.lstrip().startswith("--apply-json")
+        for line in help_text.splitlines()
+    )
+
+
+def millet_timeout_seconds() -> int | None:
+    """Hard timeout for each millet subprocess step, or None to disable.
+
+    From ``$VEZIR_MILLET_TIMEOUT`` (seconds; default 14400 = 4 h; 0 or
+    a negative value disables).  A wedged transcription (GPU hang,
+    stalled network inside millet) previously blocked the single worker
+    forever; with the timeout the process group is killed and the job is
+    marked ``error``.
+    """
+    raw = os.environ.get("VEZIR_MILLET_TIMEOUT")
+    default = 4 * 60 * 60
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else None
+
+
 def _warn_unknown_env_choice(name: str, value: str, known: set[str]) -> None:
     if value in known:
         return
@@ -931,6 +998,22 @@ def session_max_ttl_seconds() -> int:
     never extended by refresh; bounds a compromised refresh family.
     """
     return _positive_env_int("VEZIR_SESSION_MAX_TTL", 30 * 24 * 60 * 60)
+
+
+def refresh_grace_seconds() -> int:
+    """Lost-response grace window after a refresh rotation (default 60 s).
+
+    From ``$VEZIR_REFRESH_GRACE``.  Presenting the one-generation-old
+    refresh token within this many seconds of its rotation re-issues the
+    pair (a legitimate client whose rotation response was lost) instead
+    of revoking the session family.  Set to 0 for strict behavior
+    (any reuse revokes; ``_positive_env_int`` treats 0 as unset, so the
+    explicit "0" is handled here).
+    """
+    raw = os.environ.get("VEZIR_REFRESH_GRACE", "")
+    if raw.strip() == "0":
+        return 0
+    return _positive_env_int("VEZIR_REFRESH_GRACE", 60)
 
 
 def secure_mkdir(path: Path) -> Path:

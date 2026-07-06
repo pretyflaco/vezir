@@ -119,31 +119,39 @@ def warn_if_disabled(log: logging.Logger | None = None) -> None:
         )
 
 
-def _client_key(request: Request, name_prefix: str) -> str:
+def _client_key(request: Request, name_prefix: str, *, ip_only: bool = False) -> str:
     """Build a stable key for this request.
 
     Prefers the bearer token (so per-user fairness survives multi-IP
-    clients on shared NAT); falls back to client IP for unauthenticated
-    routes like /login.
+    clients on shared NAT); falls back to client IP.
+
+    ``ip_only=True`` is REQUIRED for unauthenticated route families
+    (login, refresh): there the bearer value is attacker-controlled and
+    unvalidated, so keying on it would hand out a fresh bucket per random
+    header — a total bypass of the brute-force limit.
     """
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        parts = auth_header.split(None, 1)
-        bearer = parts[1].strip() if len(parts) > 1 else ""
-        if bearer:
-            # Hash the bearer to avoid keeping the plaintext as a dict key.
-            import hashlib
-            return f"{name_prefix}:tok:{hashlib.sha256(bearer.encode()).hexdigest()[:16]}"
-    # Empty / malformed bearer falls through to per-IP keying.
+    if not ip_only:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            parts = auth_header.split(None, 1)
+            bearer = parts[1].strip() if len(parts) > 1 else ""
+            if bearer:
+                # Hash the bearer to avoid keeping the plaintext as a dict key.
+                import hashlib
+                return f"{name_prefix}:tok:{hashlib.sha256(bearer.encode()).hexdigest()[:16]}"
+    # Unauthenticated family, or empty/malformed bearer → per-IP keying.
+    # (uvicorn runs with proxy_headers=True + forwarded_allow_ips=127.0.0.1
+    # in `vezir serve`, so request.client.host is the real client IP behind
+    # the loopback Caddy proxy, not the proxy's own address.)
     ip = request.client.host if request.client else "?"
     return f"{name_prefix}:ip:{ip}"
 
 
-def _enforce(name: str, request: Request) -> None:
+def _enforce(name: str, request: Request, *, ip_only: bool = False) -> None:
     if _disabled():
         return
     limiter = _LIMITERS[name]
-    key = _client_key(request, name)
+    key = _client_key(request, name, ip_only=ip_only)
     allowed, retry_after = limiter.check(key)
     if allowed:
         return
@@ -168,12 +176,14 @@ def limit_upload(request: Request) -> None:
 
 
 def limit_login(request: Request) -> None:
-    """Dependency: enforce the login bucket. Apply to /login GET+POST.
+    """Dependency: enforce the login bucket. Apply to /login GET+POST
+    and every other unauthenticated auth route (refresh, device poll).
 
     Login is unauthenticated, so this is the per-IP defence against
-    code/token spraying.
+    code/token spraying.  Always keyed by IP: a presented bearer here is
+    unvalidated attacker input and must never select the bucket.
     """
-    _enforce("login", request)
+    _enforce("login", request, ip_only=True)
 
 
 def limit_api(request: Request) -> None:
