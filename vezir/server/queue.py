@@ -222,6 +222,64 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
 
 
+# DB paths whose schema bring-up has already run in this process.
+# v0.11.0: the DDL (CREATE TABLE/INDEX script + ~10 idempotent ALTERs)
+# used to run on EVERY connection — at least twice per authenticated
+# request, all while holding the global lock, and its blanket
+# ``except OperationalError`` masked genuine errors (e.g. disk full) as
+# ignored duplicates.  Now it runs once per (process, db-path); tests
+# that point config at fresh tmp DBs still get their schema.
+_SCHEMA_DONE: set[str] = set()
+
+
+def _ensure_schema(conn: sqlite3.Connection, db_path: str) -> None:
+    """Run schema bring-up once per DB path per process (caller holds _LOCK)."""
+    if db_path in _SCHEMA_DONE:
+        return
+    conn.executescript(SCHEMA)
+    # Idempotent column-add migrations for existing DBs predating
+    # each column.  Each is wrapped in its own try because the
+    # second add must still run if the first is a duplicate.
+    #
+    # NOTE on team_id: the column is added with a placeholder
+    # default '' so the ALTER succeeds against any existing row
+    # set.  The 0.6.0 data migration (server.migrations) then
+    # backfills real team_id values immediately after schema
+    # bring-up.  Code that queries jobs without filtering by
+    # team_id (e.g. the worker's claim_next loop) is unaffected;
+    # only visibility-relevant call sites check team_id.
+    for ddl in (
+        "ALTER TABLE jobs ADD COLUMN summary_preset TEXT",
+        "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN multi_audio INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
+        "ALTER TABLE jobs ADD COLUMN sync_error TEXT",
+        "ALTER TABLE jobs ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
+        # v0.7.4: teams.slug (mutable display name); teams.id is now a
+        # stable UUID.  Added here for DBs predating the column; the
+        # 0.7.4 data migration backfills slug=id for legacy rows then
+        # rewrites ids to UUIDs.
+        "ALTER TABLE teams ADD COLUMN slug TEXT",
+    ):
+        try:
+            conn.execute(ddl)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+    for index_ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_jobs_team ON jobs(team_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_slug ON teams(slug)",
+    ):
+        try:
+            conn.execute(index_ddl)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+    _SCHEMA_DONE.add(db_path)
+
+
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
     """Get a connection to the queue DB. Thread-safe via a global lock."""
@@ -233,54 +291,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
         conn.row_factory = sqlite3.Row
         _apply_pragmas(conn)
         try:
-            conn.executescript(SCHEMA)
-            # Idempotent column-add migrations for existing DBs predating
-            # each column.  Each is wrapped in its own try because the
-            # second add must still run if the first is a duplicate.
-            #
-            # NOTE on team_id: the column is added with a placeholder
-            # default '' so the ALTER succeeds against any existing row
-            # set.  The 0.6.0 data migration (server.migrations) then
-            # backfills real team_id values immediately after schema
-            # bring-up.  Code that queries jobs without filtering by
-            # team_id (e.g. the worker's claim_next loop) is unaffected;
-            # only visibility-relevant call sites check team_id.
-            for ddl in (
-                "ALTER TABLE jobs ADD COLUMN summary_preset TEXT",
-                "ALTER TABLE jobs ADD COLUMN auto_label_enabled INTEGER NOT NULL DEFAULT 1",
-                "ALTER TABLE jobs ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1",
-                "ALTER TABLE jobs ADD COLUMN personal INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE jobs ADD COLUMN multi_audio INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
-                "ALTER TABLE jobs ADD COLUMN sync_error TEXT",
-                "ALTER TABLE jobs ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
-            ):
-                try:
-                    conn.execute(ddl)
-                    conn.commit()
-                except sqlite3.OperationalError:
-                    pass
-            try:
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_team ON jobs(team_id)")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
-            # v0.7.4: teams.slug (mutable display name); teams.id is now a
-            # stable UUID.  Added here for DBs predating the column; the
-            # 0.7.4 data migration backfills slug=id for legacy rows then
-            # rewrites ids to UUIDs.
-            try:
-                conn.execute("ALTER TABLE teams ADD COLUMN slug TEXT")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_slug ON teams(slug)"
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+            _ensure_schema(conn, str(db_path))
             yield conn
             conn.commit()
         finally:
@@ -909,8 +920,13 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
                 "reassign_to must be a different team than the one being deleted"
             )
 
-    # 1. Count and (optionally) reassign jobs.
+    # Steps 1-4 run in ONE transaction (v0.11.0).  They used to span
+    # four separate ``_conn()`` blocks, so a crash mid-sequence could
+    # leave jobs reassigned but the team (and its memberships) still
+    # present, or memberships dropped with the team row alive.  Any
+    # refusal raise now rolls the whole thing back.
     with _conn() as c:
+        # 1. Count and (optionally) reassign jobs.
         n_jobs = c.execute(
             "SELECT COUNT(*) AS n FROM jobs WHERE team_id = ?",
             (uuid,),
@@ -930,43 +946,42 @@ def delete_team(team_id: str, *, reassign_to: str | None = None) -> dict:
                 (reassign_uuid, _now(), uuid),
             )
 
-    # 2. Count and (optionally) drop memberships.  v0.7.0: tokens no
-    #    longer have team_id, so "tokens scoped to this team" doesn't
-    #    exist as a concept.  Instead we count membership rows; cascade
-    #    drops them, refusal mode demands the operator first
-    #    `vezir team remove-member` each one.
-    with _conn() as c:
+        # 2. Count and (optionally) drop memberships.  v0.7.0: tokens no
+        #    longer have team_id, so "tokens scoped to this team" doesn't
+        #    exist as a concept.  Instead we count membership rows; cascade
+        #    drops them, refusal mode demands the operator first
+        #    `vezir team remove-member` each one.
         n_members = c.execute(
             "SELECT COUNT(*) AS n FROM memberships WHERE team_id = ?",
             (uuid,),
         ).fetchone()["n"]
 
-    if n_members and reassign_uuid is None:
-        raise ValueError(
-            f"team {team_id!r} has {n_members} member(s); "
-            f"pass reassign_to=<slug> to cascade-drop memberships, "
-            f"or remove them first via `vezir team remove-member`"
-        )
+        if n_members and reassign_uuid is None:
+            raise ValueError(
+                f"team {team_id!r} has {n_members} member(s); "
+                f"pass reassign_to=<slug> to cascade-drop memberships, "
+                f"or remove them first via `vezir team remove-member`"
+            )
 
-    members_dropped = 0
-    if n_members:
-        with _conn() as c:
+        members_dropped = 0
+        if n_members:
             cur = c.execute(
                 "DELETE FROM memberships WHERE team_id = ?", (uuid,)
             )
             members_dropped = cur.rowcount
 
-    # 3. Drop session_teams rows targeting this team (cross-team shares).
-    with _conn() as c:
+        # 3. Drop session_teams rows targeting this team (cross-team shares).
         c.execute(
             "DELETE FROM session_teams WHERE team_id = ?", (uuid,)
         )
 
-    # 4. Delete the team row itself.
-    with _conn() as c:
+        # 4. Delete the team row itself.
         c.execute("DELETE FROM teams WHERE id = ?", (uuid,))
 
     # 5. Remove the on-disk per-team dir (keyed by uuid in v0.7.4+).
+    #    Filesystem cleanup stays outside the transaction: the DB commit
+    #    is the point of no return, and a failed rmtree only leaves a
+    #    harmless orphan directory.
     on_disk_removed = False
     import shutil as _shutil
 

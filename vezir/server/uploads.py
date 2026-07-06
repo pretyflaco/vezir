@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -174,7 +175,12 @@ async def upload(
                 ),
             )
         config.secure_chmod_file(out)
-    except HTTPException:
+    except BaseException:
+        # BaseException, not just HTTPException: a mid-upload client
+        # disconnect raises starlette's ClientDisconnect (a plain
+        # Exception), which previously slipped past the cleanup and
+        # left a partial audio file + orphan session dir on disk
+        # forever (nothing sweeps never-enqueued session dirs).
         out.unlink(missing_ok=True)
         try:
             sdir.rmdir()
@@ -298,7 +304,8 @@ async def upload_multi(
                     f"expected {audio_bytes}"
                 ),
             )
-    except HTTPException:
+    except BaseException:
+        # See the single-file endpoint: ClientDisconnect must clean up too.
         for stale in sdir.glob(f"{session_id}.part-*"):
             stale.unlink(missing_ok=True)
         try:
@@ -347,6 +354,25 @@ async def upload_multi(
 # in config.uploads_tmp_dir() as <id>.part + <id>.meta.json.
 
 
+# Per-upload-id append locks (v0.11.0).  Two concurrent PATCHes with the
+# same (valid) offset both passed the 409 check and interleaved writes
+# into the same .part file — corrupting the audio while the offset
+# bookkeeping still "added up".  Single-instance deployment makes an
+# in-process lock sufficient.  Entries are dropped on finalize/sweep.
+_PATCH_LOCKS: dict[str, threading.Lock] = {}
+_PATCH_LOCKS_GUARD = threading.Lock()
+
+
+def _patch_lock(upload_id: str) -> threading.Lock:
+    with _PATCH_LOCKS_GUARD:
+        return _PATCH_LOCKS.setdefault(upload_id, threading.Lock())
+
+
+def _drop_patch_lock(upload_id: str) -> None:
+    with _PATCH_LOCKS_GUARD:
+        _PATCH_LOCKS.pop(upload_id, None)
+
+
 def _part_path(upload_id: str) -> Path:
     return config.uploads_tmp_dir() / f"{upload_id}.part"
 
@@ -390,6 +416,23 @@ def sweep_abandoned_uploads(now: float | None = None) -> int:
         upload_id = meta_file.name[: -len(".meta.json")]
         _part_path(upload_id).unlink(missing_ok=True)
         meta_file.unlink(missing_ok=True)
+        _drop_patch_lock(upload_id)
+        removed += 1
+    # Second pass (v0.11.0): orphan .part files whose meta sidecar is gone
+    # (crash between replace() and unlink in _finalize_resumable, manual
+    # cleanup, corrupt meta write) were never reclaimed by the meta-driven
+    # loop above.
+    for part_file in list(tmp.glob("*.part")):
+        upload_id = part_file.name[: -len(".part")]
+        if _meta_path(upload_id).exists():
+            continue
+        try:
+            if now - part_file.stat().st_mtime < RESUMABLE_TTL_SEC:
+                continue
+        except OSError:
+            continue
+        part_file.unlink(missing_ok=True)
+        _drop_patch_lock(upload_id)
         removed += 1
     if removed:
         log.info("swept %d abandoned resumable upload(s)", removed)
@@ -473,7 +516,6 @@ def _owned_meta_or_404(upload_id: str, github: str, team_id: str) -> dict:
 @router.head("/upload/resumable/{upload_id}")
 async def resumable_offset(
     upload_id: str,
-    response: Response,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Return the current ``Upload-Offset`` so a client can resume."""
@@ -481,9 +523,6 @@ async def resumable_offset(
     meta = _owned_meta_or_404(upload_id, github, team_id)
     part = _part_path(upload_id)
     offset = part.stat().st_size if part.exists() else 0
-    response.headers["Upload-Offset"] = str(offset)
-    response.headers["Upload-Length"] = str(meta["upload_length"])
-    response.headers["Tus-Resumable"] = TUS_VERSION
     return Response(
         status_code=200,
         headers={
@@ -521,55 +560,68 @@ async def resumable_append(
     """
     github, team_id, _admin = auth_triple
     meta = _owned_meta_or_404(upload_id, github, team_id)
-    part = _part_path(upload_id)
-    current = part.stat().st_size if part.exists() else 0
 
     if upload_offset is None:
         raise HTTPException(status_code=400, detail="missing Upload-Offset")
-    if upload_offset != current:
-        # tus mandates 409 on offset mismatch so the client re-syncs.
+
+    # One in-flight PATCH per upload id.  Non-blocking acquire: a second
+    # concurrent chunk is a protocol violation (tus is sequential per
+    # upload), and blocking here would stall the event loop's thread.
+    lock = _patch_lock(upload_id)
+    if not lock.acquire(blocking=False):
         raise HTTPException(
             status_code=409,
-            detail=f"offset mismatch: server at {current}, client sent {upload_offset}",
+            detail="another chunk for this upload is already in flight",
         )
+    try:
+        part = _part_path(upload_id)
+        current = part.stat().st_size if part.exists() else 0
+        if upload_offset != current:
+            # tus mandates 409 on offset mismatch so the client re-syncs.
+            raise HTTPException(
+                status_code=409,
+                detail=f"offset mismatch: server at {current}, client sent {upload_offset}",
+            )
 
-    total = meta["upload_length"]
-    ext = meta["ext"]
-    max_bytes = config.max_upload_bytes()
+        total = meta["upload_length"]
+        ext = meta["ext"]
+        max_bytes = config.max_upload_bytes()
 
-    written = current
-    validated = current > 0  # first chunk already validated on a prior PATCH
-    with part.open("ab") as f:
-        async for chunk in request.stream():
-            if not chunk:
-                continue
-            if not validated:
-                _validate_magic(ext, chunk)
-                validated = True
-            written += len(chunk)
-            if written > total or written > max_bytes:
-                # Roll back this PATCH's bytes; client must not overshoot.
-                f.flush()
-                raise HTTPException(status_code=413, detail="upload exceeds declared length")
-            f.write(chunk)
-    config.secure_chmod_file(part)
+        written = current
+        validated = current > 0  # first chunk already validated on a prior PATCH
+        with part.open("ab") as f:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                if not validated:
+                    _validate_magic(ext, chunk)
+                    validated = True
+                written += len(chunk)
+                if written > total or written > max_bytes:
+                    # Roll back this PATCH's bytes; client must not overshoot.
+                    f.flush()
+                    raise HTTPException(status_code=413, detail="upload exceeds declared length")
+                f.write(chunk)
+        config.secure_chmod_file(part)
 
-    response.headers["Upload-Offset"] = str(written)
-    response.headers["Tus-Resumable"] = TUS_VERSION
+        response.headers["Upload-Offset"] = str(written)
+        response.headers["Tus-Resumable"] = TUS_VERSION
 
-    if written < total:
-        # More chunks to come.
-        return Response(
-            status_code=204,
-            headers={
-                "Upload-Offset": str(written),
-                "Tus-Resumable": TUS_VERSION,
-            },
-        )
+        if written < total:
+            # More chunks to come.
+            return Response(
+                status_code=204,
+                headers={
+                    "Upload-Offset": str(written),
+                    "Tus-Resumable": TUS_VERSION,
+                },
+            )
 
-    # Complete — assemble into a session dir and enqueue.
-    session_id = _finalize_resumable(upload_id, meta)
-    return {"session_id": session_id, "bytes": written}
+        # Complete — assemble into a session dir and enqueue.
+        session_id = _finalize_resumable(upload_id, meta)
+        return {"session_id": session_id, "bytes": written}
+    finally:
+        lock.release()
 
 
 def _finalize_resumable(upload_id: str, meta: dict) -> str:
@@ -582,6 +634,7 @@ def _finalize_resumable(upload_id: str, meta: dict) -> str:
     _part_path(upload_id).replace(out)
     config.secure_chmod_file(out)
     _meta_path(upload_id).unlink(missing_ok=True)
+    _drop_patch_lock(upload_id)
 
     log.info(
         "resumable upload complete: upload_id=%s session=%s github=%s team=%s",
