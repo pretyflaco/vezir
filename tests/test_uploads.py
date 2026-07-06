@@ -190,6 +190,12 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
     from vezir import cli
     from vezir.client import uploader
 
+    # Hermetic team selection: without this the test depended on the
+    # HOST's ~/.config/vezir/teams.json — green on a dev box with a real
+    # login, red on every clean CI runner ("no team selected").  This is
+    # why CI had been failing on main since 2026-06-20.
+    monkeypatch.setenv("VEZIR_TEAM_ID", "blink")
+
     audio = tmp_path / "prior.wav"
     audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
 
@@ -234,6 +240,8 @@ def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
 
     from vezir import cli
     from vezir.client import uploader
+
+    monkeypatch.setenv("VEZIR_TEAM_ID", "blink")  # hermetic (see above)
 
     wav = tmp_path / "prior.wav"
     ogg = tmp_path / "prior.ogg"
