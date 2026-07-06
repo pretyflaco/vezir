@@ -93,3 +93,34 @@ def _reset_nip98_replay_store():
     except Exception:  # pragma: no cover - module may be unimportable in some envs
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_v0_11_process_state():
+    """Reset v0.11.0 in-process caches between tests.
+
+    * the revoked-sid cache (sessions_auth) — otherwise the loaded-flag
+      carries sids from a previous test's tmp DB;
+    * the worker follow-up task queue + dedupe set — otherwise an
+      enqueued-but-never-drained task from one test suppresses (dedupes)
+      an identical enqueue in the next;
+    * the schema-bring-up marker is left alone (keyed per DB path, so
+      fresh tmp DBs re-run their DDL naturally).
+    """
+    try:
+        from vezir.server import sessions_auth
+        sessions_auth._reset_revoked_cache_for_tests()
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        from vezir.server import worker
+        with worker._TASKS_LOCK:
+            worker._ACTIVE_TASKS.clear()
+        while not worker._TASKS.empty():
+            try:
+                worker._TASKS.get_nowait()
+            except Exception:
+                break
+    except Exception:  # pragma: no cover - defensive
+        pass
+    yield
