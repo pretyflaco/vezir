@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -117,7 +116,10 @@ def api_session(
     return _decorate(row)
 
 
-@router.get("/artifact/{session_id}/{name}")
+@router.get(
+    "/artifact/{session_id}/{name}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
 def artifact(
     session_id: str,
     name: str,
@@ -149,7 +151,10 @@ class _SyncBody(BaseModel):
     meeting_type: str | None = None
 
 
-@router.post("/session/{session_id}/sync")
+@router.post(
+    "/session/{session_id}/sync",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
 def sync_now(
     session_id: str,
     body: _SyncBody | None = Body(default=None),
@@ -162,8 +167,9 @@ def sync_now(
     `done` with no git push, and the user now wants to publish it.
 
       1. Sets the queue row's `sync_enabled = 1`
-      2. Runs `millet sync` via the existing worker.finalize_after_labeling
-         flow (in a background thread, like the labeling submit handler)
+      2. Queues a `sync` task onto the single background worker (v0.11.0:
+         serialized with the pipeline — no more ad-hoc thread racing the
+         worker; a duplicate request while one is pending is dropped)
 
     Optional JSON body ``{"meeting_type": "<slug>"}`` forces the target
     folder (the "sync as" override).  It is validated/slugified server-side;
@@ -212,12 +218,9 @@ def sync_now(
         session_id, github, meeting_type,
     )
 
-    threading.Thread(
-        target=worker.finalize_after_labeling,
-        args=(session_id, meeting_type),
-        name=f"sync-now-{session_id}",
-        daemon=True,
-    ).start()
+    queued = worker.enqueue_task("sync", session_id, meeting_type=meeting_type)
+    if not queued:
+        log.info("session=%s sync already pending; duplicate dropped", session_id)
 
     return {
         "session_id": session_id,
@@ -238,18 +241,18 @@ def retry_summary(
     body: _RetrySummaryBody | None = None,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
-    github, team_id, _admin = auth_triple
     """Retry summary generation for a session whose summary previously failed.
 
     The session must be in ``done`` status with a non-empty ``summary_error``
     field (i.e. transcription succeeded but the summary step failed, typically
     due to a transient network/DNS error reaching the LLM backend).
 
-    Runs the summary step in a background thread and returns immediately.
-    The client can poll ``GET /api/sessions/{id}`` to observe the status
-    transition: ``done`` -> ``transcribing`` -> ``done`` (with ``summary_error``
-    cleared on success, or updated on repeat failure).
+    Queues the summary step onto the background worker and returns
+    immediately.  The client can poll ``GET /api/sessions/{id}`` to observe
+    the status transition: ``done`` -> ``summarizing`` -> ``done`` (with
+    ``summary_error`` cleared on success, or updated on repeat failure).
     """
+    github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
@@ -291,16 +294,16 @@ def retry_summary(
         session_id, github, language_override or "auto",
     )
 
-    threading.Thread(
-        target=worker.retry_summary_for_session,
-        args=(session_id,),
-        kwargs={
-            "preset_override": preset_override,
-            "language_override": language_override,
-        },
-        name=f"retry-summary-{session_id}",
-        daemon=True,
-    ).start()
+    queued = worker.enqueue_task(
+        "retry_summary", session_id,
+        preset_override=preset_override,
+        language_override=language_override,
+    )
+    if not queued:
+        log.info(
+            "session=%s retry-summary already pending; duplicate dropped",
+            session_id,
+        )
 
     return {"session_id": session_id, "queued": True}
 

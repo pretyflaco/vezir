@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue as _pyqueue
 import re
 import subprocess
 import threading
@@ -30,6 +31,76 @@ from . import meet_runner, queue
 log = logging.getLogger("vezir.worker")
 
 POLL_INTERVAL_SEC = 2.0
+
+
+# ── Follow-up task queue (v0.11.0) ──────────────────────────────────────────
+#
+# Retroactive sync, retry-summary, and post-labeling finalize used to be
+# fired as ad-hoc daemon threads straight from request handlers.  Those
+# threads raced the single background worker AND each other: two threads
+# could process the same session concurrently, both mutating job status
+# and the shared per-job HOME shim (which each `finally` rmtree'd out
+# from under the other).  They are now serialized through the SAME
+# worker thread as the transcription pipeline, restoring the
+# single-writer model.  Tasks are in-process (not persisted): a restart
+# drops pending tasks, which is the same behavior a killed thread had —
+# the user just re-clicks.  Duplicate requests for a session with an
+# identical task already pending/running are dropped (idempotent).
+
+_TASKS: _pyqueue.Queue = _pyqueue.Queue()
+_ACTIVE_TASKS: set[tuple[str, str]] = set()
+_TASKS_LOCK = threading.Lock()
+
+_TASK_KINDS = ("sync", "retry_summary", "finalize_labels")
+
+
+def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
+    """Queue a follow-up task for the single worker thread.
+
+    Returns False (and does nothing) when an identical ``(kind,
+    session_id)`` task is already pending or running — a double-clicked
+    "Sync now" no longer spawns two concurrent syncs of one session.
+    """
+    if kind not in _TASK_KINDS:
+        raise ValueError(f"unknown task kind: {kind!r}")
+    key = (kind, session_id)
+    with _TASKS_LOCK:
+        if key in _ACTIVE_TASKS:
+            log.info("task %s already pending for session %s; dropped", kind, session_id)
+            return False
+        _ACTIVE_TASKS.add(key)
+    _TASKS.put((kind, session_id, kwargs))
+    return True
+
+
+def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
+    try:
+        if kind == "sync":
+            finalize_after_labeling(session_id, kwargs.get("meeting_type"))
+        elif kind == "retry_summary":
+            retry_summary_for_session(
+                session_id,
+                preset_override=kwargs.get("preset_override"),
+                language_override=kwargs.get("language_override"),
+            )
+        elif kind == "finalize_labels":
+            _finalize_labels_task(session_id, kwargs.get("label_map") or {})
+    except Exception:
+        log.exception("task %s failed for session %s", kind, session_id)
+    finally:
+        with _TASKS_LOCK:
+            _ACTIVE_TASKS.discard((kind, session_id))
+
+
+def _drain_tasks() -> None:
+    """Run every pending follow-up task (worker thread only)."""
+    while True:
+        try:
+            kind, session_id, kwargs = _TASKS.get_nowait()
+        except _pyqueue.Empty:
+            return
+        log.info("running task %s for session %s", kind, session_id)
+        _run_task(kind, session_id, kwargs)
 
 
 def _skip_sync() -> bool:
@@ -688,6 +759,13 @@ def _loop() -> None:
                 log.exception("resumable-upload sweep failed (non-fatal)")
             next_sweep = now + _UPLOAD_SWEEP_INTERVAL_SEC
 
+        # Follow-up tasks (sync now / retry summary / finalize labels)
+        # run on this same thread, serialized with the pipeline.
+        try:
+            _drain_tasks()
+        except Exception:
+            log.exception("task drain failed (non-fatal)")
+
         try:
             job = queue.claim_next()
         except Exception:
@@ -729,11 +807,14 @@ def retry_summary_for_session(
     """Re-run summary generation for a completed session.
 
     Called when the user requests a summary retry (e.g. after a transient
-    Tinfoil/network failure).  Uses millet's ``apply_labels()`` API
-    directly (in-process, not via subprocess) with an empty label_map and
-    ``regenerate_summary=True``.  This avoids the interactive-prompt bug
-    that made the previous subprocess approach (``millet label --auto``)
-    abort on unrecognized speakers.
+    Tinfoil/network failure).  v0.11.0: runs ``millet label --apply-json``
+    with an empty label map + summary regeneration as a SUBPROCESS
+    through the per-job HOME shim.  (Pre-0.11.0 this imported
+    ``millet.label.apply_labels`` in-process and mutated
+    ``os.environ["HOME"]`` around the call — racing every other thread in
+    the server.  The non-interactive apply mode in millet-pipeline 0.13.0
+    also fixes the interactive-prompt bug that had originally forced the
+    in-process approach.)
 
     ``language_override`` (e.g. "de") regenerates the summary in that language
     and saves it as an ADDITIONAL ``*.summary.<lang>.md`` artifact, preserving
@@ -776,28 +857,27 @@ def retry_summary_for_session(
             summary_error=None,  # clear previous summary error
         )
 
-        # Run apply_labels in-process with the HOME shim so millet
-        # picks up the correct per-team voiceprint DB and config paths.
+        # Run `millet label --apply-json` (empty map, summary regen) as a
+        # subprocess through the per-job HOME shim so millet picks up the
+        # correct per-team voiceprint DB and config paths — no process-wide
+        # env mutation.
         summary_err: str | None = None
-        home = meet_runner.build_home_shim(session_id, team_id)
-        saved_env = {k: os.environ.get(k) for k in ("HOME", "XDG_CONFIG_HOME")}
         try:
-            os.environ["HOME"] = str(home)
-            os.environ.pop("XDG_CONFIG_HOME", None)
-            def _progress(msg: str) -> None:
-                log.info("retry-summary %s: %s", session_id, msg)
-
-            from millet.label import apply_labels
-            apply_labels(
-                sd,
+            rc = meet_runner.apply_labels_json(
+                sd, session_id, team_id, log_path,
                 label_map={},
                 regenerate_summary=True,
                 summary_preset=requested_preset,
                 summary_language=language_override,
-                progress_callback=_progress,
             )
+            if rc != 0:
+                summary_err = _error_with_tail(
+                    f"summary retry failed (millet label exited {rc})",
+                    log_path,
+                )
+                log.warning("retry-summary %s failed: %s", session_id, summary_err)
             # Belt-and-suspenders: verify the expected summary file appeared.
-            if language_override:
+            elif language_override:
                 if not list(sd.glob(f"*.summary.{language_override}.md")):
                     summary_err = (
                         f"summary retry produced no "
@@ -813,12 +893,6 @@ def retry_summary_for_session(
         except Exception as exc:
             summary_err = f"summary retry failed: {exc}"
             log.warning("retry-summary %s failed: %s", session_id, summary_err)
-        finally:
-            for k, v in saved_env.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
 
         artifacts = _find_artifacts(sd)
 
@@ -880,6 +954,47 @@ def retry_summary_for_session(
         queue.update_status(session_id, "error", error=str(exc))
     finally:
         meet_runner.cleanup_home_shim(session_id)
+
+
+def _finalize_labels_task(session_id: str, label_map: dict[str, str]) -> None:
+    """Post-labeling follow-up: voiceprint update + sync/cleanup.
+
+    Runs on the worker thread after the labeling endpoint has already
+    applied the labels (fast, synchronous `millet label --apply-json
+    --no-summary`).  The voiceprint update loads a neural network and
+    runs speaker-embedding inference (30-60 s on CPU) — far beyond the
+    client's read timeout, which is why it's deferred here.
+
+    Re-running the apply with the same map is an idempotent no-op on the
+    already-relabeled artifacts; ``--update-profiles`` is the part that
+    matters, and millet treats its failure as non-fatal (matching the
+    pre-0.11.0 behavior where the in-process voiceprint update swallowed
+    exceptions).  ``finalize_after_labeling`` then syncs and finalizes
+    status regardless.
+    """
+    sd = _session_dir(session_id)
+    log_path = _job_log_path(session_id)
+    try:
+        job = queue.get(session_id) or {}
+        team_id = job.get("team_id") or ""
+        if team_id and label_map:
+            rc = meet_runner.apply_labels_json(
+                sd, session_id, team_id, log_path,
+                label_map=label_map,
+                update_profiles=True,
+            )
+            if rc != 0:
+                log.warning(
+                    "finalize-labels %s: voiceprint update pass exited %s "
+                    "(non-fatal; labels already applied)",
+                    session_id, rc,
+                )
+    except Exception:
+        log.exception(
+            "finalize-labels %s: voiceprint update failed (non-fatal)",
+            session_id,
+        )
+    finalize_after_labeling(session_id)
 
 
 def reauto_label_session(session_id: str, *, sync: bool = False) -> dict:

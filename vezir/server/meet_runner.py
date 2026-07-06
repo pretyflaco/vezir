@@ -267,6 +267,37 @@ def _env_for_meet(home: Path, team_id: str) -> dict:
     return env
 
 
+# Exit code reported when a millet step exceeds VEZIR_MILLET_TIMEOUT
+# (mirrors GNU timeout(1)'s convention).
+TIMEOUT_EXIT_CODE = 124
+
+
+def _wait_with_timeout(proc: subprocess.Popen, cmd: list[str]) -> int:
+    """Wait for a millet subprocess, killing its process group on timeout.
+
+    A wedged transcription (GPU hang, stalled network inside millet)
+    previously blocked the single worker forever — the queue stopped
+    draining until a service restart.  ``start_new_session=True`` at
+    spawn puts millet and its children (ffmpeg, etc.) in their own
+    process group so the kill reaps all of them.
+    """
+    timeout = config.millet_timeout_seconds()
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.error(
+            "millet step timed out after %ss; killing process group: %s",
+            timeout, " ".join(cmd[:3]),
+        )
+        import signal as _signal
+        try:
+            os.killpg(proc.pid, _signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        proc.wait()
+        return TIMEOUT_EXIT_CODE
+
+
 def run_meet(
     args: list[str],
     job_id: str,
@@ -276,7 +307,9 @@ def run_meet(
     """Invoke `meet <args>` with the per-job HOME shim.
 
     Streams stdout/stderr to log_path if provided. Returns the meet
-    process exit code.
+    process exit code (``TIMEOUT_EXIT_CODE`` = 124 when the
+    ``VEZIR_MILLET_TIMEOUT`` budget expires and the process group is
+    killed).
 
     v0.6.2+: ``team_id`` is required so the HOME shim symlinks the
     correct per-team voiceprint DB and sync_config.
@@ -292,11 +325,20 @@ def run_meet(
             config.secure_chmod_file(log_path)
             f.write(f"\n--- {' '.join(cmd)}\n".encode())
             f.flush()
-            proc = subprocess.run(cmd, env=env, stdout=f, stderr=f)
+            proc = subprocess.Popen(
+                cmd, env=env, stdout=f, stderr=f, start_new_session=True,
+            )
+            rc = _wait_with_timeout(proc, cmd)
+            if rc == TIMEOUT_EXIT_CODE:
+                f.write(
+                    f"\n--- TIMED OUT after {config.millet_timeout_seconds()}s "
+                    "(VEZIR_MILLET_TIMEOUT); process group killed ---\n".encode()
+                )
     else:
-        proc = subprocess.run(cmd, env=env)
-    log.info("meet exited: %s", proc.returncode)
-    return proc.returncode
+        proc = subprocess.Popen(cmd, env=env, start_new_session=True)
+        rc = _wait_with_timeout(proc, cmd)
+    log.info("meet exited: %s", rc)
+    return rc
 
 
 def _team_default_language(team_id: str | None) -> str | None:
@@ -374,6 +416,66 @@ def transcribe(session_dir: Path, job_id: str, team_id: str, log_path: Path,
         team_id=team_id,
         log_path=log_path,
     )
+
+
+def apply_labels_json(
+    session_dir: Path,
+    job_id: str,
+    team_id: str,
+    log_path: Path,
+    label_map: dict[str, str],
+    *,
+    update_profiles: bool = False,
+    regenerate_summary: bool = False,
+    summary_preset: str | None = None,
+    summary_language: str | None = None,
+) -> int:
+    """Apply a speaker->name map via `millet label --apply-json` (subprocess).
+
+    v0.11.0: replaces the in-process ``millet.label.apply_labels`` calls
+    that mutated ``os.environ["HOME"]`` around the invocation — a race
+    against every other thread in the server process (worker, request
+    handlers), and a violation of the "millet is a subprocess, never a
+    library" boundary.  The per-team voiceprint DB and sync config are
+    wired through the same HOME shim as every other millet step.
+
+    * ``label_map`` may be empty when ``regenerate_summary=True`` — that
+      re-runs just the summary+PDF step (the retry-summary path).
+    * ``update_profiles=True`` also updates the team voiceprint DB from
+      the applied (human-confirmed) labels; millet treats a profile
+      failure as non-fatal (labels are already applied).
+
+    Requires millet-pipeline >= 0.13.0; raises RuntimeError with an
+    actionable message when the installed millet lacks ``--apply-json``.
+    """
+    if not config.meet_label_supports_apply_json():
+        raise RuntimeError(
+            "the installed millet CLI does not support `label --apply-json`; "
+            "vezir >= 0.11.0 requires millet-pipeline >= 0.13.0 "
+            "(pip install --upgrade millet-pipeline, then restart vezir)"
+        )
+
+    # The map file lives in the session dir under a dotted name so no
+    # artifact glob (vezir's _find_artifacts, millet sync's _collect_files)
+    # can ever pick it up; removed again in the finally.
+    map_file = session_dir / f".{job_id}.labels.json"
+    config.secure_write_text(
+        map_file, json.dumps({"labels": label_map}, ensure_ascii=False)
+    )
+    args = ["label", "--apply-json", str(map_file)]
+    if not regenerate_summary:
+        args.append("--no-summary")
+    if summary_preset:
+        args.extend(["--summary-preset", summary_preset])
+    if summary_language:
+        args.extend(["--summary-language", summary_language])
+    if update_profiles:
+        args.append("--update-profiles")
+    args.append(str(session_dir))
+    try:
+        return run_meet(args, job_id=job_id, team_id=team_id, log_path=log_path)
+    finally:
+        map_file.unlink(missing_ok=True)
 
 
 def label_auto(session_dir: Path, job_id: str, team_id: str, log_path: Path) -> int:

@@ -8,9 +8,11 @@ JSON API routes (Android / programmatic clients):
 Audio clip route:
   GET  /label/<session-id>/clip/<speaker-id>    → audio clip (WAV)
 
-On submit, vezir invokes millet's apply_labels() directly to relabel
-the transcript and regenerate artifacts (txt, srt, json, summary, pdf),
-then transitions the job to `syncing` → `done`.
+On submit, vezir runs `millet label --apply-json` as a subprocess (per-job
+HOME shim, millet-pipeline >= 0.13.0) to relabel the transcript and
+regenerate artifacts (txt, srt, json, summary, pdf), then queues the
+voiceprint update + sync follow-up onto the background worker, which
+transitions the job to `syncing` → `done`.
 """
 from __future__ import annotations
 
@@ -19,7 +21,6 @@ import json
 import logging
 import re
 import shutil
-import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -213,87 +214,46 @@ def _apply_and_finalize(
     github: str,
     team_id: str,
 ) -> None:
-    """Shared logic for both the HTML form POST and the JSON API POST.
+    """Apply labels for the JSON API POST, then queue the follow-up.
 
-    Applies labels via millet, updates the team's voiceprint DB, and
-    spawns a background thread for sync + cleanup.
+    v0.11.0: labels are applied via the ``millet label --apply-json``
+    SUBPROCESS through the per-job HOME shim (millet-pipeline >= 0.13.0).
+    Pre-0.11.0 this imported ``millet.label.apply_labels`` in-process and
+    mutated ``os.environ["HOME"]`` around the call — racing every other
+    thread in the server — and spawned an ad-hoc daemon thread for the
+    follow-up, which could process a session concurrently with the
+    background worker.
+
+    The fast apply (find-and-replace relabel, no summary regen) runs
+    synchronously so the HTTP response reflects the applied labels; the
+    slow follow-up (voiceprint model inference 30-60 s + git sync) is
+    queued onto the single worker thread (``finalize_labels`` task).
 
     v0.6.2+: ``team_id`` is required so the HOME shim points at the
-    correct per-team voiceprint DB, and the
-    ``update_profiles_from_confirmed_labels`` call writes to that
-    same DB.
+    correct per-team voiceprint DB.
     """
     log.info(
         "session=%s team=%s labels=%s by=%s",
         session_id, team_id, label_map, github,
     )
 
-    import os
-
-    home = meet_runner.build_home_shim(session_id, team_id)
-    saved = {k: os.environ.get(k) for k in ("HOME", "XDG_CONFIG_HOME")}
-    try:
-        os.environ["HOME"] = str(home)
-        os.environ.pop("XDG_CONFIG_HOME", None)
-        def _progress(msg: str) -> None:
-            log.info("session=%s apply_labels: %s", session_id, msg)
-
-        from millet.label import apply_labels
-        apply_labels(
-            _session_dir(session_id),
-            label_map=label_map,
-            regenerate_summary=False,
-            progress_callback=_progress,
+    log_path = config.logs_dir() / f"{session_id}.log"
+    rc = meet_runner.apply_labels_json(
+        _session_dir(session_id), session_id, team_id, log_path,
+        label_map=label_map,
+        regenerate_summary=False,
+    )
+    if rc != 0:
+        log.error(
+            "session=%s: millet label --apply-json exited %s", session_id, rc,
+        )
+        raise HTTPException(
+            502, f"applying labels failed (millet exited {rc}); see server log",
         )
 
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-    # Voiceprint update + sync run in a background thread so the HTTP
-    # response returns quickly (~2s for apply_labels).  The voiceprint
-    # update loads a neural network model and runs speaker-embedding
-    # inference, which can take 30-60s on CPU — well beyond the client's
-    # read timeout.
-    def _bg_finalize() -> None:
-        try:
-            from millet.label import _detect_speaker_channels, _load_transcript
-            from millet.voiceprint import update_profiles_from_confirmed_labels
-
-            sdir = _session_dir(session_id)
-            wav_path = _find_wav(sdir)
-            tj_path = sdir / f"{sdir.name}.json"
-            if wav_path and tj_path.exists():
-                transcript = _load_transcript(tj_path)
-                channel_map = _detect_speaker_channels(
-                    wav_path, transcript.segments, transcript.speakers,
-                )
-                update_profiles_from_confirmed_labels(
-                    wav_path,
-                    transcript.segments,
-                    label_map,
-                    channel_map,
-                    profiles_path=config.team_speaker_profiles_path(team_id),
-                )
-            else:
-                log.warning(
-                    "session=%s: skipping voiceprint update (wav=%s, transcript=%s)",
-                    session_id, wav_path is not None, tj_path.exists(),
-                )
-        except Exception:
-            log.exception(
-                "could not update team %s voiceprint DB", team_id,
-            )
-        worker.finalize_after_labeling(session_id)
-
-    threading.Thread(
-        target=_bg_finalize,
-        name=f"finalize-{session_id}",
-        daemon=True,
-    ).start()
+    worker.enqueue_task(
+        "finalize_labels", session_id, label_map=dict(label_map),
+    )
 
 
 _LABELABLE_STATUSES = ("needs_labeling", "done", "error", "sync_failed")
@@ -325,7 +285,6 @@ def api_label_get(
     session_id: str,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
-    _github, team_id, _admin = auth_triple
     """Return the speaker list and team handles for native-client labeling.
 
     Response:
@@ -343,6 +302,7 @@ def api_label_get(
     Note: ``channel`` is a string from millet (e.g. "mic", "system"),
     not an integer.
     """
+    _github, team_id, _admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")

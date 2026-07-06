@@ -340,12 +340,16 @@ def test_retry_summary_rejects_invalid_language(client_and_token, tmp_data):
     assert resp.status_code == 400
 
 
-@patch("vezir.server.worker.retry_summary_for_session")
+@patch("vezir.server.worker.enqueue_task")
 def test_retry_summary_language_allows_successful_session(
-    mock_worker, client_and_token, tmp_data,
+    mock_enqueue, client_and_token, tmp_data,
 ):
     """A language override re-summarizes even when the summary already
-    succeeded (no summary_error)."""
+    succeeded (no summary_error).
+
+    v0.11.0: the endpoint queues a ``retry_summary`` task onto the single
+    background worker instead of spawning an ad-hoc thread.
+    """
     client, token = client_and_token
     _seed_session(tmp_data, "01TEST", status="done")
     _set_summary_error("01TEST", None)  # summary succeeded
@@ -356,9 +360,10 @@ def test_retry_summary_language_allows_successful_session(
         json={"language": "de"},
     )
     assert resp.status_code == 200
-    # Worker invoked with the language override.
-    assert mock_worker.called
-    _, kwargs = mock_worker.call_args
+    # Task queued with the language override.
+    assert mock_enqueue.called
+    args, kwargs = mock_enqueue.call_args
+    assert args == ("retry_summary", "01TEST")
     assert kwargs.get("language_override") == "de"
 
 
@@ -436,21 +441,15 @@ def test_sync_now_admits_sync_failed(client_and_token, tmp_data):
 
 
 def test_sync_now_threads_meeting_type_override(client_and_token, tmp_data):
-    """A valid meeting_type body is slugified and threaded to the worker."""
+    """A valid meeting_type body is slugified and threaded to the worker.
+
+    v0.11.0: sync-now queues a ``sync`` task onto the single background
+    worker (serialized with the pipeline) instead of an ad-hoc thread.
+    """
     client, token = client_and_token
     _seed_session(tmp_data, "01TEST", status="done")
-    captured = {}
 
-    def fake_thread(target, args, name, daemon):
-        captured["target"] = target
-        captured["args"] = args
-
-        class _T:
-            def start(self_inner):
-                pass
-        return _T()
-
-    with patch("vezir.server.sessions.threading.Thread", side_effect=fake_thread):
+    with patch("vezir.server.worker.enqueue_task") as mock_enqueue:
         resp = client.post(
             "/session/01TEST/sync",
             headers=_bearer(token),
@@ -458,8 +457,9 @@ def test_sync_now_threads_meeting_type_override(client_and_token, tmp_data):
         )
     assert resp.status_code == 200
     assert resp.json()["meeting_type"] == "post-scrum"
-    # worker.finalize_after_labeling(session_id, meeting_type)
-    assert captured["args"] == ("01TEST", "post-scrum")
+    args, kwargs = mock_enqueue.call_args
+    assert args == ("sync", "01TEST")
+    assert kwargs.get("meeting_type") == "post-scrum"
 
 
 def test_sync_now_rejects_unslugifiable_meeting_type(client_and_token, tmp_data):
@@ -479,21 +479,14 @@ def test_sync_now_no_body_is_auto(client_and_token, tmp_data):
     """No body → meeting_type=None (auto-detect, current behavior)."""
     client, token = client_and_token
     _seed_session(tmp_data, "01TEST", status="done")
-    captured = {}
 
-    def fake_thread(target, args, name, daemon):
-        captured["args"] = args
-
-        class _T:
-            def start(self_inner):
-                pass
-        return _T()
-
-    with patch("vezir.server.sessions.threading.Thread", side_effect=fake_thread):
+    with patch("vezir.server.worker.enqueue_task") as mock_enqueue:
         resp = client.post("/session/01TEST/sync", headers=_bearer(token))
     assert resp.status_code == 200
     assert resp.json()["meeting_type"] is None
-    assert captured["args"] == ("01TEST", None)
+    args, kwargs = mock_enqueue.call_args
+    assert args == ("sync", "01TEST")
+    assert kwargs.get("meeting_type") is None
 
 
 def test_retry_summary_admits_sync_failed(client_and_token, tmp_data):
