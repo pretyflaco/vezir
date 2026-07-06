@@ -133,7 +133,7 @@ passes it to `millet transcribe --summary-preset <id>`.
 | Preset | Backend | Model | Use case |
 |---|---|---|---|
 | `high-quality` | claudemax | Sonnet | Default on desktop; highest quality (Claude Max on the server). |
-| `confidential` | tinfoil | DeepSeek (TEE) | Hardware-attested enclave — prompts not visible to the provider. Default on Android; PDF gets a CONFIDENTIAL watermark. |
+| `confidential` | tinfoil | GLM-5.2 (TEE) | Hardware-attested enclave — prompts not visible to the provider. Default on Android; PDF gets a CONFIDENTIAL watermark. |
 | `alternative` | openrouter | Kimi | Cheapest cloud option. |
 
 When a preset is explicitly chosen the server **does not silently fall
