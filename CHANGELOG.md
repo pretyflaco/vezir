@@ -3,6 +3,83 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.11.0 — auth hardening, subprocess boundary restored, worker serialization
+
+Server hardening release from the 2026-07 ecosystem review.  **The
+server now requires millet-pipeline ≥ 0.13.0** (label apply / summary
+retry go through the new `millet label --apply-json`; vezir probes for
+it and fails with an upgrade message).  No new DB migration.  Test
+suite grows 807 → 833.
+
+### Fixed (auth)
+
+* **Session expiry checks were skewed on non-UTC hosts.**
+  `sessions_auth._parse_iso` parsed UTC timestamps with `time.mktime`
+  (local time); every refresh/idle/absolute-cap check was off by the
+  host's UTC offset.  Now `calendar.timegm`.
+* **A lost `/api/auth/refresh` response no longer kills the session.**
+  The documented one-generation grace window is implemented: replaying
+  the just-consumed refresh token within `VEZIR_REFRESH_GRACE`
+  (default 60 s) of its rotation re-issues the pair (lost-response
+  retry).  Outside the window — or anything older — is confirmed reuse
+  and revokes the family (RFC 9700).  `VEZIR_REFRESH_GRACE=0` = strict.
+* **Revoking a session now kills its live access JWTs immediately**
+  (logout, admin revoke, revoke-all, reuse detection) via an
+  in-process revoked-sid cache checked on JWT decode — still no DB hit
+  on the hot path.  Previously a revoked session's access token worked
+  until `exp`.
+* **Login rate-limit bypass closed.**  The unauthenticated
+  login/refresh bucket keyed on the *unvalidated* Bearer header — a
+  random bearer per request got a fresh bucket.  Now strictly per-IP;
+  and `vezir serve` runs uvicorn with `proxy_headers=True` +
+  `forwarded_allow_ips=127.0.0.1` so per-IP buckets behind Caddy see
+  real client IPs instead of collapsing everyone into the proxy's one
+  bucket.
+* `POST /api/auth/logout`, `GET /artifact/...`, and
+  `POST /session/{id}/sync` are now rate-limited; a pre-existing
+  `.session-secret` gets 0600 enforced before reading.
+
+### Changed (architecture)
+
+* **millet is a subprocess again.**  Label apply and summary retry
+  imported `millet.label` in-process and mutated `os.environ["HOME"]`
+  around the call — racing every other thread in the server.  Both now
+  run `millet label --apply-json` through the per-job HOME shim
+  (hence the millet-pipeline ≥ 0.13.0 requirement).
+* **Follow-up work is serialized through the single worker.**
+  Retroactive sync, retry-summary, and the post-labeling
+  voiceprint-update+sync follow-up were ad-hoc daemon threads racing
+  the worker and each other (double-click "Sync now" = two concurrent
+  syncs mutating one session).  They are now queued tasks
+  (`worker.enqueue_task`) drained by the worker thread, deduped per
+  (kind, session).  API response shapes unchanged.
+* **millet steps have a hard timeout** (`VEZIR_MILLET_TIMEOUT`,
+  default 4 h): a wedged transcription no longer blocks the queue
+  forever — the process group is killed and the job errors with the
+  log tail.
+
+### Fixed (robustness)
+
+* **Upload cleanup on client disconnect.**  A mid-upload disconnect
+  (starlette `ClientDisconnect`, not an `HTTPException`) leaked a
+  partial audio file + orphan session dir forever.  Both upload
+  endpoints now clean up on any exception.
+* **Concurrent resumable PATCH corruption.**  Two chunks with the same
+  valid offset could interleave writes into one `.part` file.  A
+  per-upload lock returns 409 to the second in-flight chunk.  Orphan
+  `.part` files without a meta sidecar are now swept after the TTL.
+* **SQLite schema DDL ran on every connection** (twice per
+  authenticated request, under the global lock, with genuine
+  `OperationalError`s masked).  Now once per process per DB path.
+* **`delete_team` is atomic**: the four DB steps ran in separate
+  transactions; a crash mid-sequence could strand half-deleted state.
+  Now one transaction (filesystem cleanup stays outside).
+
+### Upgrade
+
+* Server: `pip install --upgrade millet-pipeline vezir` (millet first),
+  restart the service, run `vezir doctor`.
+
 ## 0.10.1 — refresh on the upload path (fix "session expired" after recording)
 
 0.10.0 refreshed silently on the session-*polling* path but **not on
