@@ -289,7 +289,17 @@ class VezirTuiApp(App):
             self.server_url,
             self.token or "vzr_unset",  # placeholder; server will 401
             team_id=self.active_team_id,
+            on_token_refreshed=self._on_token_refreshed,
         )
+
+    def _on_token_refreshed(self, new_token: str) -> None:
+        """Keep ``self.token`` in sync when the client silently refreshes.
+
+        The uploader and other snapshot readers use ``app.token``; without
+        this, a token rotated by the polling path would live only inside
+        ``self.api`` and the upload path would keep using a stale token.
+        """
+        self.token = new_token
 
     def on_mount(self) -> None:
         self.push_screen(MainScreen())
@@ -361,6 +371,7 @@ class VezirTuiApp(App):
                         self.server_url,
                         self.token or "vzr_unset",
                         team_id=self.active_team_id,
+                        on_token_refreshed=self._on_token_refreshed,
                     )
                 if matched:
                     self.team_label = (
@@ -512,6 +523,7 @@ class VezirTuiApp(App):
             self.server_url,
             self.token or "vzr_unset",
             team_id=self.active_team_id,
+            on_token_refreshed=self._on_token_refreshed,
         )
         self._refresh_identity()
 
@@ -544,7 +556,9 @@ class VezirTuiApp(App):
         for the active team in teams.json and re-binds the in-memory token +
         API client so the running TUI uses it immediately — no restart.
         """
-        jwt = body.get("session_jwt")
+        # 0.10.1: prefer the short-lived access token; fall back to
+        # session_jwt for a pre-refresh server.
+        jwt = body.get("access_jwt") or body.get("session_jwt")
         if not jwt:
             raise ValueError("re-auth body missing session_jwt")
         team = self.active_team_id or ""
@@ -559,10 +573,19 @@ class VezirTuiApp(App):
                 exp_at = (
                     _time.time() + int(exp_in) if exp_in else None
                 )
+                # Persist the rotating refresh token too, so silent refresh
+                # works after an in-TUI re-auth (previously dropped, forcing
+                # another manual login an hour later).
+                r_exp_in = body.get("refresh_expires_in")
+                r_exp_at = (
+                    _time.time() + int(r_exp_in) if r_exp_in else None
+                )
                 set_team_session(
                     team, self.server_url, jwt,
                     body.get("npub", body.get("email", "")), label=team,
                     expires_at=exp_at,
+                    refresh_token=body.get("refresh_token"),
+                    refresh_expires_at=r_exp_at,
                 )
             except Exception:
                 log.warning("could not persist re-auth session", exc_info=True)
@@ -572,6 +595,7 @@ class VezirTuiApp(App):
             self.server_url,
             self.token,
             team_id=self.active_team_id,
+            on_token_refreshed=self._on_token_refreshed,
         )
         self._refresh_identity()
 

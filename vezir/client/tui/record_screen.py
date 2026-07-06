@@ -702,14 +702,20 @@ class RecordBody(Vertical):
         self._warn_if_session_expiring()
 
     def _warn_if_session_expiring(self) -> None:
-        """Proactively warn when the stored session JWT is expired / near-expiry.
+        """Proactively warn only when re-login is genuinely needed.
 
-        Avoids the surprise mid-/post-upload 401: the user can ^g to sign in
-        before recording.  Best-effort and silent on any error (older logins
-        have no stored expiry → no warning).
+        0.10.1: with rotating refresh tokens, a lapsed 60-min access token
+        is NOT a problem — the upload path refreshes silently.  So we skip
+        the warning entirely whenever a refresh token is stored, and only
+        warn when there's no refresh token (legacy/pre-0.10.0 session) AND
+        the access token is at/near expiry.  Best-effort; silent on error.
         """
         try:
-            from ..config import active_team_expiry
+            from ..config import active_team_expiry, active_team_refresh_token
+            # A stored refresh token means silent refresh will cover any
+            # access-token lapse — no need to nag the user.
+            if active_team_refresh_token():
+                return
             exp = active_team_expiry()
         except Exception:
             return
@@ -1139,6 +1145,18 @@ class RecordBody(Vertical):
         server_url = self.app.server_url
         token = self.app.token or ""
         team_id = getattr(self.app, "active_team_id", None)
+
+        def refresh_cb() -> str | None:
+            """Rotate the session on a mid-upload 401 and propagate the new
+            token to the app so subsequent requests use it (0.10.1)."""
+            from ..api import refresh_active_session
+            new = refresh_active_session(server_url, None)
+            if new:
+                self.app.token = new
+                if getattr(self.app, "api", None) is not None:
+                    self.app.api.token = new
+            return new
+
         upload_kwargs = dict(
             title=title,
             summary_preset=preset,
@@ -1148,6 +1166,7 @@ class RecordBody(Vertical):
             progress=on_progress,
             on_retry=on_retry,
             team_id=team_id,
+            refresh_cb=refresh_cb,
         )
         try:
             # Prefer resumable; fall back to one-shot on older servers.

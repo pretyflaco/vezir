@@ -19,6 +19,9 @@ CONTENT_TYPES = {
 
 ProgressCallback = Callable[[int, int, float], None]
 RetryCallback = Callable[[int, int, Exception], None]
+# Called on a 401; returns a fresh access token (rotated + persisted) or
+# None when refresh isn't possible (no refresh token / server rejected).
+RefreshCallback = Callable[[], "str | None"]
 
 
 def validate_audio_path(audio_path: Path) -> Path:
@@ -123,6 +126,7 @@ def upload(
     on_retry: RetryCallback | None = None,
     verify: bool | str | None = None,
     team_id: str | None = None,
+    refresh_cb: RefreshCallback | None = None,
 ) -> dict:
     """POST audio to <server_url>/upload. Returns the JSON response.
 
@@ -137,7 +141,7 @@ def upload(
     VPN tunnel ~60 s to recover from a transient drop.
     """
     url = server_url.rstrip("/") + "/upload"
-    headers = _auth_headers(token, team_id)
+    tok = {"v": token}
 
     audio_path = validate_audio_path(audio_path)
 
@@ -147,6 +151,7 @@ def upload(
     expected_bytes = audio_path.stat().st_size
 
     last_exc: Exception | None = None
+    refreshed_once = False
     for attempt in range(1, retries + 1):
         try:
             with audio_path.open("rb") as f:
@@ -176,7 +181,18 @@ def upload(
                 with httpx.Client(
                     timeout=timeout, verify=resolved_verify,
                 ) as client:
-                    resp = client.post(url, headers=headers, files=files, data=data)
+                    resp = client.post(
+                        url, headers=_auth_headers(tok["v"], team_id),
+                        files=files, data=data,
+                    )
+            # Silent refresh-and-retry once on a 401 (0.10.1).
+            if resp.status_code == 401 and not refreshed_once \
+                    and refresh_cb is not None:
+                new = refresh_cb()
+                if new:
+                    tok["v"] = new
+                    refreshed_once = True
+                    continue
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get("bytes") != expected_bytes:
@@ -238,6 +254,7 @@ def upload_multi(
     on_retry: RetryCallback | None = None,
     verify: bool | str | None = None,
     team_id: str | None = None,
+    refresh_cb: RefreshCallback | None = None,
 ) -> dict:
     """POST multiple audio files as one meeting to <server_url>/upload/multi.
 
@@ -253,7 +270,7 @@ def upload_multi(
         raise ValueError("upload_multi requires at least one audio file")
 
     url = server_url.rstrip("/") + "/upload/multi"
-    headers = _auth_headers(token, team_id)
+    tok = {"v": token}
 
     paths = [validate_audio_path(p) for p in audio_paths]
     exts = {p.suffix.lower() for p in paths}
@@ -267,6 +284,7 @@ def upload_multi(
     resolved_verify = VezirClient._resolve_verify(verify)
 
     last_exc: Exception | None = None
+    refreshed_once = False
     for attempt in range(1, retries + 1):
         opened: list = []
         try:
@@ -287,7 +305,18 @@ def upload_multi(
             if personal:
                 data["personal"] = "true"
             with httpx.Client(timeout=timeout, verify=resolved_verify) as client:
-                resp = client.post(url, headers=headers, files=files, data=data)
+                resp = client.post(
+                    url, headers=_auth_headers(tok["v"], team_id),
+                    files=files, data=data,
+                )
+            # Silent refresh-and-retry once on a 401 (0.10.1).
+            if resp.status_code == 401 and not refreshed_once \
+                    and refresh_cb is not None:
+                new = refresh_cb()
+                if new:
+                    tok["v"] = new
+                    refreshed_once = True
+                    continue
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get("bytes") != expected_bytes:
@@ -387,6 +416,7 @@ def upload_resumable(
     on_retry: RetryCallback | None = None,
     verify: bool | str | None = None,
     team_id: str | None = None,
+    refresh_cb: RefreshCallback | None = None,
 ) -> dict:
     """Upload via the tus-subset resumable protocol with offset-resume.
 
@@ -395,6 +425,12 @@ def upload_resumable(
     session to learn the server's current offset and resumes from there
     instead of restarting at byte 0.  Returns the final JSON
     ``{"session_id", "bytes"}``.
+
+    ``refresh_cb``: called on a ``401`` to silently rotate the session
+    token (0.10.1).  When it returns a new token the request is retried
+    with it; only after a refresh also 401s (or no callback) does the
+    upload fail with the 401 so the caller can prompt a re-login.  This is
+    what makes an upload after a lapsed 60-min access token "just work".
 
     Falls back to nothing here — callers that want a legacy fallback
     should catch and call :func:`upload`.
@@ -407,13 +443,19 @@ def upload_resumable(
     resolved_verify = VezirClient._resolve_verify(verify)
     base = server_url.rstrip("/")
 
-    # 1. Create the session.
-    create_headers = _auth_headers(token, team_id)
-    create_headers.update({
-        "Upload-Length": str(total),
-        "Upload-Filename": audio_path.name,
-        "Upload-Content-Type": content_type,
-    })
+    # Mutable token box so a mid-upload refresh updates every subsequent
+    # request (create / PATCH / HEAD) within this call.
+    tok = {"v": token}
+
+    def _refresh() -> bool:
+        if refresh_cb is None:
+            return False
+        new = refresh_cb()
+        if not new:
+            return False
+        tok["v"] = new
+        return True
+
     data: dict[str, str] = {}
     if title:
         data["title"] = title
@@ -424,9 +466,22 @@ def upload_resumable(
     if personal:
         data["personal"] = "true"
 
+    def _create_headers() -> dict:
+        h = _auth_headers(tok["v"], team_id)
+        h.update({
+            "Upload-Length": str(total),
+            "Upload-Filename": audio_path.name,
+            "Upload-Content-Type": content_type,
+        })
+        return h
+
+    # 1. Create the session (refresh-and-retry once on 401).
     with httpx.Client(timeout=timeout, verify=resolved_verify) as client:
         resp = client.post(base + "/upload/resumable",
-                           headers=create_headers, data=data)
+                           headers=_create_headers(), data=data)
+        if resp.status_code == 401 and _refresh():
+            resp = client.post(base + "/upload/resumable",
+                               headers=_create_headers(), data=data)
         resp.raise_for_status()
         upload_id = resp.json()["upload_id"]
     location = f"{base}/upload/resumable/{upload_id}"
@@ -444,7 +499,10 @@ def upload_resumable(
             with httpx.Client(timeout=timeout, verify=resolved_verify) as client:
                 # On a retry, re-sync the offset from the server (HEAD).
                 if attempt > 1:
-                    h = client.head(location, headers=_auth_headers(token, team_id))
+                    h = client.head(location, headers=_auth_headers(tok["v"], team_id))
+                    if h.status_code == 401 and _refresh():
+                        h = client.head(
+                            location, headers=_auth_headers(tok["v"], team_id))
                     if h.status_code == 200:
                         offset = int(h.headers.get("Upload-Offset", offset))
 
@@ -454,13 +512,18 @@ def upload_resumable(
                         chunk = f.read(chunk_bytes)
                         if not chunk:
                             break
-                        patch_headers = _auth_headers(token, team_id)
+                        patch_headers = _auth_headers(tok["v"], team_id)
                         patch_headers.update({
                             "Upload-Offset": str(offset),
                             "Content-Type": "application/offset+octet-stream",
                         })
                         r = client.patch(location, headers=patch_headers,
                                          content=chunk)
+                        if r.status_code == 401 and _refresh():
+                            # Token rotated mid-upload; re-send same chunk
+                            # (offset unchanged) with the fresh token.
+                            f.seek(offset)
+                            continue
                         if r.status_code == 409:
                             # Offset drift — re-sync and retry the loop.
                             offset = int(r.headers.get("Upload-Offset", offset))

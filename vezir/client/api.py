@@ -47,6 +47,7 @@ Endpoint coverage (server: vezir 0.1.17):
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,82 @@ def _reauth_hint() -> str:
     except Exception:
         pass
     return "credential invalid or expired — check $VEZIR_TOKEN or run `vezir login`"
+
+
+def refresh_active_session(
+    base_url: str,
+    verify: bool | str | None = None,
+) -> str | None:
+    """Exchange the active team's refresh token for a fresh access token.
+
+    Shared by :meth:`VezirClient._try_refresh` and the uploader's
+    refresh-on-401 path so every credential flow refreshes identically.
+    Rotates the refresh token server-side, persists the new pair to
+    ``teams.json``, and returns the new access token — or ``None`` when
+    there's no refresh token, the server rejects it, or the network fails
+    (the caller then surfaces the original 401 / prompts a full re-login).
+    """
+    from .config import (
+        active_team_refresh_token,
+        load_teams_config,
+        set_team_session,
+    )
+
+    refresh_token = active_team_refresh_token()
+    if not refresh_token:
+        return None
+
+    resolved_verify = VezirClient._resolve_verify(verify)
+    url = f"{base_url.rstrip('/')}/api/auth/refresh"
+    try:
+        with httpx.Client(timeout=_DEFAULT_TIMEOUT, verify=resolved_verify) as c:
+            r = c.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json={"refresh_token": refresh_token},
+            )
+    except httpx.HTTPError:
+        return None
+    if not (200 <= r.status_code < 300):
+        log.info("token refresh rejected (%s); full re-login required",
+                 r.status_code)
+        return None
+    try:
+        body = r.json()
+    except Exception:
+        return None
+    new_access = body.get("access_jwt") or body.get("session_jwt")
+    new_refresh = body.get("refresh_token")
+    if not new_access:
+        return None
+
+    # Persist the rotated pair against the active team.
+    import time as _time
+    try:
+        cfg = load_teams_config()
+        active = cfg.get("active")
+        entry = next(
+            (t for t in cfg.get("teams", []) if t["id"] == active), None,
+        )
+        if entry is not None and entry.get("auth") == "nostr":
+            exp_in = body.get("expires_in")
+            r_exp_in = body.get("refresh_expires_in")
+            set_team_session(
+                entry["id"],
+                entry.get("url") or base_url,
+                new_access,
+                entry.get("npub") or "",
+                expires_at=(
+                    _time.time() + int(exp_in) if exp_in else None
+                ),
+                refresh_token=new_refresh,
+                refresh_expires_at=(
+                    _time.time() + int(r_exp_in) if r_exp_in else None
+                ),
+            )
+    except Exception:
+        log.debug("failed to persist refreshed session", exc_info=True)
+    return new_access
 
 
 # ─── Session record ──────────────────────────────────────────────────────────
@@ -260,9 +337,17 @@ class VezirClient:
         team_id: str | None = None,
         timeout: httpx.Timeout | None = None,
         verify: bool | str | None = None,
+        on_token_refreshed: Callable[[str], None] | None = None,
     ):
         self.base_url = server_url.rstrip("/")
         self.token = token
+        # Optional hook fired after a silent refresh rotates the access
+        # token, so an owner (e.g. the TUI app) can propagate the new token
+        # to any snapshot readers (the uploader reads app.token, not this
+        # client's token).  Without this, a rotated token would live only
+        # inside this VezirClient and the upload path would keep using a
+        # stale, now-expired token.
+        self._on_token_refreshed = on_token_refreshed
         # v0.7.0: every team-scoped request carries an X-Team-Id header.
         # Routes that don't need a team scope (/health, /api/me) ignore
         # it.  ``team_id`` may be None for clients that only call
@@ -303,86 +388,23 @@ class VezirClient:
     def _try_refresh(self) -> bool:
         """Attempt a silent token refresh; return True iff it succeeded.
 
-        Exchanges the active team's stored refresh token at
-        ``POST /api/auth/refresh`` for a fresh access/refresh pair, rebinds
-        ``self.token`` in-memory, and persists the rotated pair to
-        teams.json.  Best-effort: any missing refresh token, network error,
-        or non-2xx response returns False so the caller surfaces the
-        original 401 (which prompts a full re-login).
-
-        Refresh tokens rotate on every use, so persisting the new one is
-        mandatory — the old one is now consumed server-side.
+        Delegates to :func:`refresh_active_session` (shared with the
+        uploader) to exchange the active team's refresh token, persist the
+        rotated pair to teams.json, and get a new access token.  Rebinds
+        ``self.token`` and fires ``on_token_refreshed`` so snapshot readers
+        (e.g. the TUI app's ``app.token``, used by the uploader) pick up
+        the new token.  Best-effort: returns False on any failure so the
+        caller surfaces the original 401.
         """
-        try:
-            from .config import (
-                active_team_refresh_token,
-                load_teams_config,
-                set_team_session,
-            )
-        except Exception:
-            return False
-
-        refresh_token = active_team_refresh_token()
-        if not refresh_token:
-            return False
-
-        url = f"{self.base_url}/api/auth/refresh"
-        try:
-            with httpx.Client(
-                timeout=self._timeout, verify=self._verify,
-            ) as c:
-                r = c.post(
-                    url,
-                    headers={"Content-Type": "application/json"},
-                    json={"refresh_token": refresh_token},
-                )
-        except httpx.HTTPError:
-            return False
-        if not (200 <= r.status_code < 300):
-            log.info("token refresh rejected (%s); full re-login required",
-                     r.status_code)
-            return False
-        try:
-            body = r.json()
-        except Exception:
-            return False
-        new_access = body.get("access_jwt") or body.get("session_jwt")
-        new_refresh = body.get("refresh_token")
+        new_access = refresh_active_session(self.base_url, self._verify)
         if not new_access:
             return False
-
-        # Rebind in-memory for the immediate retry.
         self.token = new_access
-
-        # Persist the rotated pair against the active team so the next
-        # process (and this one after restart) uses the fresh tokens.
-        import time as _time
-        try:
-            cfg = load_teams_config()
-            active = cfg.get("active")
-            entry = next(
-                (t for t in cfg.get("teams", []) if t["id"] == active), None,
-            )
-            if entry is not None and entry.get("auth") == "nostr":
-                exp_in = body.get("expires_in")
-                r_exp_in = body.get("refresh_expires_in")
-                set_team_session(
-                    entry["id"],
-                    entry.get("url") or self.base_url,
-                    new_access,
-                    entry.get("npub") or "",
-                    expires_at=(
-                        _time.time() + int(exp_in) if exp_in else None
-                    ),
-                    refresh_token=new_refresh,
-                    refresh_expires_at=(
-                        _time.time() + int(r_exp_in) if r_exp_in else None
-                    ),
-                )
-        except Exception:
-            # Persistence failure doesn't invalidate the in-memory retry;
-            # worst case the refresh repeats next process.
-            log.debug("failed to persist refreshed session", exc_info=True)
+        if self._on_token_refreshed is not None:
+            try:
+                self._on_token_refreshed(new_access)
+            except Exception:
+                log.debug("on_token_refreshed hook failed", exc_info=True)
         return True
 
     def _with_refresh(self, send) -> ApiResult:

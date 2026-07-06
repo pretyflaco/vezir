@@ -750,6 +750,68 @@ def test_no_refresh_without_refresh_token(monkeypatch, tmp_path, mocked_client):
     assert calls["me"] == 1  # no retry
 
 
+def test_on_token_refreshed_hook_fires(monkeypatch, tmp_path, mocked_client):
+    """After a silent refresh, the on_token_refreshed hook gets the new token.
+
+    This is what keeps the TUI app's ``app.token`` (read by the uploader)
+    in sync with a token rotated by the polling path (0.10.1).
+    """
+    _seed_nostr_team(monkeypatch, tmp_path, refresh_token="vzrt_old")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/refresh":
+            return httpx.Response(200, json={
+                "access_jwt": "eyJ.new.access",
+                "refresh_token": "vzrt_new",
+                "expires_in": 3600,
+                "refresh_expires_in": 604800,
+            })
+        if request.headers["authorization"] == "Bearer eyJ.new.access":
+            return httpx.Response(200, json={"github": "alice"})
+        return httpx.Response(401, text="invalid bearer token")
+
+    seen = {"token": None}
+    client = mocked_client(handler, team_id="blink")
+    client._on_token_refreshed = lambda t: seen.__setitem__("token", t)
+
+    client.get_me()
+    assert seen["token"] == "eyJ.new.access"
+
+
+def test_refresh_active_session_returns_new_token(monkeypatch, tmp_path, mocked_client):
+    """The shared refresh helper rotates + returns the new access token."""
+    from vezir.client import config as client_config
+    from vezir.client.api import refresh_active_session
+
+    _seed_nostr_team(monkeypatch, tmp_path, refresh_token="vzrt_old")
+
+    # mocked_client installs the MockTransport factory used by refresh too.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/refresh":
+            body = _json_loads(request.content)
+            assert body["refresh_token"] == "vzrt_old"
+            return httpx.Response(200, json={
+                "access_jwt": "eyJ.rotated",
+                "refresh_token": "vzrt_rotated",
+                "expires_in": 3600,
+                "refresh_expires_in": 604800,
+            })
+        return httpx.Response(404)
+
+    mocked_client(handler, team_id="blink")
+    new = refresh_active_session("https://test", verify=False)
+    assert new == "eyJ.rotated"
+    # Persisted rotation.
+    assert client_config.active_team_refresh_token() == "vzrt_rotated"
+
+
+def test_refresh_active_session_none_without_token(monkeypatch, tmp_path):
+    from vezir.client.api import refresh_active_session
+
+    _seed_nostr_team(monkeypatch, tmp_path, refresh_token=None)
+    assert refresh_active_session("https://test", verify=False) is None
+
+
 def _json_loads(content):
     import json as _json
     return _json.loads(content)

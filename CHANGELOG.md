@@ -3,6 +3,52 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.10.1 — refresh on the upload path (fix "session expired" after recording)
+
+0.10.0 refreshed silently on the session-*polling* path but **not on
+upload**: the uploader used its own HTTP calls with a fixed token snapshot,
+so a `401` at upload time (after the 60-min access token lapsed during a
+recording) surfaced as "session expired — sign in again" even though a
+valid refresh token was stored.  This makes uploads refresh like everything
+else.
+
+### Fixed
+
+* **Uploader refreshes on 401.** `upload_resumable`, `upload`, and
+  `upload_multi` now take a `refresh_cb` and, on a `401`, silently rotate
+  the session (`POST /api/auth/refresh`) and retry once with the new token
+  before failing.  The record-screen wires this callback, so an upload
+  after a lapsed access token "just works".
+* **`app.token` stays in sync after a silent refresh.** `VezirClient` gained
+  an `on_token_refreshed` hook; the TUI app uses it so a token rotated by
+  the polling path is propagated to `app.token` (which the uploader reads) —
+  previously the rotated token lived only inside the API client and the
+  upload path kept using a stale one.
+* **In-TUI re-auth now stores the refresh token.** `apply_reauth_session`
+  persisted only the access JWT, so a re-login via the modal dropped the
+  refresh token and forced another manual login ~an hour later.  It now
+  persists `refresh_token` + `refresh_expires_in`.
+* **No more spurious "session expired" warning before recording.**
+  `_warn_if_session_expiring` checked the 60-min access-token expiry; it now
+  skips the warning whenever a refresh token is stored (silent refresh will
+  cover the lapse) and only warns for legacy/pre-0.10.0 sessions.
+
+### Changed
+
+* **Reauth modal is terminal-friendly.** The nostr re-auth screen now renders
+  a scannable QR for phone signers and clarifies that a same-device signer
+  (nsec.app) just needs approval — no copying the `nostrconnect://` URI.
+  Copy fixes the confusing "scan / paste" dead-end when neither was possible.
+* Shared refresh logic extracted to `api.refresh_active_session()` so the
+  client and uploader refresh identically.
+
+### Tests
+
+* +9 tests: `test_uploader_refresh.py` (resumable / one-shot / multi refresh
+  on 401, and no-retry when refresh unavailable) and `test_client_api.py`
+  (`on_token_refreshed` hook fires, `refresh_active_session` rotate + persist,
+  none-without-token).
+
 ## 0.10.0 — rotating refresh-token sessions (no more 24h forced logout)
 
 ### Added

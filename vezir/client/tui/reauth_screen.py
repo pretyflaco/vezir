@@ -102,7 +102,8 @@ class ReauthScreen(ModalScreen["dict | None"]):
                 "Session expired — sign in again", id="reauth-title",
             )
             yield Static(
-                "Your ~24h session has expired (HTTP 401).\n\n"
+                "Your session couldn't be refreshed and needs a fresh "
+                "sign-in (HTTP 401).\n\n"
                 "  n  Sign in with nostr (NIP-46 / Amber / nsec.app)\n"
                 "  g  Sign in with Google\n"
                 "  Esc  Cancel\n",
@@ -174,10 +175,23 @@ class ReauthScreen(ModalScreen["dict | None"]):
 
             client = nip46.Nip46Client(name="vezir", on_auth_url=_on_auth_url)
             connect_uri = client.build_connect_uri()
+            # Render a scannable QR for phone signers (Amber); on the same
+            # machine the nostrconnect request is already live, so a signer
+            # like nsec.app just needs approval — no copy/paste required.
+            qr = ""
+            try:
+                from ...server.enroll import render_qr_terminal
+                qr = render_qr_terminal(connect_uri) + "\n\n"
+            except Exception:
+                qr = ""
             self.post_message(ReauthProgress(
                 text=(
-                    "Scan in your signer (Amber/nsec.app) or paste this URI:\n\n"
-                    f"{connect_uri}\n\nWaiting for approval…"
+                    "Sign in again with nostr.\n\n"
+                    "• Phone signer (Amber): scan the QR below.\n"
+                    "• Same-device signer (nsec.app): just approve the "
+                    "request — it's already sent.\n\n"
+                    f"{qr}"
+                    "Waiting for approval…  (Esc to cancel)"
                 )
             ))
             client.wait_for_connection(timeout=180)
@@ -234,7 +248,9 @@ class ReauthScreen(ModalScreen["dict | None"]):
 
     def on_reauth_done(self, message: ReauthDone) -> None:
         self._busy = False
-        if message.body is not None and message.body.get("session_jwt"):
+        if message.body is not None and (
+            message.body.get("session_jwt") or message.body.get("access_jwt")
+        ):
             self.dismiss(message.body)
         else:
             self._set_body(
