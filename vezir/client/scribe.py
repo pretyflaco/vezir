@@ -150,7 +150,7 @@ def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
     )
 
 
-_TERMINAL_STATUSES = {"done", "error"}
+_TERMINAL_STATUSES = {"done", "error", "empty"}
 _POLL_INTERVAL = 5.0  # seconds, matches GUI
 
 
@@ -421,6 +421,13 @@ def poll_status(
                     return status
                 elif status == "done":
                     print("vezir: status: done -- transcript ready", flush=True)
+                    return status
+                elif status == "empty":
+                    print(
+                        "vezir: status: empty -- no speech detected; "
+                        "nothing to sync",
+                        flush=True,
+                    )
                     return status
                 else:
                     print(f"vezir: status: {status}", flush=True)

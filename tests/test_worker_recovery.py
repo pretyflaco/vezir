@@ -59,6 +59,7 @@ def test_requeue_orphans_leaves_terminal_and_queued_untouched(tmp_data):
     _enqueue(queue, "01HZ00000000000000000DONE0", "done")
     _enqueue(queue, "01HZ0000000000000000ERROR0", "error")
     _enqueue(queue, "01HZ0000000000000SYNCFAIL0", "sync_failed")
+    _enqueue(queue, "01HZ0000000000000000EMPTY0", "empty")
 
     ids = queue.requeue_orphans()
     assert ids == []  # nothing orphaned
@@ -67,6 +68,7 @@ def test_requeue_orphans_leaves_terminal_and_queued_untouched(tmp_data):
     assert queue.get("01HZ00000000000000000DONE0")["status"] == "done"
     assert queue.get("01HZ0000000000000000ERROR0")["status"] == "error"
     assert queue.get("01HZ0000000000000SYNCFAIL0")["status"] == "sync_failed"
+    assert queue.get("01HZ0000000000000000EMPTY0")["status"] == "empty"
 
 
 def test_requeue_orphans_empty_queue_is_noop(tmp_data):

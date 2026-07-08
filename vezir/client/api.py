@@ -58,6 +58,15 @@ import httpx
 log = logging.getLogger("vezir.client.api")
 
 
+def _user_agent() -> str:
+    """``vezir-cli/<version>`` for the User-Agent header (server records it)."""
+    try:
+        from vezir import __version__
+        return f"vezir-cli/{__version__}"
+    except Exception:
+        return "vezir-cli/?"
+
+
 # ─── Result type ─────────────────────────────────────────────────────────────
 
 
@@ -242,6 +251,9 @@ class Session:
     summary_error: str | None = None
     sync_error: str | None = None
     team_id: str | None = None
+    # User-Agent of the client that uploaded the session (e.g.
+    # "vezir-cli/0.11.1", "okhttp/4.12.0").  None for pre-0.11.1 uploads.
+    client_agent: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -264,7 +276,7 @@ class Session:
             "auto_label_enabled", "sync_enabled", "personal",
             "created_at", "updated_at",
             "error", "summary_error", "sync_error",
-            "team_id",
+            "team_id", "client_agent",
         }
         kwargs = {k: d.get(k) for k in known if k in d}
         return cls(artifacts=artifacts, **kwargs)
@@ -275,7 +287,7 @@ class Session:
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in ("done", "error", "sync_failed")
+        return self.status in ("done", "error", "sync_failed", "empty")
 
     @property
     def is_active(self) -> bool:
@@ -380,7 +392,10 @@ class VezirClient:
     # ── plumbing ──
 
     def _headers(self) -> dict[str, str]:
-        h = {"Authorization": f"Bearer {self.token}"}
+        h = {
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": _user_agent(),
+        }
         if self.team_id:
             h["X-Team-Id"] = self.team_id
         return h

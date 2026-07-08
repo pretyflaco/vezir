@@ -1224,7 +1224,7 @@ class RecordBody(Vertical):
         from textual.worker import get_current_worker
 
         worker = get_current_worker()
-        terminal = {"done", "error", "needs_labeling", "sync_failed"}
+        terminal = {"done", "error", "needs_labeling", "sync_failed", "empty"}
         last_status = ""
         deadline = _t.time() + 600
         while _t.time() < deadline and not worker.is_cancelled:

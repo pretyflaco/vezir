@@ -8,8 +8,9 @@ Pipeline per job:
   1. transcribe (millet transcribe <session-dir>) — produces .txt/.srt/.json/.summary.md/.pdf
   2. label --auto (millet label --auto --no-audio --no-summary <session-dir>)
         — applies confident voiceprint matches, leaves unknowns as REMOTE_N
-  3. detect unknowns:
-        if all speakers identified → status=syncing → millet sync → status=done
+  3. detect content/unknowns:
+        if transcript has no speech segments → status=empty (skip sync)
+        elif all speakers identified → status=syncing → millet sync → status=done
         else → status=needs_labeling → wait for human via web UI
   4. on completion (whether after auto or after human labeling), audio
      WAV is deleted to honor the storage policy.
@@ -376,6 +377,33 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
     return False
 
 
+def _is_empty_transcript(session_dir: Path) -> bool:
+    """True if the transcript contains no speech segments at all.
+
+    A recording with zero segments (e.g. an accidental 3-second tap, a dead
+    mic, or a stretch of silence that WhisperX reports as "no active speech")
+    produces empty/stub artifacts.  Such a session must never be synced to the
+    team repo — it lands in the terminal ``empty`` status instead.
+
+    Gate is strictly on segment count: a genuine transcription *failure*
+    leaves no ``<sid>.json`` on disk, which returns ``False`` here so the
+    caller still surfaces it as an ``error`` (not ``empty``).  A missing or
+    unreadable transcript is likewise treated as "not empty" (defer to the
+    error/needs_labeling paths).
+    """
+    import json as _json
+
+    tj = session_dir / f"{session_dir.name}.json"
+    if not tj.exists():
+        return False
+    try:
+        data = _json.loads(tj.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    segments = data.get("segments") or []
+    return len(segments) == 0
+
+
 def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
     """Return (matched_names, unresolved_ids) from the transcript.
 
@@ -605,7 +633,22 @@ def process_one(job: dict) -> None:
 
         artifacts = _find_artifacts(sd)
 
-        # 3. unresolved speakers?
+        # 3a. empty recording?  A transcript with zero speech segments (an
+        # accidental tap, dead mic, or silence) produces empty/stub artifacts.
+        # Route to the terminal `empty` status and SKIP SYNC entirely — never
+        # push empty artifacts to the team repo.
+        if _is_empty_transcript(sd):
+            queue.update_status(
+                job_id, "empty", artifacts=artifacts,
+                summary_error=summary_err_msg,
+            )
+            log.info(
+                "job %s: transcript has no speech segments; marking empty, "
+                "skipping sync", job_id,
+            )
+            return
+
+        # 3b. unresolved speakers?
         if _has_unresolved_speakers(sd):
             queue.update_status(
                 job_id, "needs_labeling", artifacts=artifacts,

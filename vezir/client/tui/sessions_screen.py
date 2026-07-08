@@ -35,6 +35,7 @@ _STATUS_TAGS = {
     "done": "[green]done[/green]",
     "sync_failed": "[red][b]sync failed[/b][/red]",
     "error": "[red][b]error[/b][/red]",
+    "empty": "[dim][b]empty[/b][/dim]",
 }
 
 

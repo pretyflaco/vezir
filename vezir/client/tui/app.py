@@ -206,6 +206,12 @@ class MainScreen(Screen):
                 severity="error",
                 timeout=8,
             )
+        elif message.status == "empty":
+            self.notify(
+                f"Session {short}… had no speech — nothing recorded",
+                severity="warning",
+                timeout=6,
+            )
 
 
 # ─── App ─────────────────────────────────────────────────────────────────────

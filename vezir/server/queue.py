@@ -184,6 +184,9 @@ VALID_STATUSES = {
     "done",
     "sync_failed",
     "error",
+    # Terminal: transcription succeeded but produced no speech (0 segments).
+    # Such a session must NOT sync empty artifacts to the team repo.
+    "empty",
 }
 
 
@@ -257,6 +260,10 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str) -> None:
         "ALTER TABLE jobs ADD COLUMN summary_error TEXT",
         "ALTER TABLE jobs ADD COLUMN sync_error TEXT",
         "ALTER TABLE jobs ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
+        # v0.11.1: User-Agent of the client that uploaded the session
+        # (e.g. "vezir-cli/0.11.1", "okhttp/4.12.0").  Nullable; NULL for
+        # pre-0.11.1 rows and any client that sends no User-Agent.
+        "ALTER TABLE jobs ADD COLUMN client_agent TEXT",
         # v0.7.4: teams.slug (mutable display name); teams.id is now a
         # stable UUID.  Added here for DBs predating the column; the
         # 0.7.4 data migration backfills slug=id for legacy rows then
@@ -309,6 +316,7 @@ def enqueue(
     sync_enabled: bool = True,
     personal: bool = False,
     multi_audio: bool = False,
+    client_agent: str | None = None,
 ) -> None:
     """Add a new job in `queued` state.
 
@@ -322,11 +330,17 @@ def enqueue(
     ``team_id`` was added in v0.6.0 and is required.  It MUST be derived
     server-side from the uploader's bearer token (see
     ``auth._resolve_auth``); clients never supply it directly.
+
+    ``client_agent`` (v0.11.1) is the uploading client's User-Agent header,
+    stored verbatim for provenance (e.g. answering "was this an old
+    client?").  Nullable; trimmed to 200 chars defensively.
     """
     if not team_id:
         raise ValueError("enqueue requires team_id (added in v0.6.0)")
     if personal:
         sync_enabled = False
+    if client_agent is not None:
+        client_agent = client_agent.strip()[:200] or None
     # v0.7.4: jobs store the team's stable uuid.  In production
     # ``team_id`` arrives as the uuid (from require_team_context); accept
     # a slug too and resolve, so the stored value is always the uuid.
@@ -334,15 +348,16 @@ def enqueue(
     with _conn() as c:
         c.execute(
             "INSERT INTO jobs (id, github, team_id, title, summary_preset, "
-            "auto_label_enabled, sync_enabled, personal, multi_audio, status, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            "auto_label_enabled, sync_enabled, personal, multi_audio, "
+            "client_agent, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
             (
                 job_id, github, team_id, title, summary_preset,
                 1 if auto_label_enabled else 0,
                 1 if sync_enabled else 0,
                 1 if personal else 0,
                 1 if multi_audio else 0,
+                client_agent,
                 _now(), _now(),
             ),
         )
