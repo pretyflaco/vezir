@@ -3,6 +3,40 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.11.1 — sync fixes: long titles, empty recordings, client provenance
+
+Three focused fixes from field reports on the 0.11.0 deployment.  No
+schema migration (the new `client_agent` column is added via the
+idempotent startup ALTER, like `team_id`/`personal`).
+
+### Fixed
+
+- **Long meeting titles no longer break sync.**  A title that slugified
+  to the 60-char cap plus the disambiguating `-HHMMSSZ-<rand>` suffix
+  produced a 75-char `--meeting-type`, which millet 0.13.0's folder
+  validator (max 64 chars) correctly rejected — leaving the session
+  stuck in `sync_failed`.  `config.sync_slug` now caps at 64 and
+  `meet_runner._meeting_type_for` reserves room for the suffix (and
+  re-strips a trailing separator), so the folder name is always a valid
+  single path segment.
+
+- **Empty recordings are no longer synced to the team repo.**  A
+  recording with no speech (an accidental tap, a dead mic, or silence
+  WhisperX reports as "no active speech") produced zero transcript
+  segments; the pipeline's speaker gate treated "no speakers" as
+  "nothing unresolved" and pushed empty/stub artifacts (0-byte
+  transcript, placeholder summary) to git.  Such sessions now land in a
+  new terminal **`empty`** status and skip sync entirely.  (Already
+  pushed empty folders are left as-is; this only stops new ones.)
+
+### Added
+
+- **Server records the client's User-Agent per session** (`client_agent`
+  on the job row, surfaced in `/api/sessions[/{id}]` and the TUI detail
+  screen).  Answers "which client / version produced this?" — previously
+  a blind spot.  The Python clients now self-identify as
+  `vezir-cli/<version>`; the Android app sends its OkHttp UA.
+
 ## 0.11.0 — auth hardening, subprocess boundary restored, worker serialization
 
 Server hardening release from the 2026-07 ecosystem review.  **The
