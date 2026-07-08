@@ -27,10 +27,12 @@ def test_sync_slug_empty():
     assert sync_slug("   ") == ""
 
 
-def test_sync_slug_truncates_at_60():
+def test_sync_slug_truncates_at_64():
+    # v0.11.1: cap raised 60 -> 64 to match millet's folder-slug limit
+    # (^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$).
     from vezir.config import sync_slug
     long = "a" * 100
-    assert len(sync_slug(long)) == 60
+    assert len(sync_slug(long)) == 64
 
 
 # ── config.sanitize_title ────────────────────────────────────────────────────
