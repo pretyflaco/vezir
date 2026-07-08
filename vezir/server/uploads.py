@@ -204,6 +204,7 @@ async def upload(
         auto_label_enabled=auto_label_enabled,
         sync_enabled=sync_enabled,
         personal=is_personal,
+        client_agent=request.headers.get("user-agent"),
     )
 
     return {
@@ -331,6 +332,7 @@ async def upload_multi(
         sync_enabled=sync_enabled,
         personal=is_personal,
         multi_audio=True,
+        client_agent=request.headers.get("user-agent"),
     )
 
     return {
@@ -445,6 +447,7 @@ def sweep_abandoned_uploads(now: float | None = None) -> int:
     status_code=201,
 )
 async def create_resumable_upload(
+    request: Request,
     response: Response,
     upload_length: int | None = Header(default=None),
     upload_filename: str | None = Header(default=None),
@@ -488,6 +491,9 @@ async def create_resumable_upload(
         "auto_label": _parse_bool_form(auto_label, default=True),
         "sync": _parse_bool_form(sync, default=True),
         "personal": _parse_bool_form(personal, default=False),
+        # Capture the creating client's User-Agent now; the same client
+        # streams the chunks, so this is the authoritative provenance.
+        "client_agent": request.headers.get("user-agent"),
         "created_at_epoch": time.time(),
     })
 
@@ -649,5 +655,6 @@ def _finalize_resumable(upload_id: str, meta: dict) -> str:
         auto_label_enabled=meta.get("auto_label", True),
         sync_enabled=meta.get("sync", True),
         personal=meta.get("personal", False),
+        client_agent=meta.get("client_agent"),
     )
     return session_id

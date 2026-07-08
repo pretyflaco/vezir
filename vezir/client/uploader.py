@@ -103,9 +103,25 @@ class _ProgressReader:
         return getattr(self._file, name)
 
 
+def _user_agent() -> str:
+    """``vezir-cli/<version>`` for the User-Agent header (server records it)."""
+    try:
+        from vezir import __version__
+        return f"vezir-cli/{__version__}"
+    except Exception:
+        return "vezir-cli/?"
+
+
 def _auth_headers(token: str, team_id: str | None) -> dict:
-    """Bearer + (when known) X-Team-Id, matching the server's v0.7.0 contract."""
-    headers = {"Authorization": f"Bearer {token}"}
+    """Bearer + (when known) X-Team-Id, matching the server's v0.7.0 contract.
+
+    Also sends ``User-Agent: vezir-cli/<version>`` so the server can record
+    which client (and version) produced each upload.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": _user_agent(),
+    }
     if team_id:
         headers["X-Team-Id"] = team_id
     return headers

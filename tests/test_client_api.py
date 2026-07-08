@@ -218,6 +218,32 @@ def test_session_from_dict_personal_flag():
     assert s.is_personal
 
 
+def test_session_empty_status_is_terminal():
+    s = Session.from_dict({"id": "x", "status": "empty"})
+    assert s.is_terminal
+    assert s.is_active is False
+
+
+def test_session_from_dict_client_agent():
+    s = Session.from_dict({
+        "id": "x", "status": "done", "client_agent": "vezir-cli/0.11.1",
+    })
+    assert s.client_agent == "vezir-cli/0.11.1"
+
+
+def test_client_sends_user_agent_header():
+    """VezirClient and uploader both send a vezir-cli/<ver> User-Agent."""
+    from vezir import __version__
+    from vezir.client import uploader
+    from vezir.client.api import VezirClient
+
+    c = VezirClient("https://example.test", "tok", team_id="blink")
+    assert c._headers()["User-Agent"] == f"vezir-cli/{__version__}"
+
+    h = uploader._auth_headers("tok", "blink")
+    assert h["User-Agent"] == f"vezir-cli/{__version__}"
+
+
 def test_session_from_dict_ignores_unknown_fields():
     """Server may add new fields; client should not blow up."""
     s = Session.from_dict({

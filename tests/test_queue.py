@@ -61,6 +61,35 @@ def test_multi_audio_flag_roundtrips(tmp_data):
     assert queue.get("01HZ00000000000000SINGLE01")["multi_audio"] == 0
 
 
+def test_empty_is_a_valid_status(tmp_data):
+    from vezir.server.queue import VALID_STATUSES
+    assert "empty" in VALID_STATUSES
+
+
+def test_client_agent_roundtrips(tmp_data):
+    from vezir.server import queue
+    queue.enqueue(
+        "01HZ0000000000000AGENT0001", github="alice", team_id="blink",
+        client_agent="vezir-cli/0.11.1",
+    )
+    queue.enqueue(
+        "01HZ0000000000000AGENT0002", github="alice", team_id="blink",
+    )
+    assert queue.get("01HZ0000000000000AGENT0001")["client_agent"] == "vezir-cli/0.11.1"
+    # Default is NULL (legacy rows / clients that send no User-Agent).
+    assert queue.get("01HZ0000000000000AGENT0002")["client_agent"] is None
+
+
+def test_client_agent_trimmed(tmp_data):
+    from vezir.server import queue
+    queue.enqueue(
+        "01HZ0000000000000AGENT0003", github="alice", team_id="blink",
+        client_agent="  " + "x" * 300 + "  ",
+    )
+    stored = queue.get("01HZ0000000000000AGENT0003")["client_agent"]
+    assert stored is not None and len(stored) == 200
+
+
 def test_connection_pragmas(tmp_data):
     """WAL + busy_timeout + foreign_keys are applied on every connection."""
     from vezir.server import queue

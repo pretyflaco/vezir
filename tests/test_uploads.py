@@ -342,6 +342,23 @@ def test_upload_multi_enqueues_one_multi_job(client_and_token):
     assert job["status"] == "queued"
 
 
+def test_upload_records_client_agent(client_and_token):
+    """The uploading client's User-Agent is stored on the job (v0.11.1)."""
+    client, token, tmp_data = client_and_token
+    from vezir.server import queue
+
+    headers = dict(_bearer(token))
+    headers["User-Agent"] = "vezir-cli/9.9.9"
+    resp = client.post(
+        "/upload",
+        headers=headers,
+        files={"audio": ("foo.ogg", b"OggS" + b"\x00" * 64, "audio/ogg")},
+    )
+    assert resp.status_code == 200, resp.text
+    sid = resp.json()["session_id"]
+    assert queue.get(sid)["client_agent"] == "vezir-cli/9.9.9"
+
+
 def test_upload_multi_rejects_mixed_types(client_and_token):
     client, token, tmp_data = client_and_token
 
