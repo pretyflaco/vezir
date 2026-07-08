@@ -656,7 +656,16 @@ def _meeting_type_for(session_id: str, base: str = "sandbox") -> str:
     # ULID is 26 chars: positions 0-9 = 48 bits of timestamp,
     # 10-25 = 80 bits of randomness. Take 6 random-region chars.
     rand = session_id[-6:] if len(session_id) >= 26 else "noulid"
-    return f"{base}-{hms}Z-{rand}"
+    # millet's folder validator caps a meeting-type at 64 chars
+    # (^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$).  The disambiguating suffix
+    # ("-HHMMSSZ-<rand>") is fixed-length, so reserve room for it and
+    # truncate the (already-slugified) base to fit.  Re-strip a trailing
+    # hyphen so the cut can't leave "...apps-" -> the base must not end on
+    # a separator.  A base that empties out falls back to a safe default.
+    suffix = f"-{hms}Z-{rand}"
+    max_base = 64 - len(suffix)
+    base = base[:max_base].rstrip("-_.") or "meeting"
+    return f"{base}{suffix}"
 
 
 def sync(

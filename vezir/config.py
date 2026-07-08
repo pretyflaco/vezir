@@ -1103,10 +1103,17 @@ def sync_slug(title: str) -> str:
     'ux-weekly'
     >>> sync_slug("  weekly sync / @team  ")
     'weekly-sync-team'
+
+    The result is a valid single path segment for millet's folder
+    validator (``^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$``): capped at 64 chars
+    and re-stripped of a trailing hyphen so truncation can't leave a
+    dangling ``-``.
     """
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.strip())
     slug = slug.strip("-").lower()
-    return slug[:60] if slug else ""
+    # Cap at millet's 64-char folder limit; re-strip in case the cut landed
+    # on a hyphen (e.g. "...apps-" -> "...apps").
+    return slug[:64].rstrip("-") if slug else ""
 
 
 def sanitize_title(title: str) -> str:

@@ -66,13 +66,13 @@ _SUMMARY_LANGUAGES = [
 def _slugify(text: str) -> str:
     """Client-side folder slug, mirroring server ``config.sync_slug``.
 
-    Lowercase, non-alphanumerics collapsed to hyphens, trimmed, capped at 60.
+    Lowercase, non-alphanumerics collapsed to hyphens, trimmed, capped at 64.
     The server re-slugifies (and validates) the value, so this is just a UX
     pre-fill / preview.
     """
     import re
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").strip()).strip("-").lower()
-    return slug[:60]
+    return slug[:64].rstrip("-")
 
 
 @dataclass
@@ -710,6 +710,8 @@ class DetailScreen(Screen):
             f"  preset: {s.summary_preset or '-'}",
             f"  updated: {s.updated_at or '-'}",
         ]
+        if s.client_agent:
+            meta_lines.append(f"  client: {s.client_agent}")
         if s.is_personal:
             meta_lines.append("  personal (private to you)")
         self.query_one("#meta", Static).update("\n".join(meta_lines))
