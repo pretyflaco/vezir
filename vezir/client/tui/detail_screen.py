@@ -90,6 +90,7 @@ class ActionDone(Message):
     label: str
     ok: bool
     detail: str = ""
+    warning: str | None = None
 
 
 @dataclass
@@ -237,6 +238,64 @@ class SyncAsScreen(ModalScreen[str | None | object]):
             self.dismiss(str(sel))
 
 
+class EditTitleScreen(ModalScreen[str | None]):
+    """Modal: add or change a session's title.
+
+    Dismisses with:
+      * ``"<text>"`` — the new (possibly empty) title to save,
+      * ``None`` — cancel (no change).
+
+    The input is pre-filled with the current title so an edit is a tweak
+    rather than a retype.  Submitting an empty input clears the title
+    (the session then displays by id).
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "Cancel")]
+
+    CSS = """
+    EditTitleScreen { align: center middle; }
+    #edit-title-box {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        border: solid $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    #edit-title-box Label { margin-top: 1; }
+    #edit-title-box Input { margin-top: 1; }
+    """
+
+    def __init__(self, current_title: str | None) -> None:
+        super().__init__()
+        self._current = current_title or ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="edit-title-box"):
+            yield Label("[b]Session title[/b]")
+            yield Input(
+                value=self._current,
+                placeholder="e.g. Weekly sync 2026-07-17",
+                id="edit-title-input",
+            )
+            yield Label("[dim]Empty clears the title (shows by id).[/dim]")
+            with Horizontal():
+                yield Button("Cancel", id="cancel-btn")
+                yield Button("Save", id="confirm-btn", variant="primary")
+
+    def action_dismiss(self, result=None) -> None:
+        self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-btn":
+            self.dismiss(self.query_one("#edit-title-input", Input).value.strip())
+        else:
+            self.dismiss(None)
+
+
 class ConfirmDeleteScreen(ModalScreen[bool]):
     """Modal: confirm a destructive, irreversible session deletion.
 
@@ -295,6 +354,7 @@ class DetailScreen(Screen):
         Binding("e", "retry_summary", "Retry summary"),
         Binding("y", "sync_now", "Sync now"),
         Binding("p", "share_with_team", "Share"),
+        Binding("t", "edit_title", "Edit title"),
         Binding("l", "open_labeling", "Label"),
         Binding("c", "copy_session_id", "Copy id"),
         Binding("f", "open_folder", "Open folder"),
@@ -347,6 +407,7 @@ class DetailScreen(Screen):
             yield Button("[e] Retry summary", id="retry-btn", variant="warning")
             yield Button("[y] Sync now", id="sync-btn")
             yield Button("[p] Share with team", id="share-btn")
+            yield Button("[t] Edit title", id="title-btn")
             yield Button("[l] Label speakers", id="label-btn", variant="primary")
             yield Button("[^d] Delete", id="delete-btn", variant="error")
         yield Footer()
@@ -430,6 +491,22 @@ class DetailScreen(Screen):
             )
             return
         self._action_worker("share with team", "share_with_team")
+
+    def action_edit_title(self) -> None:
+        current = self.session.title if self.session else None
+        self.app.push_screen(
+            EditTitleScreen(current),
+            self._on_title_edited,
+        )
+
+    def _on_title_edited(self, new_title: str | None) -> None:
+        # None = cancelled.  Empty string = clear the title (intentional).
+        if new_title is None:
+            return
+        current = (self.session.title if self.session else None) or ""
+        if new_title == current:
+            return  # no change; skip the roundtrip
+        self._action_worker("set title", "set_title", title=new_title)
 
     def action_delete_session(self) -> None:
         title = self.session.title if self.session else None
@@ -603,6 +680,8 @@ class DetailScreen(Screen):
             self.action_sync_now()
         elif bid == "share-btn":
             self.action_share_with_team()
+        elif bid == "title-btn":
+            self.action_edit_title()
         elif bid == "label-btn":
             self.action_open_labeling()
         elif bid == "delete-btn":
@@ -628,7 +707,8 @@ class DetailScreen(Screen):
         method = getattr(self.app.api, api_method)
         result = method(self.session_id, **kwargs)
         if result.is_ok():
-            self.post_message(ActionDone(label=label, ok=True))
+            warning = result.ok.get("warning") if isinstance(result.ok, dict) else None
+            self.post_message(ActionDone(label=label, ok=True, warning=warning))
         else:
             self.post_message(ActionDone(
                 label=label, ok=False, detail=result.error_message(),
@@ -663,6 +743,8 @@ class DetailScreen(Screen):
     def on_action_done(self, message: ActionDone) -> None:
         if message.ok:
             self.notify(f"{message.label}: ok", severity="information")
+            if message.warning:
+                self.notify(message.warning, severity="warning", timeout=10)
             # Refresh to surface any state change (e.g. retry-summary
             # flips status to summarizing).
             self.action_refresh()

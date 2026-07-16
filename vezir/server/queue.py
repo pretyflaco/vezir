@@ -492,6 +492,22 @@ def set_personal(job_id: str, personal: bool) -> None:
         )
 
 
+def set_title(job_id: str, title: str | None) -> None:
+    """Set (or clear) the human title on an existing job.
+
+    Used by ``POST /api/sessions/{id}/title`` so a scribe who forgot to
+    name a session at record time can add/change the title afterwards.
+    An empty/blank title is normalized to NULL (falls back to the id in
+    every display surface).
+    """
+    normalized = (title or "").strip() or None
+    with _conn() as c:
+        c.execute(
+            "UPDATE jobs SET title = ?, updated_at = ? WHERE id = ?",
+            (normalized, _now(), job_id),
+        )
+
+
 def _session_was_synced(row: dict) -> bool:
     """Best-effort guess whether a session's artifacts reached the team git repo.
 
@@ -511,6 +527,16 @@ def _session_was_synced(row: dict) -> bool:
     if status == "done" and row.get("sync_enabled"):
         return True
     return False
+
+
+def was_synced(row: dict) -> bool:
+    """Public best-effort "did this session reach the team git repo" check.
+
+    Thin wrapper over the internal heuristic so callers outside this
+    module (e.g. the retitle endpoint's warning) don't reach into a
+    private name.
+    """
+    return _session_was_synced(row)
 
 
 def delete_session(session_id: str) -> dict:

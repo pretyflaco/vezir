@@ -3,6 +3,43 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.12.0 — retitle sessions, PyPI update nudge
+
+Two field-report features.  No DB migration (the `title` column has
+existed since the earliest schema).  Test suite grows 885 → 918.
+
+### Added
+
+- **Edit a session's title after it was recorded.**  Scribes sometimes
+  forget to name a session at record time and had no way to fix it.  New
+  write path for the existing `title` field:
+  - `POST /api/sessions/{id}/title` (body `{"title": "..."}`).
+    Authorization mirrors delete: server-wide admin **or** the original
+    uploader (cross-team → 404, other member → 403).  An empty/blank
+    title clears it (the session then displays by id).
+  - TUI: `[t] Edit title` on the session detail screen (pre-filled input
+    modal).
+  - CLI: `vezir session set-title <id> "New title"`.
+
+  The title is **not** baked into the transcript/summary/PDF, so nothing
+  is regenerated.  It does drive millet's sync folder name / schedule
+  matching, which read it fresh at sync time — so a new title takes
+  effect on the next sync.  If the session was already synced, the pushed
+  git folder is not renamed automatically; the response (and the TUI/CLI)
+  surface a warning to re-run sync.
+
+- **The TUI nudges when a newer vezir is on PyPI.**  Some users didn't
+  realise an update was available that would have fixed the problem they
+  were hitting.  A background poll (every ~6h, cached across launches in
+  `client.json`) checks `pypi.org/pypi/vezir/json`, and when a newer
+  release exists shows an in-app toast + desktop notification with the
+  exact upgrade command for how vezir was installed (`pip install
+  --upgrade vezir`, `pipx upgrade vezir`, or `git pull && pip install
+  -e .`).  The Record screen version line also flags the available
+  update.  Disable with `VEZIR_TUI_DISABLE_UPDATE_CHECK=1`.  There is no
+  in-app self-update by design — vezir is a pip/pipx package; showing the
+  command is the honest, safe behaviour.
+
 ## 0.11.1 — sync fixes: long titles, empty recordings, client provenance
 
 Three focused fixes from field reports on the 0.11.0 deployment.  No

@@ -349,6 +349,65 @@ def share_with_team(
     return {"ok": True, "session_id": session_id}
 
 
+# ── POST /api/sessions/{id}/title (v0.12.0) ──────────────────────────────────
+
+
+class _SetTitleBody(BaseModel):
+    # None / empty / blank clears the title (falls back to the id in
+    # every display surface).
+    title: str | None = None
+
+
+@router.post(
+    "/api/sessions/{session_id}/title",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def set_session_title(
+    session_id: str,
+    body: _SetTitleBody | None = None,
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Add or change a session's title after it was created.
+
+    Scribes sometimes forget to name a session at record time; this lets
+    them fix it afterwards.  Authorization mirrors delete: the server-wide
+    admin OR the original uploader (cross-team → 404, other member → 403).
+
+    The title is NOT baked into the transcript/summary/PDF, so no artifact
+    regeneration is needed.  It DOES drive millet's sync folder name /
+    schedule matching, which read the title fresh at sync time — so a new
+    title takes effect on the next sync.  If the session was already
+    synced, the pushed git folder is not renamed retroactively; the
+    response carries a ``warning`` to that effect.
+    """
+    github, team_id, is_admin = auth_triple
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id)
+    if not is_admin and row.get("github") != github:
+        raise HTTPException(
+            403,
+            "only an admin or the original uploader can retitle this session",
+        )
+
+    new_title = ((body.title if body else None) or "").strip() or None
+    queue.set_title(session_id, new_title)
+    log.info(
+        "session=%s retitled by %s (admin=%s, team=%s)",
+        session_id, github, is_admin, team_id,
+    )
+
+    warning = None
+    if queue.was_synced(row):
+        warning = (
+            "this session was already synced to the team git repo; the "
+            "pushed folder is not renamed automatically — run 'Sync now' "
+            "again to repropagate the new title."
+        )
+    return {"ok": True, "session_id": session_id, "title": new_title, "warning": warning}
+
+
 # ── DELETE /api/sessions/{id} (v0.8.12) ──────────────────────────────────────
 
 

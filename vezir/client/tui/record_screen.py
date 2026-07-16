@@ -688,6 +688,20 @@ class RecordBody(Vertical):
         yield Static("", id="error-line", classes="error")
         yield Static(f"v{_vezir_version()}", id="version-line")
 
+    def _version_line_text(self) -> str:
+        """Version line, annotated when the update poll found a newer release."""
+        base = f"v{_vezir_version()}"
+        latest = getattr(self.app, "latest_available_version", None)
+        if latest:
+            return f"{base}  [dim](update available: {latest})[/]"
+        return base
+
+    def _refresh_version_line(self) -> None:
+        try:
+            self.query_one("#version-line", Static).update(self._version_line_text())
+        except Exception:
+            pass
+
     # ── mount: apply initial toggle states from prefs ──
 
     def on_mount(self) -> None:
@@ -700,6 +714,11 @@ class RecordBody(Vertical):
         pe = self.query_one("#personal-btn", Button)
         self._style_toggle(pe, False, personal=True)
         self._warn_if_session_expiring()
+        # The update-check poll (update_check.py) fills
+        # app.latest_available_version a few seconds after launch; poll
+        # cheaply so the version line picks it up without a restart.
+        self._refresh_version_line()
+        self.set_interval(10.0, self._refresh_version_line, name="version-line-refresh")
 
     def _warn_if_session_expiring(self) -> None:
         """Proactively warn only when re-login is genuinely needed.

@@ -117,6 +117,16 @@ class MainScreen(Screen):
         except Exception as exc:
             log.warning("labeling poll setup failed: %s", exc)
 
+        # Start the background "newer vezir on PyPI" poll.  Separate env
+        # guard so tests can disable it independently of the labeling poll.
+        if os.environ.get("VEZIR_TUI_DISABLE_UPDATE_CHECK") == "1":
+            return
+        try:
+            from .update_check import install_update_poll
+            install_update_poll(self)
+        except Exception as exc:
+            log.warning("update-check poll setup failed: %s", exc)
+
     def action_show_tab(self, tab_id: str) -> None:
         tabs = self.query_one(TabbedContent)
         tabs.active = tab_id
@@ -289,6 +299,10 @@ class VezirTuiApp(App):
         # config-backed teams; discovered selections live here for the
         # session (mirrors the android UX: server is the source of truth).
         self._discovered_active: str | None = None
+        # Set by the update-check poll (update_check.py) when a newer
+        # vezir release is found on PyPI.  Surfaces on the Record screen
+        # version line.  None until/unless a newer version is detected.
+        self.latest_available_version: str | None = None
         if not self.token:
             log.warning("VEZIR_TOKEN is not set; TUI will run in degraded mode")
         self.api = VezirClient(

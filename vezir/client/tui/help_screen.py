@@ -50,6 +50,7 @@ _HELP_TEXT = """\
   [b]f[/b]       Open local artifacts folder
   [b]d[/b]       Copy local artifacts path
   [b]l[/b]       Open labeling for this session
+  [b]t[/b]       Edit title (add/change; admin or uploader)
   [b]y[/b]       Sync now
   [b]e[/b]       Retry summary
   [b]p[/b]       Share with team (un-personal)
@@ -80,6 +81,12 @@ _HELP_TEXT = """\
   [b]enter[/b]   Submit all labels (from any handle input)
   [b]click ▶[/b] Play / stop the speaker's audio clip
   [b]escape[/b]  Cancel
+
+[b cyan]Updates[/b cyan]
+  The TUI checks PyPI in the background (every ~6h) and toasts when a
+  newer vezir is available, showing the exact upgrade command:
+    [dim]pip install --upgrade vezir[/dim]   (or [dim]pipx upgrade vezir[/dim])
+  The Record screen version line also flags an available update.
 """
 
 

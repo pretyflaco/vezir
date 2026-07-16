@@ -2128,6 +2128,92 @@ def session_rm(session_id, server_url, token, team, confirm):
         click.echo(f"vezir: warning: {payload['warning']}")
 
 
+@session.command("set-title")
+@click.argument("session_id")
+@click.argument("title")
+@click.option("--server", "server_url", default=None,
+              help="Server URL (default $VEZIR_URL)")
+@click.option("--token", default=None,
+              help="Bearer token (default $VEZIR_TOKEN)")
+@click.option("--team", "team", default=None,
+              help="Team slug/id the session belongs to (default: active "
+                   "team in teams.json or $VEZIR_TEAM_ID)")
+def session_set_title(session_id, title, server_url, token, team):
+    """Add or change a session's title after it was recorded (v0.12.0+).
+
+    Useful when a scribe forgot to name a session at record time.  Only
+    the server-wide admin or the session's original uploader may retitle
+    it.  Pass an empty string ("") to clear the title.
+
+    The title is not baked into the transcript/summary/PDF, so nothing is
+    regenerated.  If the session was already synced, the pushed git folder
+    is not renamed automatically — re-run sync to repropagate (the server
+    returns a warning when this applies).
+    """
+    from .client.api import VezirClient
+    from .client.config import (
+        resolve_credentials,
+        team_credentials,
+    )
+
+    team_id: str | None = None
+    if team:
+        t_id, t_url, t_token = team_credentials(team)
+        if t_id is None:
+            team_id = team
+        else:
+            team_id = t_id
+            server_url = server_url or t_url
+            token = token or t_token
+    if server_url is None or token is None or team_id is None:
+        r_url, r_token, r_team, _src = resolve_credentials()
+        server_url = server_url or r_url
+        token = token or r_token
+        if team_id is None:
+            team_id = r_team
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
+        sys.exit(1)
+    config.validate_token_format(token)
+    if not team_id:
+        click.echo(
+            "vezir: error: no team selected; pass --team <slug>, set "
+            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
+            err=True,
+        )
+        sys.exit(1)
+
+    api = VezirClient(server_url, token, team_id=team_id)
+    result = api.set_title(session_id, title)
+    if not result.is_ok():
+        code = result.http_error[0] if result.http_error else None
+        if code == 404:
+            click.echo(
+                f"vezir: error: session {session_id} not found in this team",
+                err=True,
+            )
+        elif code == 403:
+            click.echo(
+                "vezir: error: not permitted — only an admin or the original "
+                "uploader can retitle this session",
+                err=True,
+            )
+        else:
+            click.echo(f"vezir: error: {result.error_message()}", err=True)
+        sys.exit(1)
+
+    payload = result.ok
+    new_title = payload.get("title") if isinstance(payload, dict) else None
+    if new_title:
+        click.echo(f"vezir: session {session_id} titled {new_title!r}")
+    else:
+        click.echo(f"vezir: session {session_id} title cleared")
+    if isinstance(payload, dict) and payload.get("warning"):
+        click.echo(f"vezir: warning: {payload['warning']}")
+
+
 # ── voiceprints ───────────────────────────────────────────────────────────────
 
 @main.group()

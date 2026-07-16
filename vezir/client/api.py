@@ -571,6 +571,18 @@ class VezirClient:
             f"/api/sessions/{quote(session_id, safe='')}/share",
         )
 
+    def set_title(self, session_id: str, title: str | None = None) -> ApiResult:
+        """Add or change a session's title after creation.
+
+        An empty/blank ``title`` clears it (server falls back to the id).
+        On success ``.ok`` is the server JSON, which may carry a
+        ``warning`` when the session was already synced.
+        """
+        return self._post(
+            f"/api/sessions/{quote(session_id, safe='')}/title",
+            json={"title": title},
+        )
+
     def delete_session(self, session_id: str) -> ApiResult:
         """Remove a session (admin or original uploader only).
 
