@@ -110,6 +110,12 @@ def _reset_v0_11_process_state():
     try:
         from vezir.server import sessions_auth
         sessions_auth._reset_revoked_cache_for_tests()
+        sessions_auth._reset_grace_cache_for_tests()
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        from vezir.server import uploads
+        uploads._reset_idempotency_for_tests()
     except Exception:  # pragma: no cover - defensive
         pass
     try:

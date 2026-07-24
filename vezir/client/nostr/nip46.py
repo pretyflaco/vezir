@@ -49,6 +49,7 @@ for a one-shot terminal login.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import secrets
@@ -402,6 +403,18 @@ class Nip46Client:
         )
         return req_id, json.dumps(["EVENT", ev])
 
+    @property
+    def clock_offset(self) -> int:
+        """Clock skew (seconds) learned from the signer's connect event.
+
+        Add this to ``int(time.time())`` when stamping ``created_at`` on any
+        event the signer will sign but the SERVER will validate for freshness
+        (e.g. the NIP-98 login event) — on a skewed-clock machine the raw
+        local time would otherwise fall outside the server's freshness window
+        and the login POST would 401 after an otherwise-successful handshake.
+        """
+        return self._clock_offset
+
     def _learn_clock_offset(self, signer_created_at) -> None:
         """Learn our clock offset from the signer's connect-event time.
 
@@ -586,16 +599,32 @@ class Nip46Client:
             # Auth challenge: result == "auth_url", error == URL to open.
             # (Handle before id-matching: Amber may use a fresh id here.)
             if result == "auth_url":
+                # Only honor HTTPS auth_urls from our bound signer (see the
+                # phishing note in wait_for_connection).
+                bound = self.remote_signer_pubkey
+                ok = (
+                    isinstance(error, str)
+                    and error.lower().startswith("https://")
+                    and (bound is None or author == bound)
+                )
+                if not ok:
+                    log.warning(
+                        "nip46: ignoring untrusted auth_url from %s",
+                        (author or "?")[:8],
+                    )
+                    continue
                 if rid not in self._auth_url_seen:
                     self._auth_url_seen.add(rid)
-                    if self.on_auth_url and error:
+                    if self.on_auth_url:
                         self.on_auth_url(error)
                 # keep waiting for the real result on the same id
                 continue
 
             # Skip the signer's connect echoes ("ack" / our secret) — these
             # are not method results (Amber re-emits them repeatedly).
-            if result == "ack" or result == self.secret:
+            if result == "ack" or (
+                isinstance(result, str) and hmac.compare_digest(result, self.secret)
+            ):
                 log.debug("skip connect echo (result=%r) while awaiting reply", result)
                 continue
 
@@ -681,7 +710,11 @@ class Nip46Client:
             # server validates against its npub allowlist — a hijacker's
             # non-allowlisted key yields a 403, so winning the connect race
             # has no payoff against vezir.
-            if result == self.secret or result == "ack":
+            if (
+                (isinstance(result, str)
+                 and hmac.compare_digest(result, self.secret))
+                or result == "ack"
+            ):
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
                 # Learn the clock offset from the signer's connect event:
@@ -718,8 +751,29 @@ class Nip46Client:
                     self.user_pubkey = None
                     return author
             if result == "auth_url":
+                # SECURITY: before a signer is bound, ANY author who can
+                # encrypt to our (relay-visible) client pubkey can inject an
+                # auth_url that we'd surface to the user as "open this link
+                # to approve" — a phishing vector.  Only surface auth_urls
+                # that (a) are HTTPS and (b) come from the author we've
+                # already bound as our signer (or, pre-bind, defer until an
+                # author is bound).  A mismatched/pre-bind/non-HTTPS auth_url
+                # is logged and dropped.
                 url = resp.get("error")
-                if url and self.on_auth_url and resp.get("id") not in self._auth_url_seen:
+                bound = self.remote_signer_pubkey
+                if not (isinstance(url, str) and url.lower().startswith("https://")):
+                    log.warning(
+                        "nip46: ignoring non-HTTPS auth_url from %s",
+                        (author or "?")[:8],
+                    )
+                    continue
+                if bound is not None and author != bound:
+                    log.warning(
+                        "nip46: ignoring auth_url from non-signer author %s",
+                        (author or "?")[:8],
+                    )
+                    continue
+                if self.on_auth_url and resp.get("id") not in self._auth_url_seen:
                     self._auth_url_seen.add(resp.get("id"))
                     self.on_auth_url(url)
                 continue

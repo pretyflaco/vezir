@@ -153,15 +153,26 @@ def _load_autoid_suggestions(session_dir: Path) -> dict[str, dict]:
     return {}
 
 
-def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
-    """Reject cross-team access with a 404 (mirror of sessions._enforce_team_visibility).
+def _enforce_team_visibility(
+    row: dict,
+    viewer_team_id: str,
+    viewer_github: str | None = None,
+    is_admin: bool = False,
+) -> None:
+    """Reject cross-team / other-user-personal access with a 404.
 
-    Duplicated here rather than imported to keep labels.py independent
-    of sessions.py — both have the same security obligation; the
-    duplication is intentional belt-and-suspenders.
+    Mirror of ``sessions._enforce_team_visibility``.  Duplicated here
+    rather than imported to keep labels.py independent of sessions.py —
+    both have the same security obligation; the duplication is
+    intentional belt-and-suspenders.  v0.12.1: also hides other users'
+    personal sessions (their audio clips / speaker data) from same-team
+    members, exposing them only to the owner and global admins.
     """
     if row.get("team_id") != viewer_team_id:
         raise HTTPException(404, "session not found")
+    if viewer_github is not None and row.get("personal") and not is_admin:
+        if row.get("github") != viewer_github:
+            raise HTTPException(404, "session not found")
 
 
 @router.get(
@@ -174,14 +185,14 @@ def label_clip(
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Return an audio clip for a speaker. Generates and caches on first hit."""
-    _github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     if not _is_safe_clip_id(speaker_id):
         raise HTTPException(400, "invalid speaker id")
 
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
 
     sdir = _session_dir(session_id)
     if not sdir.exists():
@@ -238,11 +249,15 @@ def _apply_and_finalize(
     )
 
     log_path = config.logs_dir() / f"{session_id}.log"
-    rc = meet_runner.apply_labels_json(
-        _session_dir(session_id), session_id, team_id, log_path,
-        label_map=label_map,
-        regenerate_summary=False,
-    )
+    # Serialize against the worker (finalize/sync/retry) and any other
+    # concurrent label apply for THIS session — they share the per-session
+    # HOME shim and label-map file (M-3).
+    with meet_runner.session_shim_lock(session_id):
+        rc = meet_runner.apply_labels_json(
+            _session_dir(session_id), session_id, team_id, log_path,
+            label_map=label_map,
+            regenerate_summary=False,
+        )
     if rc != 0:
         log.error(
             "session=%s: millet label --apply-json exited %s", session_id, rc,
@@ -302,11 +317,11 @@ def api_label_get(
     Note: ``channel`` is a string from millet (e.g. "mic", "system"),
     not an integer.
     """
-    _github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     if row["status"] not in _LABELABLE_STATUSES:
         raise HTTPException(
             409,
@@ -356,11 +371,11 @@ def api_label_post(
 
     Empty or missing labels for a speaker keep the auto-assigned label.
     """
-    github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     if row["status"] not in _LABELABLE_STATUSES:
         raise HTTPException(
             409,

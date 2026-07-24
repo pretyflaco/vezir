@@ -360,28 +360,54 @@ def poll_status(
     session_id: str,
     timeout: float = 600.0,
     open_labeling: bool = False,
+    team_id: str | None = None,
 ) -> str | None:
     """Poll server until done or error. Returns final status.
 
     Prints status transitions to stdout. On needs_labeling, prints a
-    prominent call-to-action with the labeling URL and continues polling
-    until the session reaches done or error. Returns None on timeout.
+    prominent call-to-action and continues polling until the session
+    reaches done or error. Returns None on timeout.
+
+    v0.12.1: send the ``X-Team-Id`` header (required by v0.7.0+ servers —
+    without it every ``GET /api/sessions/{id}`` is a hard 400 and the
+    poll silently times out) and resolve TLS trust the same way the rest
+    of the client does (internal Caddy CA support).  Persistent non-200s
+    are surfaced instead of being swallowed until the deadline.
     """
     import httpx
+
+    from .trust import resolve_verify
 
     base = server_url.rstrip("/")
     url = f"{base}/api/sessions/{session_id}"
     headers = {"Authorization": f"Bearer {token}"}
+    if team_id:
+        headers["X-Team-Id"] = team_id
+    verify = resolve_verify()
     deadline = time.time() + timeout
     last_status = ""
     labeling_prompted = False
+    consecutive_errors = 0
+    _MAX_CONSECUTIVE_ERRORS = 6
 
     while time.time() < deadline:
         try:
-            r = httpx.get(url, headers=headers, timeout=10)
+            r = httpx.get(url, headers=headers, timeout=10, verify=verify)
             if r.status_code != 200:
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    detail = r.text.strip().splitlines()[0][:200] if r.text else ""
+                    print(
+                        f"vezir: polling gave up after {consecutive_errors} "
+                        f"failed requests (HTTP {r.status_code}"
+                        f"{': ' + detail if detail else ''})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return None
                 time.sleep(_POLL_INTERVAL)
                 continue
+            consecutive_errors = 0
             data = r.json()
             status = data.get("status", "?")
 
@@ -439,6 +465,15 @@ def poll_status(
             return last_status or None
         except Exception as exc:
             log.debug("poll error: %s", exc)
+            consecutive_errors += 1
+            if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                print(
+                    f"vezir: polling gave up after {consecutive_errors} "
+                    f"connection errors (last: {exc})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return None
 
         time.sleep(_POLL_INTERVAL)
 
@@ -600,6 +635,7 @@ def run_scribe(
         poll_status(
             server_url, token, result["session_id"],
             timeout=wait_timeout, open_labeling=open_labeling,
+            team_id=team_id,
         )
 
     return result

@@ -70,6 +70,44 @@ def test_upload_accepts_wav(client_and_token):
     assert _mode(uploaded) == 0o600
 
 
+def test_upload_idempotency_key_dedupes(client_and_token):
+    """Re-POSTing with the same Idempotency-Key returns the SAME session
+    instead of creating a duplicate (M2 — protects against a retry after a
+    lost response causing double transcription + a duplicate meeting)."""
+    client, token, _tmp = client_and_token
+    headers = {**_bearer(token), "Idempotency-Key": "abc123"}
+
+    r1 = client.post(
+        "/upload", headers=headers,
+        files={"audio": ("foo.wav", _wav_bytes(), "audio/wav")},
+    )
+    assert r1.status_code == 200
+    sid1 = r1.json()["session_id"]
+
+    r2 = client.post(
+        "/upload", headers=headers,
+        files={"audio": ("foo.wav", _wav_bytes(), "audio/wav")},
+    )
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["session_id"] == sid1
+    assert body2.get("idempotent") is True
+
+
+def test_upload_distinct_idempotency_keys_are_separate(client_and_token):
+    client, token, _tmp = client_and_token
+
+    r1 = client.post(
+        "/upload", headers={**_bearer(token), "Idempotency-Key": "k1"},
+        files={"audio": ("foo.wav", _wav_bytes(), "audio/wav")},
+    )
+    r2 = client.post(
+        "/upload", headers={**_bearer(token), "Idempotency-Key": "k2"},
+        files={"audio": ("foo.wav", _wav_bytes(), "audio/wav")},
+    )
+    assert r1.json()["session_id"] != r2.json()["session_id"]
+
+
 def test_upload_accepts_ogg(client_and_token):
     client, token, tmp_data = client_and_token
 

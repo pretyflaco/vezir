@@ -410,7 +410,12 @@ def _token_from_authorization(authorization: str | None) -> str | None:
         return None
     if not authorization.lower().startswith("bearer "):
         return None
-    return authorization.split(None, 1)[1].strip()
+    parts = authorization.split(None, 1)
+    # ``"Bearer "`` (whitespace-only value) splits to just ["Bearer"] — guard
+    # the index so it yields a clean 401, not an unhandled 500 (L-1).
+    if len(parts) < 2:
+        return None
+    return parts[1].strip() or None
 
 
 def require_bearer(

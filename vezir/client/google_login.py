@@ -88,11 +88,12 @@ def login(
             if pr.status_code == 200:
                 return pr.json()
             if pr.status_code == 202:
-                # authorization_pending / slow_down — keep waiting.  Google
-                # asks us to back off on slow_down; add a second to be safe.
+                # authorization_pending / slow_down — keep waiting.  The
+                # device-grant spec says to increase the interval by 5s on
+                # slow_down (L-8).
                 body = pr.json() if pr.content else {}
                 if body.get("error") == "slow_down":
-                    interval += 1
+                    interval += 5
                 continue
             # Terminal error (401/403/5xx).
             raise GoogleLoginError(_detail(pr))

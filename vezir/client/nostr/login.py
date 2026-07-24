@@ -21,14 +21,19 @@ import time
 log = logging.getLogger("vezir.login")
 
 
-def build_login_event_template(login_url: str) -> dict:
+def build_login_event_template(login_url: str, clock_offset: int = 0) -> dict:
     """Return the unsigned NIP-98 event the signer will sign.
 
     ``pubkey``/``id``/``sig`` are filled in by the remote signer.
+
+    ``clock_offset`` (seconds, from ``Nip46Client.clock_offset``) corrects
+    ``created_at`` for a skewed local clock so the SERVER's NIP-98 freshness
+    check passes — without it a skewed scribe machine 401s at login even
+    though the signer handshake succeeded.
     """
     return {
         "kind": 27235,
-        "created_at": int(time.time()),
+        "created_at": int(time.time()) + int(clock_offset),
         "tags": [["u", login_url], ["method", "POST"]],
         "content": "",
     }

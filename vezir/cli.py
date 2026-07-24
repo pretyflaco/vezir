@@ -305,7 +305,10 @@ def upload_cmd(server_url, token, team, title, compress, preset, auto_label, syn
     if wait:
         from .client.scribe import poll_status
         click.echo("vezir: waiting for processing ...")
-        poll_status(server_url, token, result["session_id"], timeout=float(wait_timeout))
+        poll_status(
+            server_url, token, result["session_id"],
+            timeout=float(wait_timeout), team_id=team_id,
+        )
 
 
 @main.command("upload-multi")
@@ -460,7 +463,10 @@ def upload_multi_cmd(server_url, token, team, title, from_dir, preset, auto_labe
     if wait:
         from .client.scribe import poll_status
         click.echo("vezir: waiting for processing ...")
-        poll_status(server_url, token, result["session_id"], timeout=float(wait_timeout))
+        poll_status(
+            server_url, token, result["session_id"],
+            timeout=float(wait_timeout), team_id=team_id,
+        )
 
 
 # ── tui ───────────────────────────────────────────────────────────────────────
@@ -893,14 +899,22 @@ def token_list(dormant_days, show_id):
 
 @main.group()
 def session():
-    """Manage rotating refresh-token sessions (server-side).
+    """Manage sessions: auth families (list/revoke) and recordings (move/rm/set-title).
 
-    Each interactive login (nostr / Google) creates a *session family* with
-    a short-lived access JWT and a rotating refresh token.  These commands
-    inspect and revoke families directly against the local queue DB, the
-    same operator posture as the ``token`` group.  Revoking a session stops
-    its refresh token from minting new access tokens; any outstanding
-    access JWT still lapses within its short TTL.
+    Two related roles share this group:
+
+    * **Auth sessions** — each interactive login (nostr / Google) creates a
+      *session family* with a short-lived access JWT and a rotating refresh
+      token.  ``list`` / ``revoke`` inspect and revoke families directly
+      against the local queue DB (operator posture, like ``token``).
+      Revoking stops the refresh token from minting new access tokens; any
+      outstanding access JWT still lapses within its short TTL.
+
+    * **Recordings** — ``move`` / ``rm`` / ``set-title`` operate on
+      individual recorded sessions (reassign team, delete, rename).
+
+    (v0.12.1: these were previously split across two ``session`` groups; the
+    second shadowed the first, so ``list`` / ``revoke`` were unreachable.)
     """
 
 
@@ -1733,7 +1747,8 @@ def login(url, team_id, relay, timeout, method, verbose):
     try:
         client.wait_for_connection(timeout=timeout)
         template = nostr_login.build_login_event_template(
-            nostr_login.login_url_for(resolved_url)
+            nostr_login.login_url_for(resolved_url),
+            clock_offset=client.clock_offset,
         )
         signed = client.sign_event(template, timeout=timeout)
     except nip46.Nip46Error as exc:
@@ -1963,12 +1978,14 @@ def _clock_unsynced_warning() -> str | None:
     return None
 
 
-# ── session (v0.6.2+: cross-team move) ───────────────────────────────────────
-
-@main.group()
-def session():
-    """Manage individual sessions (v0.6.2+)."""
-
+# ── session: recording management (v0.6.2+: move / rm / set-title) ────────────
+#
+# NOTE: these attach to the single `session` group defined earlier (the
+# auth-session group with `list` / `revoke`).  There used to be a SECOND
+# `@main.group() def session()` here that silently shadowed the first,
+# making `vezir session list` / `vezir session revoke` unreachable
+# (v0.12.1 fix).  Do not re-introduce a duplicate group — add subcommands
+# to the existing one.
 
 @session.command("move")
 @click.argument("session_id")

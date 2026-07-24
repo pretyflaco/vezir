@@ -76,16 +76,24 @@ def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
 
 def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
     try:
-        if kind == "sync":
-            finalize_after_labeling(session_id, kwargs.get("meeting_type"))
-        elif kind == "retry_summary":
-            retry_summary_for_session(
-                session_id,
-                preset_override=kwargs.get("preset_override"),
-                language_override=kwargs.get("language_override"),
-            )
-        elif kind == "finalize_labels":
-            _finalize_labels_task(session_id, kwargs.get("label_map") or {})
+        # All three follow-up kinds invoke millet under the per-session
+        # HOME shim (build/rmtree on entry, cleanup on exit).  Hold the
+        # per-session shim lock so a concurrent `POST /api/label/{id}` apply
+        # (which takes the same lock) can't delete the shim / label-map file
+        # mid-task, and vice-versa (M-3).  Different sessions never contend;
+        # tasks for the same session are already serialized on the single
+        # worker thread, but the label endpoint runs in a request thread.
+        with meet_runner.session_shim_lock(session_id):
+            if kind == "sync":
+                finalize_after_labeling(session_id, kwargs.get("meeting_type"))
+            elif kind == "retry_summary":
+                retry_summary_for_session(
+                    session_id,
+                    preset_override=kwargs.get("preset_override"),
+                    language_override=kwargs.get("language_override"),
+                )
+            elif kind == "finalize_labels":
+                _finalize_labels_task(session_id, kwargs.get("label_map") or {})
     except Exception:
         log.exception("task %s failed for session %s", kind, session_id)
     finally:
@@ -227,6 +235,12 @@ def _last_log_lines(log_path: Path, n_bytes: int = _ERROR_TAIL_BYTES) -> str:
     # Drop a possibly-truncated leading line.
     if "\n" in tail and len(tail) >= n_bytes:
         tail = tail.split("\n", 1)[1]
+    # Redact credentials embedded in URLs (e.g. a PAT-in-URL git remote
+    # like https://ghp_xxx@github.com/... echoed by git's "unable to
+    # access '<url>'" errors).  The tail is stored in the jobs table and
+    # surfaced to every team member via GET /api/sessions, so a leaked
+    # userinfo segment would hand the team's git token to any scribe.
+    tail = re.sub(r"(https?://)[^/@\s]+@", r"\1***@", tail)
     # Trim trailing whitespace / blank lines.
     return tail.strip()
 

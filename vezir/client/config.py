@@ -109,7 +109,14 @@ def load_teams_config() -> dict:
     active = data.get("active")
     if active and not any(t["id"] == active for t in clean_teams):
         active = clean_teams[0]["id"] if clean_teams else None
-    return {"teams": clean_teams, "active": active}
+    # Preserve any unknown top-level keys (e.g. fields added by a newer
+    # client version) so the load→mutate→save round-trip every mutator does
+    # doesn't silently erase them (L-5).  ``teams``/``active`` are always
+    # overwritten with the cleaned values above.
+    result = {k: v for k, v in data.items() if k not in ("teams", "active")}
+    result["teams"] = clean_teams
+    result["active"] = active
+    return result
 
 
 def save_teams_config(data: dict) -> None:

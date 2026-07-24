@@ -196,7 +196,8 @@ class ReauthScreen(ModalScreen["dict | None"]):
             ))
             client.wait_for_connection(timeout=180)
             template = nostr_login.build_login_event_template(
-                nostr_login.login_url_for(self._server_url)
+                nostr_login.login_url_for(self._server_url),
+                clock_offset=client.clock_offset,
             )
             signed = client.sign_event(template, timeout=180)
             body = nostr_login.post_login(

@@ -3,6 +3,93 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.12.1 — security & correctness hardening; docs refresh
+
+A codebase-wide bug/security pass.  No DB migration.  All changes are
+backward compatible.  Test suite grows 897 → 906.
+
+### Security
+
+- **Refresh-token grace window no longer hijackable (High).**  A stale
+  refresh token replayed within the lost-response grace window previously
+  minted a *new* token family to whoever presented it (silent session
+  hijack, no reuse detection) and re-anchored the window on every hit, so
+  a thief could renew indefinitely.  The grace path now replays the exact
+  pair the original rotation minted (idempotent) and never slides the
+  window; a stale token in-window with no cached response is treated as
+  reuse.  (`sessions_auth.py`)
+- **Personal sessions are now enforced on every per-session endpoint.**
+  `list_recent` already hid other users' personal sessions, but the
+  detail / artifact / clip / label / sync-now endpoints only checked
+  `team_id` — any same-team member who learned a personal session's ULID
+  could read its transcript/audio and even force-sync it to the shared
+  repo.  These now 404 for non-owners (owner + global admins excepted).
+  (`sessions.py`, `labels.py`)
+- **Git credentials no longer leak via error tails.**  `error` /
+  `sync_error` embed the last ~2 KiB of the millet log, returned to every
+  team member; a PAT-in-URL git remote (`https://ghp_…@github.com/…`)
+  echoed by git's failure output is now redacted before storage.
+  (`worker.py`)
+- **NIP-46 auth_url phishing guard (client).**  An `auth_url` injected by
+  an unbound relay author, or a non-HTTPS URL, is no longer surfaced to
+  the user as an "approve" link — only HTTPS URLs from the bound signer
+  are honored.  Connect-secret comparisons are now constant-time.
+  (`client/nostr/nip46.py`)
+- **Rate-limit buckets are bounded** (were keyed on the unvalidated
+  bearer and grew without limit), and **CLI session revocation now
+  propagates to the running server** within a short refresh interval
+  instead of leaving already-minted access JWTs alive until `exp`.
+  (`ratelimit.py`, `sessions_auth.py`)
+
+### Fixed
+
+- **`vezir scribe --wait` / `upload --wait` no longer silently time out.**
+  `poll_status` omitted the `X-Team-Id` header (a hard 400 on v0.7.0+
+  servers) and bypassed TLS trust resolution, so every poll failed and
+  was swallowed until the deadline.  It now sends the team header,
+  resolves the internal-CA trust store, and surfaces persistent failures.
+  (`client/scribe.py`)
+- **`vezir session list` / `vezir session revoke` are reachable again.**  A
+  duplicate `@main.group() def session()` shadowed the auth-session group,
+  making the 0.10.0 operator commands unreachable.  Merged into one group.
+  (`cli.py`)
+- **One-shot upload retries no longer create duplicate sessions.**  The
+  client sends an `Idempotency-Key`; the server replays the existing
+  session on a retry after a lost/late response.  (`uploader.py`,
+  `uploads.py`)
+- **Resumable-upload retry loops are bounded** (401/409/429 could spin
+  forever), the **NIP-98 login event now honors the learned clock offset**
+  (skewed-clock machines no longer 401 after a successful handshake), and
+  the **label-apply subprocess is serialized with the worker** via a
+  per-session shim lock (no more racing rmtree of the shared HOME shim).
+- **Blocking DB/file work moved off the event loop** in the async upload
+  handlers (`run_in_threadpool`), so DB contention can't freeze all
+  requests.  (`uploads.py`)
+- Assorted lows: `Authorization: Bearer ` (whitespace-only) → 401 not 500;
+  `/api/sessions?limit=-1` clamped; `sync_now` reports the real `queued`
+  value; titles trimmed server-side; `sync_meeting_type` slug-validated at
+  write time; NIP-44 strict base64; Google device `slow_down` += 5s;
+  teams.json preserves unknown keys; TUI update-check env guard fixed;
+  binary-artifact temp files cleaned on unmount; TUI identity refresh moved
+  to a worker thread.
+
+### Changed
+
+- **`millet-pipeline` pin raised to `>=0.13.0`** to match the runtime floor
+  the server has enforced since 0.11.0 (removes an install-then-fail trap).
+- **README refreshed** from the 0.8.3 era to 0.12.x: rotating-session model,
+  runtime millet floor, MP3 uploads, `upload-multi`, session retitle,
+  `empty` status, and ~9 previously-undocumented env vars.  `config.py`
+  env-var docstring corrected (the `VEZIR_MEET_*` "removed in 0.6.0" claim
+  contradicted still-live alias code).
+
+### Deferred
+
+- Larger lows left as tracked follow-ups: admin-demotion propagation to live
+  sessions, resumable-sweep vs. in-flight-PATCH race, session/revoked-row
+  reapers, `contextlib.closing` in migration connections, `--token-file`,
+  and the client HTTP-connection-reuse / polling-backoff efficiency items.
+
 ## 0.12.0 — retitle sessions, PyPI update nudge
 
 Two field-report features.  No DB migration (the `title` column has

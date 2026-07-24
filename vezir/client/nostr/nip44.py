@@ -148,7 +148,10 @@ def _decode_payload(payload: str) -> tuple[bytes, bytes, bytes]:
         raise ValueError("unknown version")
     if plen < 132 or plen > 87472:
         raise ValueError("invalid payload size")
-    data = base64.b64decode(payload)
+    # validate=True: reject non-alphabet chars instead of silently ignoring
+    # them, so malformed payloads the spec/test-vectors say to reject don't
+    # sneak through (L-7).  MAC verification still gates decryption.
+    data = base64.b64decode(payload, validate=True)
     dlen = len(data)
     if dlen < 99 or dlen > 65603:
         raise ValueError("invalid data size")

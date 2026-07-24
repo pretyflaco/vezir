@@ -167,6 +167,7 @@ async def test_reauth_nostr_success_dismisses_with_body(monkeypatch):
     class _FakeClient:
         def __init__(self, *a, **k):
             self.user_pubkey = "npubFAKE"
+            self.clock_offset = 0
         def build_connect_uri(self):
             return "nostrconnect://fake"
         def wait_for_connection(self, timeout=180):
@@ -206,6 +207,7 @@ async def test_reauth_nostr_failure_keeps_modal_open(monkeypatch):
     class _FakeClient:
         def __init__(self, *a, **k):
             self.user_pubkey = "npubFAKE"
+            self.clock_offset = 0
         def build_connect_uri(self):
             return "nostrconnect://fake"
         def wait_for_connection(self, timeout=180):

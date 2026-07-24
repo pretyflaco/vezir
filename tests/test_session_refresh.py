@@ -144,9 +144,10 @@ def test_reuse_detection_revokes_family(tmp_data, monkeypatch):
 
 def test_grace_reissues_within_window(tmp_data):
     """A replay of the one-generation-old token WITHIN the grace window
-    (default 60s) is a lost-response retry: re-issue instead of revoking.
-    Flaky-link clients no longer lose their whole session to a dropped
-    /refresh response."""
+    (default 60s) is a lost-response retry: replay the EXACT pair the
+    (lost) rotation produced instead of revoking.  Flaky-link clients no
+    longer lose their whole session to a dropped /refresh response, AND a
+    stale token can no longer fork a fresh family (v0.12.1 hijack fix)."""
     from vezir.server import sessions_auth
 
     first = sessions_auth.create_session("alice", "", False, "nostr")
@@ -154,29 +155,56 @@ def test_grace_reissues_within_window(tmp_data):
     sid = second["sid"]
 
     # The rotation response was "lost"; the client retries with the token
-    # it still holds.  This is within seconds of the rotation → grace.
+    # it still holds.  Within the window → replay the identical pair.
     retried = sessions_auth.rotate(first["refresh_token"])
     assert retried["sid"] == sid  # same family, not revoked
-    assert retried["refresh_token"] not in (
-        first["refresh_token"], second["refresh_token"],
-    )
+    # Idempotent: the retry returns the SAME pair the first rotation minted,
+    # never a new generation (that was the old hijack vector).
+    assert retried["refresh_token"] == second["refresh_token"]
+    assert retried["access_jwt"] == second["access_jwt"]
 
-    # The re-issued pair works normally afterwards.
-    nxt = sessions_auth.rotate(retried["refresh_token"])
+    # The re-issued (current) token works normally afterwards.
+    nxt = sessions_auth.rotate(second["refresh_token"])
     assert nxt["sid"] == sid
 
 
 def test_grace_retry_is_repeatable_within_window(tmp_data):
     """The SAME lost-response token can be retried more than once inside
-    the window (the presented hash stays in prev_refresh_hash)."""
+    the window, each time replaying the identical cached pair."""
     from vezir.server import sessions_auth
 
     first = sessions_auth.create_session("alice", "", False, "nostr")
-    sessions_auth.rotate(first["refresh_token"])
+    second = sessions_auth.rotate(first["refresh_token"])
 
     a = sessions_auth.rotate(first["refresh_token"])
     b = sessions_auth.rotate(first["refresh_token"])
-    assert a["sid"] == b["sid"]
+    assert a["sid"] == b["sid"] == second["sid"]
+    # Every replay is byte-identical — no family fork, no window slide.
+    assert a["refresh_token"] == b["refresh_token"] == second["refresh_token"]
+
+
+def test_grace_does_not_slide_window(tmp_data, monkeypatch):
+    """A stale-token holder cannot renew indefinitely: the grace window is
+    anchored to the original rotation, so once it lapses the replay is
+    confirmed reuse even if the attacker replayed steadily inside it."""
+    from vezir.server import sessions_auth
+
+    first = sessions_auth.create_session("alice", "", False, "nostr")
+    second = sessions_auth.rotate(first["refresh_token"])
+
+    base = sessions_auth._now()
+    # Replay repeatedly, always inside a 60s window measured from each
+    # previous replay — the OLD code would keep re-anchoring and never
+    # expire.  Here it must expire relative to the single real rotation.
+    monkeypatch.setattr(sessions_auth, "_now", lambda: base + 30)
+    sessions_auth.rotate(first["refresh_token"])  # still cached → replay
+    monkeypatch.setattr(sessions_auth, "_now", lambda: base + 3600)
+    with pytest.raises(sessions_auth.SessionError) as exc:
+        sessions_auth.rotate(first["refresh_token"])
+    assert exc.value.reuse is True
+    # Legitimate current token also dies (family revoked on reuse).
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(second["refresh_token"])
 
 
 def test_grace_expired_window_revokes(tmp_data, monkeypatch):

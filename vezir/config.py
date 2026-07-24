@@ -61,17 +61,28 @@ Environment variables:
                         grant) is forced once exceeded.
     VEZIR_REFRESH_GRACE  Lost-response grace window (seconds) after a refresh
                         rotation (default 60).  The one-generation-old
-                        refresh token presented within this window re-issues
-                        the pair instead of revoking the family.  0 = strict
-                        (any reuse revokes).
+                        refresh token presented within this window replays
+                        the SAME pair the rotation minted (idempotent
+                        lost-response retry) instead of revoking the family;
+                        it never mints a new generation and never slides the
+                        window (v0.12.1 hijack hardening).  0 = strict (any
+                        reuse revokes).
     VEZIR_MILLET_TIMEOUT  Hard timeout (seconds) for each millet subprocess
                         step (default 14400 = 4 h).  A wedged transcription
                         no longer blocks the single worker forever; the job
                         is marked error on expiry.
 
-All ``VEZIR_MEET_*`` aliases continue to work for two minor versions
-(through vezir 0.5.x) and emit a one-time ``DeprecationWarning`` on
-read.  Removed in vezir 0.6.0.
+Legacy ``VEZIR_MEET_*`` aliases are still honored (with a one-time
+``DeprecationWarning`` on read) but are deprecated and slated for removal
+— prefer the ``VEZIR_MILLET_*`` names.  (The earlier docstring claimed
+removal in 0.6.0; the fallback is in fact still live as of 0.12.x — see
+the alias-reading code below and AGENTS.md's tech-debt list.)
+
+Not every env var is listed above; notable others read elsewhere in this
+module include ``VEZIR_PUBLIC_URL``, ``VEZIR_GOOGLE_CLIENT_ID`` /
+``…_SECRET[_FILE]`` / ``…_ALLOWED_DOMAIN``, ``VEZIR_RECORD_DIR``,
+``VEZIR_SKIP_SYNC``, ``VEZIR_DELETE_AUDIO``, ``VEZIR_CADDY_ROOT_CERT_PATH``,
+and ``VEZIR_TUI_DISABLE_UPDATE_CHECK``.
 """
 from __future__ import annotations
 

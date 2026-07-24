@@ -201,6 +201,20 @@ class ArtifactScreen(Screen):
             return
         self.post_message(BinaryReady(name=self.artifact_name, path=Path(tmp)))
 
+    def on_unmount(self) -> None:
+        """Remove the downloaded artifact temp file on screen close (L-3).
+
+        Binary artifacts (PDFs) can contain confidential meeting content;
+        without this they accumulate in /tmp for the OS to reap.  Best
+        effort — a launched external viewer may still hold the file open,
+        which is fine (the unlink just drops our reference)."""
+        tmp = getattr(self, "_tmp_path", None)
+        if tmp is not None:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def on_text_loaded(self, message: TextLoaded) -> None:
         self._body = message.body
         assert self._area is not None

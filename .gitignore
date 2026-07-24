@@ -29,3 +29,10 @@ data/logs/
 # Operational session notes — contain real IPs, npubs, hostnames, and
 # teammate-identifying data. Operator-local only; never publish.
 docs/sessions/
+# Root-level operator session transcripts (session-*.md) carry the same
+# sensitive data as docs/sessions/ and must never be committed.
+session-*.md
+
+# AI coding assistant context — operator-local; references sensitive
+# paths, infra topology, and cross-repo conventions not for publication.
+AGENTS.md

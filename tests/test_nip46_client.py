@@ -307,6 +307,48 @@ def test_connect_accepts_ack():
     assert nostr_event.verify_event(signed)
 
 
+def test_auth_url_phishing_guard(monkeypatch):
+    """An auth_url injected by an UNBOUND attacker key, or a non-HTTPS URL,
+    must NOT be surfaced to the user (v0.12.1 phishing guard)."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+
+    seen: list[str] = []
+    client.on_auth_url = seen.append
+
+    attacker = PrivateKey()
+
+    class AuthUrlWS(FakeWS):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._phish_sent = False
+
+        def recv(self):
+            # Before the real connect response, an attacker key injects a
+            # malicious auth_url (http:// AND from a non-signer author).
+            if not self._phish_sent:
+                self._phish_sent = True
+                resp = json.dumps({
+                    "id": "x", "result": "auth_url",
+                    "error": "http://evil.example/steal",
+                })
+                ct = nip44.encrypt_for(
+                    resp, attacker.to_hex(), self._client.client_pubkey
+                )
+                return json.dumps(["EVENT", self._client._sub_id, {
+                    "pubkey": attacker.public_key_xonly.format().hex(),
+                    "kind": 24133, "content": ct,
+                    "tags": [["p", self._client.client_pubkey]],
+                    "created_at": int(time.time())}])
+            return super().recv()
+
+    client._ws = AuthUrlWS(client, signer)
+    user_pubkey = client.wait_for_connection(timeout=5)
+    assert user_pubkey == signer.pubkey
+    # The attacker's non-HTTPS, non-signer auth_url was dropped.
+    assert seen == []
+
+
 def test_amber_nip04_interop():
     """Amber encrypts NIP-46 with NIP-04 (?iv=). The client must auto-detect
     it, connect, learn the scheme, and reply NIP-04 for get_public_key /

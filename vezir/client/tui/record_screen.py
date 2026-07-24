@@ -1476,7 +1476,10 @@ class RecordBody(Vertical):
         team_id = getattr(self.app, "active_team_id", None)
 
         def _after(body: dict | None) -> None:
-            if not body or not body.get("session_jwt"):
+            # Accept either key (parity with apply_reauth_session /
+            # ReauthScreen.on_reauth_done): a body carrying only access_jwt
+            # must not be mistaken for a cancel (L-2).
+            if not body or not (body.get("session_jwt") or body.get("access_jwt")):
                 return  # cancelled / failed; message already shown
             # Persist + re-bind the new session in memory so the running TUI
             # uses it immediately (no restart).

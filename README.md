@@ -18,20 +18,36 @@ transcripts and summaries — with speakers resolved to GitHub handles.
 
 ## Status
 
-Alpha (**0.8.3**). Built for small teams that want meeting audio to stay
+Alpha (**0.12.1**). Built for small teams that want meeting audio to stay
 inside their own infrastructure: one GPU server (Linux/CUDA or Apple
 Silicon) reachable over ordinary HTTPS. Full history in
 [`CHANGELOG.md`](CHANGELOG.md).
 
-**What's new in 0.7–0.8:**
+**What's new (0.9 → 0.12):**
 
-- **Identity sign-in (0.8.x).** Members sign in with **Nostr** (a remote
-  signer like [Amber](https://github.com/greenart7c3/Amber) via NIP-46, or
-  the NIP-55 Android intent flow) or with **Google** (`@workspace-domain`
-  accounts via the OAuth device grant). The server mints a short-lived
-  **session JWT** (~24h); no key or password touches the client. `vzr_`
+- **Rotating refresh-token sessions (0.10.0).** A login mints a **pair**: a
+  short-lived **access JWT** (default 60 min) used as `Authorization:
+  Bearer`, and a long-lived **refresh token** that rotates on each use
+  (RFC 9700 reuse detection). Clients refresh transparently on 401 — no more
+  forced re-login on expiry. `vezir logout` revokes a session. (0.12.1
+  hardened the lost-response grace window against stale-token replay.)
+- **Auth hardening + subprocess boundary restored (0.11.0).** Label apply /
+  retry-summary go back through `millet label --apply-json`; follow-up work
+  is serialized on the single worker thread (no ad-hoc threads racing it).
+- **Multi-file meetings (0.9.0).** `vezir upload-multi` / `POST /upload/multi`
+  stitch several audio files into one meeting.
+- **Session retitle (0.12.0).** `vezir session set-title <id> "…"` /
+  `POST /api/sessions/{id}/title`, or `[t]` in the TUI, to name a session
+  after the fact.
+- **Empty-recording handling (0.11.1).** Silent/no-speech recordings reach a
+  terminal `empty` status and are not synced. Client provenance
+  (`client_agent`) is recorded per session.
+- **Identity sign-in.** Members sign in with **Nostr** (a remote signer like
+  [Amber](https://github.com/greenart7c3/Amber) via NIP-46, or the NIP-55
+  Android intent flow) or with **Google** (`@workspace-domain` accounts via
+  the OAuth device grant). No key or password touches the client. `vzr_`
   bearer tokens are retained for machine/CI use.
-- **Public-access front (0.8.x).** A small VPS terminates nothing — it
+- **Public-access front.** A small VPS terminates nothing — it
   WireGuard-forwards TLS to the server, which keeps the cert. Clients reach
   the server over plain outbound HTTPS, so it works from CGNAT / IPv6-only
   links (e.g. Starlink) with no per-client VPN.
@@ -40,19 +56,20 @@ Silicon) reachable over ordinary HTTPS. Full history in
   against a memberships table. One identity covers every team you're in;
   the TUI/Android auto-discover them. Team keys are stable UUIDs with
   mutable slugs (`vezir team rename`).
-- **Hardening (0.8.2).** NIP-98 replay protection, header-injection-resistant
+- **Hardening.** NIP-98 replay protection, header-injection-resistant
   login-URL pinning (`VEZIR_PUBLIC_URL`), exact Google-domain matching.
 - **Resumable uploads** (tus.io subset), **`vezir relabel`**, **`vezir
   pull`**, **per-team voiceprints + sync**, **`vezir doctor`**.
 
 > The JSON-only API (no web dashboard since 0.7.0) is consumed by the TUI,
-> the Android app, and the CLI. Speaker labeling happens in the TUI/Android
-> or via a one-time `/login?code=…` page link printed after upload.
+> the Android app, and the CLI. Speaker labeling happens in the TUI (open
+> `vezir tui` → Sessions → press `l` on the row) or in the Android app.
 
 Linux and macOS (Apple Silicon) laptop clients and an
 [Android client](https://github.com/pretyflaco/vezir-android) are supported.
 
-Requires **`millet-pipeline >= 0.12.5`** (pinned via the `[server]` extra).
+Requires **`millet-pipeline >= 0.13.0`** (enforced at runtime; pinned via
+the `[server]` extra).
 
 ## Sign-in & access
 
@@ -73,8 +90,10 @@ vezir login --team <slug>                  # Nostr (remote signer / Amber)
 vezir login --method google --team <slug>  # Google (@workspace-domain)
 ```
 
-`vezir login` stores a ~24h session; the client uses it as
-`Authorization: Bearer` on every request. Re-run to refresh.
+`vezir login` stores a rotating session (a short access JWT + a refresh
+token) in `~/.config/vezir/teams.json`; the client uses the access JWT as
+`Authorization: Bearer` and **refreshes transparently** on expiry — no
+re-login needed. `vezir logout` revokes the session.
 
 **Production note:** set `VEZIR_PUBLIC_URL=https://your-host` on the server
 so NIP-98 login-URL verification is pinned to a fixed base (not
@@ -116,7 +135,7 @@ voiceprint DBs, team roster/memberships, and auth.
 |---|---|---|
 | **`vezir tui`** | Day-to-day desktop use — record, browse sessions, read transcripts/summaries, label speakers, all in one terminal UI. `ctrl+e` Teams tab, `ctrl+t` cycles teams. | `pip install 'vezir[tui]'` |
 | **`vezir scribe`** | Headless / ssh / scripted recording. Pause-resume with `p`. | `pip install vezir` |
-| **`vezir upload <file>`** | An existing WAV/OGG (phone, OBS, etc.); resumable. | `pip install vezir` |
+| **`vezir upload <file>`** | An existing WAV/OGG/MP3 (phone, OBS, etc.); resumable. `vezir upload-multi` stitches several files into one meeting. | `pip install vezir` |
 | **`vezir pull`** | Download artifacts for meetings others recorded (team sharing without git). | `pip install vezir` |
 | **[vezir-android](https://github.com/pretyflaco/vezir-android)** | Recording from a phone; signs in with Nostr (Amber) or Google. | Sideload the release APK |
 
@@ -132,8 +151,8 @@ passes it to `millet transcribe --summary-preset <id>`.
 
 | Preset | Backend | Model | Use case |
 |---|---|---|---|
-| `high-quality` | claudemax | Sonnet | Default on desktop; highest quality (Claude Max on the server). |
-| `confidential` | tinfoil | GLM-5.2 (TEE) | Hardware-attested enclave — prompts not visible to the provider. Default on Android; PDF gets a CONFIDENTIAL watermark. |
+| `high-quality` | claudemax | Claude (Sonnet) | Default on desktop; highest quality (Claude Max on the server). |
+| `confidential` | tinfoil | TEE-hosted model | Hardware-attested enclave — prompts not visible to the provider. Default on Android; PDF gets a CONFIDENTIAL watermark. |
 | `alternative` | openrouter | Kimi | Cheapest cloud option. |
 
 When a preset is explicitly chosen the server **does not silently fall
@@ -216,7 +235,8 @@ vezir doctor                              # diagnose creds / connectivity / cert
 ```
 
 After upload, artifacts (summary, transcript, PDF) auto-download into
-`~/vezir-meetings/<team>/meeting-…/`. Standalone uploads accept `.wav`/`.ogg`.
+`~/vezir-meetings/<team>/meeting-…/`. Standalone uploads accept
+`.wav`/`.ogg`/`.mp3`.
 
 ### macOS (Apple Silicon) scribe
 
@@ -234,14 +254,21 @@ terminal app; verify with `millet check`. The server does the heavy lifting.
 | `VEZIR_PUBLIC_URL` | unset | Canonical public base URL; pins NIP-98 login-URL verification (recommended in prod). |
 | `VEZIR_URL` | `http://localhost:8000` | Server URL for clients. |
 | `VEZIR_TOKEN` | — | `vzr_` bearer for machine/CI clients (interactive members use `vezir login`). |
+| `VEZIR_ACCESS_TTL` | `3600` | Access-JWT lifetime, seconds (rotating sessions, 0.10.0). |
+| `VEZIR_REFRESH_IDLE_TTL` | `604800` | Refresh-token idle TTL (7 d); reset each rotation. |
+| `VEZIR_SESSION_MAX_TTL` | `2592000` | Absolute session lifetime cap (30 d) before full re-login. |
+| `VEZIR_REFRESH_GRACE` | `60` | Lost-response grace window, seconds (0.11.0; hardened 0.12.1). |
 | `VEZIR_GOOGLE_CLIENT_ID` / `…_SECRET[_FILE]` / `…_ALLOWED_DOMAIN` | unset | Enable Google sign-in (server holds the secret). |
 | `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Extra internal CA to trust; the client *appends* it to the public store (0.8.0+), so public + internal hosts both validate. |
 | `VEZIR_COOKIE_SECURE` | unset | `1` adds `Secure` to the session cookie (HTTPS). |
 | `VEZIR_SUMMARY_PRESET` | unset | Default preset (`high-quality`\|`confidential`\|`alternative`). |
 | `VEZIR_RECORD_DIR` | `~/vezir-meetings` | Local recordings root. |
 | `VEZIR_MILLET_*` | auto | Pass-throughs to `millet transcribe` (device, compute type, ASR backend, MLX model). |
+| `VEZIR_MILLET_TIMEOUT` | `14400` | Per-millet-step timeout, seconds (4 h; 0.11.0). |
 | `VEZIR_SKIP_SYNC` / `VEZIR_DELETE_AUDIO` | unset | Server-side sync kill switch / audio retention. |
 | `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Max upload (2 GiB → 413). |
+| `VEZIR_LOG_LEVEL` | `INFO` | Logging level. |
+| `VEZIR_TUI_DISABLE_UPDATE_CHECK` | unset | `1` disables the TUI's background "newer vezir on PyPI" check (0.12.0). |
 | `VEZIR_DISABLE_RATELIMIT` | unset | Disable the in-process rate limiter. **Test/CI only** (logs a loud warning if set). |
 
 ## Performance (rough, 1h audio)

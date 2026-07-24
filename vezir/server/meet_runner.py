@@ -248,6 +248,38 @@ def cleanup_home_shim(job_id: str) -> None:
         shutil.rmtree(shim_root, ignore_errors=True)
 
 
+# ── Per-session shim lock (v0.12.1) ─────────────────────────────────────────
+#
+# The HOME shim is keyed by session_id (used as job_id).  The background
+# worker and the ``POST /api/label/{id}`` request handler both invoke millet
+# under that shared shim dir, and ``build_home_shim`` rmtree's an existing
+# shim on entry while ``cleanup_home_shim`` rmtree's it on exit.  Two
+# operations on the SAME session (two concurrent label POSTs, or a label POST
+# racing the worker's finalize/sync task) could therefore delete each other's
+# live $HOME and the shared ``.{id}.labels.json`` map mid-run.  This lock
+# serializes all shim-scoped millet invocations per session; different
+# sessions never contend.
+import threading as _threading  # noqa: E402
+
+_SHIM_LOCKS: dict[str, _threading.Lock] = {}
+_SHIM_LOCKS_GUARD = _threading.Lock()
+
+
+def session_shim_lock(session_id: str) -> _threading.Lock:
+    """Return the process-wide lock guarding ``session_id``'s HOME shim.
+
+    Callers that build/use/cleanup the shim for a session must hold this
+    for the whole invocation so a concurrent operation on the same session
+    cannot rmtree the shim or the label map file out from under them.
+    """
+    with _SHIM_LOCKS_GUARD:
+        lock = _SHIM_LOCKS.get(session_id)
+        if lock is None:
+            lock = _threading.Lock()
+            _SHIM_LOCKS[session_id] = lock
+        return lock
+
+
 def _env_for_meet(home: Path, team_id: str) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(home)

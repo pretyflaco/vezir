@@ -34,6 +34,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -108,24 +109,24 @@ class MainScreen(Screen):
     def on_mount(self) -> None:
         # Start the background labeling-needed poll.  Skipped under
         # test (VEZIR_TUI_DISABLE_NOTIFY_POLL=1) so unrelated tests
-        # don't accumulate timers that fire after teardown.
-        if os.environ.get("VEZIR_TUI_DISABLE_NOTIFY_POLL") == "1":
-            return
-        try:
-            from .notify import install_labeling_poll
-            install_labeling_poll(self)
-        except Exception as exc:
-            log.warning("labeling poll setup failed: %s", exc)
+        # don't accumulate timers that fire after teardown.  L-1: guard
+        # each poll independently — the labeling-poll env var must NOT also
+        # suppress the update check (previously an early `return` did).
+        if os.environ.get("VEZIR_TUI_DISABLE_NOTIFY_POLL") != "1":
+            try:
+                from .notify import install_labeling_poll
+                install_labeling_poll(self)
+            except Exception as exc:
+                log.warning("labeling poll setup failed: %s", exc)
 
         # Start the background "newer vezir on PyPI" poll.  Separate env
         # guard so tests can disable it independently of the labeling poll.
-        if os.environ.get("VEZIR_TUI_DISABLE_UPDATE_CHECK") == "1":
-            return
-        try:
-            from .update_check import install_update_poll
-            install_update_poll(self)
-        except Exception as exc:
-            log.warning("update-check poll setup failed: %s", exc)
+        if os.environ.get("VEZIR_TUI_DISABLE_UPDATE_CHECK") != "1":
+            try:
+                from .update_check import install_update_poll
+                install_update_poll(self)
+            except Exception as exc:
+                log.warning("update-check poll setup failed: %s", exc)
 
     def action_show_tab(self, tab_id: str) -> None:
         tabs = self.query_one(TabbedContent)
@@ -331,16 +332,18 @@ class VezirTuiApp(App):
 
     # ── identity / team-switching ──
 
+    @work(thread=True, exclusive=True, group="identity")
     def _refresh_identity(self) -> None:
-        """Pull team_name from GET /api/me and update the title bar.
+        """Pull memberships from GET /api/me and update the title bar.
 
         Called once at mount and after every successful team switch.
         Server-side endpoint added in v0.6.1; against an older server
         the call returns 404 and we just leave the placeholder.
 
-        Runs synchronously (one quick HTTP call); could move to a
-        worker if it ever shows up in profiling, but a single ~50ms
-        roundtrip at startup is invisible.
+        v0.12.1: runs on a worker THREAD (was a blocking ``httpx.get`` on
+        the message-pump — a down VPN froze the UI for up to 5 s at startup
+        and on every ^t team switch).  UI-state mutation is marshalled back
+        onto the UI thread via ``call_from_thread``.
         """
         try:
             import httpx
@@ -352,60 +355,66 @@ class VezirTuiApp(App):
                 verify=verify,
             )
             if r.status_code == 200:
-                data = r.json()
-                # v0.7.0: /api/me now returns a memberships list.
-                # Pick the entry matching our active_team_id; if none
-                # set, fall back to the first membership (and remember
-                # it so X-Team-Id starts working).
-                mems = data.get("memberships") or []
-                # v0.7.6: cache the full membership list for the Teams
-                # tab + ^t merged cycle.
-                self.memberships = list(mems)
-                # v0.7.4 migration made the server key memberships by
-                # team UUID (``team_id``) while the client still
-                # configures teams by slug in teams.json.  Match on
-                # EITHER so a slug-configured active team resolves
-                # against the UUID-keyed membership list.  Each
-                # membership also carries ``slug`` (v0.7.4+).
-                matched = None
-                if self.active_team_id:
-                    matched = next(
-                        (m for m in mems
-                         if m.get("team_id") == self.active_team_id
-                         or m.get("slug") == self.active_team_id),
-                        None,
-                    )
-                if matched is None and mems:
-                    matched = mems[0]
-                    # Adopt the discovered team but keep active_team_id
-                    # as the SLUG (not the UUID) so it stays consistent
-                    # with teams.json and next_team_id()'s cycle list.
-                    # The server resolves a slug in X-Team-Id to its
-                    # UUID, so slug is a valid X-Team-Id value.
-                    self.active_team_id = (
-                        matched.get("slug") or matched.get("team_id")
-                    )
-                    # Re-bind the client with the discovered team
-                    # so subsequent requests carry X-Team-Id.
-                    self.api = VezirClient(
-                        self.server_url,
-                        self.token or "vzr_unset",
-                        team_id=self.active_team_id,
-                        on_token_refreshed=self._on_token_refreshed,
-                    )
-                if matched:
-                    self.team_label = (
-                        matched.get("team_name")
-                        or matched.get("team_id")
-                        or "?"
-                    )
-            else:
-                log.info(
-                    "GET /api/me returned %s; leaving team label as '?'",
-                    r.status_code,
-                )
+                self.call_from_thread(self._apply_identity, r.json())
+                return
+            log.info(
+                "GET /api/me returned %s; leaving team label as '?'",
+                r.status_code,
+            )
         except Exception as exc:
             log.info("GET /api/me failed (%s); leaving team label as '?'", exc)
+        self.call_from_thread(self._update_subtitle)
+
+    def _apply_identity(self, data: dict) -> None:
+        """Apply /api/me results on the UI thread (see _refresh_identity)."""
+        try:
+            # v0.7.0: /api/me now returns a memberships list.
+            # Pick the entry matching our active_team_id; if none set, fall
+            # back to the first membership (and remember it so X-Team-Id
+            # starts working).
+            mems = data.get("memberships") or []
+            # v0.7.6: cache the full membership list for the Teams tab +
+            # ^t merged cycle.
+            self.memberships = list(mems)
+            # v0.7.4 migration made the server key memberships by team UUID
+            # (``team_id``) while the client still configures teams by slug
+            # in teams.json.  Match on EITHER so a slug-configured active
+            # team resolves against the UUID-keyed membership list.  Each
+            # membership also carries ``slug`` (v0.7.4+).
+            matched = None
+            if self.active_team_id:
+                matched = next(
+                    (m for m in mems
+                     if m.get("team_id") == self.active_team_id
+                     or m.get("slug") == self.active_team_id),
+                    None,
+                )
+            if matched is None and mems:
+                matched = mems[0]
+                # Adopt the discovered team but keep active_team_id as the
+                # SLUG (not the UUID) so it stays consistent with
+                # teams.json and next_team_id()'s cycle list.  The server
+                # resolves a slug in X-Team-Id to its UUID, so slug is a
+                # valid X-Team-Id value.
+                self.active_team_id = (
+                    matched.get("slug") or matched.get("team_id")
+                )
+                # Re-bind the client with the discovered team so subsequent
+                # requests carry X-Team-Id.
+                self.api = VezirClient(
+                    self.server_url,
+                    self.token or "vzr_unset",
+                    team_id=self.active_team_id,
+                    on_token_refreshed=self._on_token_refreshed,
+                )
+            if matched:
+                self.team_label = (
+                    matched.get("team_name")
+                    or matched.get("team_id")
+                    or "?"
+                )
+        except Exception as exc:
+            log.info("applying /api/me failed (%s); leaving team label as '?'", exc)
         self._update_subtitle()
 
     def _update_subtitle(self) -> None:

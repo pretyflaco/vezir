@@ -89,6 +89,51 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+# ── Grace replay cache (v0.12.1) ────────────────────────────────────────────
+#
+# When a rotation succeeds we cache the *exact* response pair keyed by the
+# consumed token's hash.  A lost-response retry (the client presents the
+# token it still holds because our /refresh reply never arrived) then gets
+# the byte-identical pair back instead of minting a NEW generation.  This
+# closes CVE-class hijack: previously the grace path forked a fresh family
+# to whoever presented the stale token and slid ``last_rotated_at`` forward
+# on every hit, letting a thief renew indefinitely and never tripping reuse
+# detection.  Now a stale token can only ever replay one frozen response,
+# the window is anchored to the original rotation, and the family cannot be
+# forked.  Entries self-expire after the grace window; the cache is bounded
+# by pruning expired entries on each access.
+_GRACE_CACHE: dict[str, tuple[float, dict]] = {}
+_GRACE_LOCK = threading.Lock()
+
+
+def _grace_prune(now: float) -> None:
+    """Drop expired grace entries (called under ``_GRACE_LOCK``)."""
+    grace = config.refresh_grace_seconds()
+    expired = [h for h, (ts, _) in _GRACE_CACHE.items() if now - ts > grace]
+    for h in expired:
+        _GRACE_CACHE.pop(h, None)
+
+
+def _grace_store(consumed_hash: str, response: dict) -> None:
+    now = time.time()
+    with _GRACE_LOCK:
+        _grace_prune(now)
+        _GRACE_CACHE[consumed_hash] = (now, response)
+
+
+def _grace_lookup(consumed_hash: str) -> dict | None:
+    now = time.time()
+    with _GRACE_LOCK:
+        _grace_prune(now)
+        entry = _GRACE_CACHE.get(consumed_hash)
+        return entry[1] if entry is not None else None
+
+
+def _reset_grace_cache_for_tests() -> None:
+    with _GRACE_LOCK:
+        _GRACE_CACHE.clear()
+
+
 class SessionError(Exception):
     """Refresh could not be honored (expired, revoked, reused, or unknown).
 
@@ -153,7 +198,11 @@ def create_session(
     log.info(
         "session created: sid=%s github=%s method=%s", sid, github, auth_method,
     )
-    return _access_pair(github, npub, is_admin, sid, refresh_token)
+    pair = _access_pair(github, npub, is_admin, sid, refresh_token)
+    # Cache under this token's hash so the FIRST rotation being lost still
+    # replays idempotently within the grace window.
+    _grace_store(_hash(refresh_token), pair)
+    return pair
 
 
 def _find_by_hash(
@@ -224,33 +273,31 @@ def rotate(refresh_token: str) -> dict:
                     and 0 <= now - last_rotated <= grace
                     and (absolute_max is None or now < absolute_max)
                 )
+                # Lost-response retry: replay the EXACT pair we minted when
+                # this token was consumed — do NOT mint a new generation and
+                # do NOT touch last_rotated_at (which would slide the window
+                # and let a stale-token holder renew indefinitely, forking
+                # the family away from the legitimate client).  The cached
+                # response is idempotent: any number of retries of the same
+                # stale token inside the window return byte-identical data,
+                # and it expires with the window.
                 if within_grace:
-                    sid = stale["sid"]
-                    new_refresh = _new_refresh_token()
-                    idle_ttl = config.refresh_idle_ttl_seconds()
-                    new_idle = now + idle_ttl
-                    if absolute_max is not None:
-                        new_idle = min(new_idle, absolute_max)
-                    # Keep the presented hash as prev so an immediate
-                    # second retry of the SAME lost-response request still
-                    # lands in the grace path instead of tripping reuse.
-                    c.execute(
-                        "UPDATE sessions SET refresh_hash = ?, "
-                        "prev_refresh_hash = ?, refresh_expires_at = ?, "
-                        "last_rotated_at = ? WHERE sid = ?",
-                        (
-                            _hash(new_refresh), token_hash,
-                            _iso(new_idle), _iso(now), sid,
-                        ),
-                    )
-                    log.info(
-                        "refresh grace: sid=%s github=%s re-issued within "
-                        "%ds of rotation (lost-response retry)",
-                        sid, stale["github"], grace,
-                    )
-                    return _access_pair(
-                        stale["github"], stale["npub"] or "",
-                        bool(stale["is_admin"]), sid, new_refresh,
+                    cached = _grace_lookup(token_hash)
+                    if cached is not None:
+                        log.info(
+                            "refresh grace: sid=%s github=%s replayed cached "
+                            "pair within %ds of rotation (lost-response retry)",
+                            stale["sid"], stale["github"], grace,
+                        )
+                        return cached
+                    # No cached response (e.g. server restarted since the
+                    # rotation): we cannot safely replay, and minting a new
+                    # generation here is the historic hijack vector.  Treat
+                    # as reuse — the legitimate client will simply re-login.
+                    log.warning(
+                        "refresh grace: sid=%s github=%s stale token in "
+                        "window but no cached response; treating as reuse",
+                        stale["sid"], stale["github"],
                     )
                 c.execute(
                     "UPDATE sessions SET revoked = 1 WHERE sid = ?",
@@ -302,7 +349,12 @@ def rotate(refresh_token: str) -> dict:
         is_admin = bool(row["is_admin"])
 
     log.debug("session rotated: sid=%s github=%s", sid, github)
-    return _access_pair(github, npub, is_admin, sid, new_refresh)
+    pair = _access_pair(github, npub, is_admin, sid, new_refresh)
+    # Cache keyed by the token we just consumed, so a lost-response retry of
+    # THAT token replays this exact pair (grace path above) instead of
+    # forking the family.
+    _grace_store(token_hash, pair)
+    return pair
 
 
 # ── Revoked-sid cache (v0.11.0) ─────────────────────────────────────────────
@@ -317,25 +369,46 @@ def rotate(refresh_token: str) -> dict:
 
 _REVOKED_SIDS: set[str] = set()
 _REVOKED_LOADED = False
+_REVOKED_LOADED_AT = 0.0
 _REVOKED_LOCK = threading.Lock()
+
+# How often to re-read the revoked set from the DB.  The in-process cache is
+# updated instantly by same-process revocations, but an operator revoking via
+# the ``vezir session revoke`` CLI does it in a SEPARATE process, straight
+# against the shared SQLite — the running server would otherwise never learn
+# of it and keep honoring that session's already-minted access JWTs until
+# their (up to 60 min) ``exp``.  A short periodic refresh bounds that gap to
+# ``_REVOKED_REFRESH_SEC`` for out-of-process revocations while keeping the
+# hot auth path a plain O(1) set membership test almost always.
+_REVOKED_REFRESH_SEC = 15.0
 
 
 def _load_revoked_sids() -> None:
-    global _REVOKED_LOADED
-    if _REVOKED_LOADED:
+    """Load (and periodically refresh) the revoked-sid set from the DB.
+
+    First call does a blocking load; subsequent calls re-query only once
+    every ``_REVOKED_REFRESH_SEC`` so out-of-process (CLI) revocations
+    propagate without a per-request DB hit.
+    """
+    global _REVOKED_LOADED, _REVOKED_LOADED_AT
+    now = time.time()
+    if _REVOKED_LOADED and (now - _REVOKED_LOADED_AT) < _REVOKED_REFRESH_SEC:
         return
     with _REVOKED_LOCK:
-        if _REVOKED_LOADED:
+        if _REVOKED_LOADED and (now - _REVOKED_LOADED_AT) < _REVOKED_REFRESH_SEC:
             return
         try:
             with queue._conn() as c:
                 rows = c.execute(
                     "SELECT sid FROM sessions WHERE revoked = 1",
                 ).fetchall()
+            # Union with any in-process notes so a just-revoked sid is never
+            # dropped by a refresh that raced the DB commit.
             _REVOKED_SIDS.update(r["sid"] for r in rows)
         except sqlite3.Error:
-            log.exception("could not preload revoked-sid cache")
+            log.exception("could not (re)load revoked-sid cache")
         _REVOKED_LOADED = True
+        _REVOKED_LOADED_AT = now
 
 
 def is_sid_revoked(sid: str) -> bool:
@@ -362,10 +435,11 @@ def _note_revoked(sid: str) -> None:
 
 
 def _reset_revoked_cache_for_tests() -> None:
-    global _REVOKED_LOADED
+    global _REVOKED_LOADED, _REVOKED_LOADED_AT
     with _REVOKED_LOCK:
         _REVOKED_SIDS.clear()
         _REVOKED_LOADED = False
+        _REVOKED_LOADED_AT = 0.0
 
 
 def revoke_session(sid: str) -> bool:

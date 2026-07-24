@@ -55,6 +55,15 @@ class _Limiter:
     exceed ``capacity`` per ``window_sec``.
     """
 
+    # Cap the number of live buckets.  Buckets are keyed partly on the
+    # (unvalidated) bearer hash, so a client spraying random bearers would
+    # otherwise grow this dict without bound (slow memory DoS).  A bucket
+    # that has fully refilled to capacity is indistinguishable from a fresh
+    # one, so it is safe to evict — the next request from that key simply
+    # re-creates a full bucket.  We prune full buckets when the dict grows
+    # past this threshold before falling back to evicting the oldest.
+    _MAX_BUCKETS = 10_000
+
     def __init__(self, capacity: int, window_sec: float):
         self.capacity = float(capacity)
         self.window_sec = float(window_sec)
@@ -66,6 +75,32 @@ class _Limiter:
         b.tokens = min(self.capacity, b.tokens + elapsed * (self.capacity / self.window_sec))
         b.last_refill = now
 
+    def _evict_locked(self, now: float) -> None:
+        """Bound memory: drop fully-refilled (idle) buckets, then oldest.
+
+        Called under ``self._lock`` when the dict exceeds ``_MAX_BUCKETS``.
+        A bucket at full capacity carries no state a fresh one wouldn't, so
+        evicting it never grants extra allowance.
+        """
+        if len(self._buckets) <= self._MAX_BUCKETS:
+            return
+        rate = self.capacity / self.window_sec
+        full = [
+            k for k, b in self._buckets.items()
+            if min(self.capacity, b.tokens + max(0.0, now - b.last_refill) * rate)
+            >= self.capacity
+        ]
+        for k in full:
+            self._buckets.pop(k, None)
+        # Still over budget (a genuine flood of active keys): drop the
+        # least-recently-refilled entries to a hard cap.
+        if len(self._buckets) > self._MAX_BUCKETS:
+            oldest = sorted(
+                self._buckets.items(), key=lambda kv: kv[1].last_refill
+            )[: len(self._buckets) - self._MAX_BUCKETS]
+            for k, _ in oldest:
+                self._buckets.pop(k, None)
+
     def check(self, key: str) -> tuple[bool, float]:
         """Try to consume 1 token. Returns (allowed, retry_after_seconds).
 
@@ -76,6 +111,8 @@ class _Limiter:
         with self._lock:
             b = self._buckets.get(key)
             if b is None:
+                if len(self._buckets) >= self._MAX_BUCKETS:
+                    self._evict_locked(now)
                 b = Bucket(tokens=self.capacity, last_refill=now)
                 self._buckets[key] = b
             self._refill(b, now)

@@ -139,3 +139,67 @@ def test_run_scribe_falls_back_to_subprocess_when_library_returns_none(
         wait=False,
     )
     assert result["session_id"] == "01X"
+
+
+# ── poll_status: X-Team-Id + trust + no-silent-timeout (v0.12.1) ────────────
+
+
+def test_poll_status_sends_team_id_header(monkeypatch):
+    """Regression: poll_status must send X-Team-Id, or v0.7.0+ servers
+    return 400 and the poll silently times out (client H1)."""
+    from vezir.client import scribe
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "done"}
+
+    def fake_get(url, headers=None, timeout=None, verify=None):
+        captured["headers"] = headers
+        captured["verify"] = verify
+        return _Resp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    status = scribe.poll_status(
+        "http://x", "vzr_tok", "01SESS", timeout=5, team_id="blink",
+    )
+    assert status == "done"
+    assert captured["headers"].get("X-Team-Id") == "blink"
+    assert captured["headers"].get("Authorization") == "Bearer vzr_tok"
+    # trust was resolved (verify passed through, not left to httpx default)
+    assert "verify" in captured
+
+
+def test_poll_status_gives_up_on_persistent_non_200(monkeypatch):
+    """Persistent 400s (e.g. auth/team error) surface a failure instead of
+    silently polling until the deadline."""
+    from vezir.client import scribe
+
+    monkeypatch.setattr(scribe, "_POLL_INTERVAL", 0)
+
+    class _Resp:
+        status_code = 400
+        text = "missing X-Team-Id header"
+
+    import httpx
+    monkeypatch.setattr(
+        httpx, "get", lambda *a, **k: _Resp(),
+    )
+
+    status = scribe.poll_status("http://x", "vzr_tok", "01SESS", timeout=30)
+    assert status is None  # gave up, did not hang to the deadline
+
+
+def test_session_cli_group_exposes_all_subcommands():
+    """Regression: the auth-session commands (list/revoke) were shadowed by
+    a duplicate recording-session group (v0.12.1 fix)."""
+    from vezir.cli import main
+
+    sess = main.commands["session"]
+    assert {"list", "revoke", "move", "rm", "set-title"} <= set(sess.commands)

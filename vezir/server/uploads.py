@@ -27,6 +27,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from starlette.concurrency import run_in_threadpool
 
 from .. import config
 from . import auth, queue, ratelimit
@@ -37,6 +38,45 @@ router = APIRouter()
 
 
 CHUNK_BYTES = 4 * 1024 * 1024  # 4 MB
+
+# ── Idempotency cache (v0.12.1) ─────────────────────────────────────────────
+#
+# The one-shot ``/upload`` retry re-POSTs the whole file, so a
+# lost/late response makes the client retry an upload the server already
+# committed — creating a SECOND session (double GPU work + duplicate meeting
+# in the team repo).  The client sends a stable ``Idempotency-Key`` header
+# per logical upload; we remember (github, team, key) -> session_id for a
+# short TTL and replay the same session_id on a repeat instead of enqueuing
+# again.  In-memory is sufficient: retries happen within seconds-to-minutes
+# and this is single-process.
+_IDEMPOTENCY: dict[tuple[str, str, str], tuple[float, str]] = {}
+_IDEMPOTENCY_TTL_SEC = 15 * 60
+_IDEMPOTENCY_LOCK = threading.Lock()
+
+
+def _idempotency_get(github: str, team_id: str, key: str) -> str | None:
+    if not key:
+        return None
+    now = time.time()
+    with _IDEMPOTENCY_LOCK:
+        # Opportunistic prune.
+        for k in [k for k, (ts, _) in _IDEMPOTENCY.items() if now - ts > _IDEMPOTENCY_TTL_SEC]:
+            _IDEMPOTENCY.pop(k, None)
+        entry = _IDEMPOTENCY.get((github, team_id, key))
+        return entry[1] if entry is not None else None
+
+
+def _idempotency_put(github: str, team_id: str, key: str, session_id: str) -> None:
+    if not key:
+        return
+    with _IDEMPOTENCY_LOCK:
+        _IDEMPOTENCY[(github, team_id, key)] = (time.time(), session_id)
+
+
+def _reset_idempotency_for_tests() -> None:
+    with _IDEMPOTENCY_LOCK:
+        _IDEMPOTENCY.clear()
+
 
 # Resumable-upload tuning.
 TUS_VERSION = "1.0.0"
@@ -125,12 +165,26 @@ async def upload(
     sync: str | None = Form(default=None),
     personal: str | None = Form(default=None),
     audio_bytes: int | None = Form(default=None),
+    idempotency_key: str | None = Header(default=None),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     # v0.6.0: team_id is derived server-side from the bearer token;
     # clients never supply it.  This is the cornerstone of the team-
     # isolation invariant — see vezir_plan.md v0.6.0 design notes.
     github, team_id, _admin = auth_triple
+    # Idempotent retry: if this exact upload already committed, return the
+    # existing session instead of creating a duplicate (M2).
+    key = (idempotency_key or "").strip()[:128]
+    existing = _idempotency_get(github, team_id, key)
+    if existing is not None:
+        log.info(
+            "upload idempotency hit: key=%s -> session=%s (github=%s)",
+            key, existing, github,
+        )
+        return {
+            "session_id": existing,
+            "idempotent": True,
+        }
     auto_label_enabled = _parse_bool_form(auto_label, default=True)
     sync_enabled = _parse_bool_form(sync, default=True)
     is_personal = _parse_bool_form(personal, default=False)
@@ -195,7 +249,11 @@ async def upload(
         summary_preset, auto_label_enabled, sync_enabled, is_personal,
     )
 
-    queue.enqueue(
+    # enqueue takes the process-global DB lock (busy_timeout 5s); run it off
+    # the event loop so DB contention with the worker/CLI can't freeze every
+    # other request (health included).  See M-6.
+    await run_in_threadpool(
+        queue.enqueue,
         session_id,
         github=github,
         team_id=team_id,
@@ -206,6 +264,7 @@ async def upload(
         personal=is_personal,
         client_agent=request.headers.get("user-agent"),
     )
+    _idempotency_put(github, team_id, key, session_id)
 
     return {
         "session_id": session_id,
@@ -322,7 +381,8 @@ async def upload_multi(
         title, summary_preset, auto_label_enabled, sync_enabled, is_personal,
     )
 
-    queue.enqueue(
+    await run_in_threadpool(
+        queue.enqueue,
         session_id,
         github=github,
         team_id=team_id,
@@ -623,8 +683,12 @@ async def resumable_append(
                 },
             )
 
-        # Complete — assemble into a session dir and enqueue.
-        session_id = _finalize_resumable(upload_id, meta)
+        # Complete — assemble into a session dir and enqueue.  Runs file
+        # move + chmod + DB enqueue (global lock), so keep it off the event
+        # loop (M-6).
+        session_id = await run_in_threadpool(
+            _finalize_resumable, upload_id, meta
+        )
         return {"session_id": session_id, "bytes": written}
     finally:
         lock.release()

@@ -54,16 +54,36 @@ def _decorate(row: dict) -> dict:
     return row
 
 
-def _enforce_team_visibility(row: dict, viewer_team_id: str) -> None:
-    """Raise 404 if ``row`` belongs to a team the viewer isn't in.
+def _enforce_team_visibility(
+    row: dict,
+    viewer_team_id: str,
+    viewer_github: str | None = None,
+    is_admin: bool = False,
+) -> None:
+    """Raise 404 if ``row`` is not visible to the viewer.
 
     v0.6.0: every session-detail / session-fetch endpoint must call
     this with the caller's team_id (from the auth dependency).  Cross-
     team requests are returned as 404 (not 403) to avoid leaking the
     existence of a session that belongs to another team.
+
+    v0.12.1: also enforces the ``personal`` flag WHEN ``viewer_github`` is
+    supplied.  ``queue.list_recent`` hides other users' personal sessions
+    from the listing, but the per-session endpoints only checked
+    ``team_id`` — so any same-team member who learned a personal session's
+    ULID could read its transcript/audio and even force-sync it to the
+    shared repo.  A personal session is now visible only to its owner
+    (``github``) and to global admins; everyone else gets a 404
+    (existence-hiding, same as the cross-team case).  Callers that legit-
+    imately operate on personal sessions regardless of owner (e.g. the
+    ``share`` transition, which gates on the uploader itself) omit
+    ``viewer_github`` to opt out of the personal check.
     """
     if row.get("team_id") != viewer_team_id:
         raise HTTPException(404, "session not found")
+    if viewer_github is not None and row.get("personal") and not is_admin:
+        if row.get("github") != viewer_github:
+            raise HTTPException(404, "session not found")
 
 
 @router.get("/api/sessions", dependencies=[Depends(ratelimit.limit_api)])
@@ -87,6 +107,10 @@ def api_sessions(
     efficient incremental ``vezir pull``.
     """
     github, team_id, _admin = auth_triple
+    # Clamp limit: a negative value becomes SQLite ``LIMIT -1`` (= no limit,
+    # returns every row); an absurd value is a cheap DoS.  Bound to 1..500
+    # (L-2).
+    limit = max(1, min(int(limit), 500))
     return {
         "sessions": [
             _decorate(r)
@@ -108,11 +132,11 @@ def api_session(
     session_id: str,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
-    _github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     return _decorate(row)
 
 
@@ -125,13 +149,13 @@ def artifact(
     name: str,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
-    _github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     # Cross-team artifact downloads must be impossible, so check the
     # job row's team BEFORE touching the filesystem.
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     sdir = config.sessions_dir() / session_id
     if not sdir.exists():
         raise HTTPException(404, "session not found")
@@ -180,11 +204,11 @@ def sync_now(
     session that already synced is allowed (force-push semantics inherited
     from `millet sync --force`).
     """
-    github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     if row["status"] not in ("done", "syncing", "sync_failed"):
         raise HTTPException(
             409,
@@ -224,7 +248,9 @@ def sync_now(
 
     return {
         "session_id": session_id,
-        "queued": True,
+        # Report the ACTUAL enqueue result: a duplicate request while one is
+        # already pending is dropped (deduped), not queued again (L-7).
+        "queued": queued,
         "meeting_type": meeting_type,
     }
 
@@ -252,11 +278,11 @@ def retry_summary(
     the status transition: ``done`` -> ``summarizing`` -> ``done`` (with
     ``summary_error`` cleared on success, or updated on repeat failure).
     """
-    github, team_id, _admin = auth_triple
+    github, team_id, is_admin = auth_triple
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     if row["status"] not in ("done", "sync_failed"):
         raise HTTPException(
             409,
@@ -335,6 +361,9 @@ def share_with_team(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
+    # NB: no personal-visibility enforcement here — `share` IS the
+    # owner-controlled transition out of personal, and it already gates on
+    # the uploader below (403).  Only the cross-team check applies.
     _enforce_team_visibility(row, team_id)
     if row.get("github") != github:
         raise HTTPException(
@@ -384,7 +413,7 @@ def set_session_title(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     if not is_admin and row.get("github") != github:
         raise HTTPException(
             403,
@@ -434,7 +463,7 @@ def delete_session(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id)
+    _enforce_team_visibility(row, team_id, github, is_admin)
     if not is_admin and row.get("github") != github:
         raise HTTPException(
             403,

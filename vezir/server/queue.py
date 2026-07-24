@@ -341,6 +341,11 @@ def enqueue(
         sync_enabled = False
     if client_agent is not None:
         client_agent = client_agent.strip()[:200] or None
+    if title is not None:
+        # Bound the title: it's echoed in every listing and drives millet's
+        # sync folder name / schedule matching, so an unbounded value is
+        # both a storage and a display hazard (L-10).
+        title = title.strip()[:256] or None
     # v0.7.4: jobs store the team's stable uuid.  In production
     # ``team_id`` arrives as the uuid (from require_team_context); accept
     # a slug too and resolve, so the stored value is always the uuid.
@@ -851,8 +856,17 @@ def update_team_sync(
         if sync_meeting_type is not ...:
             if not sync_meeting_type:
                 raise ValueError("sync_meeting_type must be non-empty")
+            # Validate/normalize to a filesystem-safe slug at write time so a
+            # bad value fails here rather than downstream at `millet sync
+            # --meeting-type` (L-12).
+            slug = config.sync_slug(sync_meeting_type)
+            if not slug:
+                raise ValueError(
+                    f"sync_meeting_type {sync_meeting_type!r} is not a valid "
+                    "folder name"
+                )
             sets.append("sync_meeting_type = ?")
-            params.append(sync_meeting_type)
+            params.append(slug)
         if not sets:
             return  # nothing to update
         params.append(uuid)

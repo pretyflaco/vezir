@@ -172,7 +172,9 @@ async def test_refresh_identity_slug_matches_uuid_membership(
     ])
     async with app.run_test():
         app.active_team_id = "blink"  # slug, as configured in teams.json
+        # v0.12.1: _refresh_identity is now a thread worker; wait for it.
         app._refresh_identity()
+        await app.workers.wait_for_complete()
         # active_team_id stays the slug, not the UUID.
         assert app.active_team_id == "blink"
         # Label resolves to the human team name.
@@ -192,6 +194,7 @@ async def test_refresh_identity_fallback_keeps_slug_not_uuid(
     async with app.run_test():
         app.active_team_id = "not-a-configured-team"
         app._refresh_identity()
+        await app.workers.wait_for_complete()
         assert app.active_team_id == "startups"  # slug, not the UUID
         assert app.team_label == "startups"
 

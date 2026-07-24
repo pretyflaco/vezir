@@ -166,6 +166,14 @@ def upload(
     content_type = CONTENT_TYPES[ext]
     expected_bytes = audio_path.stat().st_size
 
+    # Idempotency key: stable for the whole call so a retry after a
+    # lost/late response can be deduped server-side instead of creating a
+    # SECOND session (double GPU work + duplicate meeting in the team repo).
+    # A retry re-POSTs the whole file, but the server keys on this and
+    # returns the already-committed session (M2).
+    import uuid as _uuid
+    idempotency_key = _uuid.uuid4().hex
+
     last_exc: Exception | None = None
     refreshed_once = False
     for attempt in range(1, retries + 1):
@@ -197,8 +205,10 @@ def upload(
                 with httpx.Client(
                     timeout=timeout, verify=resolved_verify,
                 ) as client:
+                    headers = _auth_headers(tok["v"], team_id)
+                    headers["Idempotency-Key"] = idempotency_key
                     resp = client.post(
-                        url, headers=_auth_headers(tok["v"], team_id),
+                        url, headers=headers,
                         files=files, data=data,
                     )
             # Silent refresh-and-retry once on a 401 (0.10.1).
@@ -211,7 +221,11 @@ def upload(
                     continue
             if resp.status_code == 200:
                 result = resp.json()
-                if result.get("bytes") != expected_bytes:
+                # An idempotent replay (server already committed this upload
+                # on a prior, response-lost attempt) carries no byte count —
+                # the session already exists, so skip the size assertion.
+                if not result.get("idempotent") \
+                        and result.get("bytes") != expected_bytes:
                     raise RuntimeError(
                         f"upload byte mismatch: server received {result.get('bytes')} "
                         f"but local file is {expected_bytes} bytes"
@@ -522,6 +536,12 @@ def upload_resumable(
                     if h.status_code == 200:
                         offset = int(h.headers.get("Upload-Offset", offset))
 
+                # Bound the in-loop retry paths so a server that keeps
+                # answering 401/409/429 without progress can't spin forever
+                # inside a single attempt — after the budget we break out to
+                # the outer per-attempt backoff/deadline machinery.
+                refreshes_left = 2
+                stalls_left = 8  # combined 409 re-sync + 429 pause budget
                 with audio_path.open("rb") as f:
                     f.seek(offset)
                     while offset < total:
@@ -535,13 +555,23 @@ def upload_resumable(
                         })
                         r = client.patch(location, headers=patch_headers,
                                          content=chunk)
-                        if r.status_code == 401 and _refresh():
+                        if r.status_code == 401:
                             # Token rotated mid-upload; re-send same chunk
-                            # (offset unchanged) with the fresh token.
-                            f.seek(offset)
-                            continue
+                            # (offset unchanged) with the fresh token.  Bound
+                            # the refreshes so a persistent 401 (e.g. revoked
+                            # membership) can't loop indefinitely.
+                            if refreshes_left > 0 and _refresh():
+                                refreshes_left -= 1
+                                f.seek(offset)
+                                continue
+                            r.raise_for_status()
                         if r.status_code == 409:
                             # Offset drift — re-sync and retry the loop.
+                            if stalls_left <= 0:
+                                raise httpx.RemoteProtocolError(
+                                    "repeated 409 offset drift with no progress",
+                                    request=r.request)
+                            stalls_left -= 1
                             offset = int(r.headers.get("Upload-Offset", offset))
                             f.seek(offset)
                             continue
@@ -550,6 +580,11 @@ def upload_resumable(
                             # buckets PATCH chunks).  Honor Retry-After and
                             # re-send the SAME chunk (offset unchanged), so
                             # the upload pauses instead of hard-failing.
+                            if stalls_left <= 0:
+                                raise httpx.RemoteProtocolError(
+                                    "persistent 429 with no progress",
+                                    request=r.request)
+                            stalls_left -= 1
                             try:
                                 wait = float(r.headers.get("Retry-After", "5"))
                             except ValueError:
@@ -567,7 +602,12 @@ def upload_resumable(
                             raise httpx.RemoteProtocolError(
                                 f"server {r.status_code}", request=r.request)
                         r.raise_for_status()
-                        offset = int(r.headers.get("Upload-Offset", offset + len(chunk)))
+                        new_offset = int(
+                            r.headers.get("Upload-Offset", offset + len(chunk)))
+                        # Reset the stall budget whenever we actually advance.
+                        if new_offset > offset:
+                            stalls_left = 8
+                        offset = new_offset
                         _report(offset)
                         if r.status_code == 200:
                             # Completed — final body carries session_id.

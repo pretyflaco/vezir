@@ -113,6 +113,79 @@ def test_api_sessions_hides_other_users_personal(client_factory):
     assert ids == {"01TEAM", "01BOB"}
 
 
+# ── per-session endpoint enforcement (v0.12.1) ──────────────────────────────
+
+
+def test_detail_of_other_users_personal_is_404(client_factory):
+    """A same-team member who guesses/learns the ULID of another user's
+    personal session must NOT be able to read its detail (v0.12.1)."""
+    from vezir.server import auth, queue
+    client = client_factory()
+    auth.issue("alice")
+    bob_tok = auth.issue("bob")
+
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+
+    resp = client.get("/api/sessions/01PRIV", headers=_bearer(bob_tok))
+    assert resp.status_code == 404
+
+
+def test_owner_can_read_own_personal(client_factory):
+    from vezir.server import auth, queue
+    client = client_factory()
+    alice_tok = auth.issue("alice")
+
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+
+    resp = client.get("/api/sessions/01PRIV", headers=_bearer(alice_tok))
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "01PRIV"
+
+
+def test_artifact_of_other_users_personal_is_404(client_factory):
+    from vezir.server import auth, queue
+    client = client_factory()
+    auth.issue("alice")
+    bob_tok = auth.issue("bob")
+
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+
+    resp = client.get(
+        "/artifact/01PRIV/transcript.md", headers=_bearer(bob_tok)
+    )
+    assert resp.status_code == 404
+
+
+def test_sync_now_of_other_users_personal_is_404(client_factory):
+    """`sync now` on another user's personal session must be rejected
+    BEFORE it can flip sync_enabled and publish it to the team repo."""
+    from vezir.server import auth, queue
+    client = client_factory()
+    auth.issue("alice")
+    bob_tok = auth.issue("bob")
+
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+
+    resp = client.post("/session/01PRIV/sync", headers=_bearer(bob_tok))
+    assert resp.status_code == 404
+    # sync must not have been enabled by the rejected request
+    assert queue.get("01PRIV")["sync_enabled"] == 0
+
+
+def test_admin_can_read_others_personal(client_factory):
+    """Global admins (token admin bit) retain visibility into personal
+    sessions for moderation/support."""
+    from vezir.server import auth, queue
+    client = client_factory()
+    auth.issue("alice")
+    admin_tok = auth.issue("carol", is_admin=True)
+
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+
+    resp = client.get("/api/sessions/01PRIV", headers=_bearer(admin_tok))
+    assert resp.status_code == 200
+
+
 # ── share endpoint ──────────────────────────────────────────────────────────
 
 
