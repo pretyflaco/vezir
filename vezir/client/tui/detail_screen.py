@@ -470,7 +470,7 @@ class DetailScreen(Screen):
             self._on_sync_as_picked,
         )
 
-    def _on_sync_as_picked(self, choice: str | None | object) -> None:
+    def _on_sync_as_picked(self, choice: str | object | None) -> None:
         # None = cancelled; "" = auto-detect; "<slug>" = explicit folder.
         if choice is None:
             return
