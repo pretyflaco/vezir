@@ -18,7 +18,7 @@ Layout (top to bottom):
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from textual import work
@@ -78,6 +78,9 @@ def _slugify(text: str) -> str:
 @dataclass
 class DetailLoaded(Message):
     session: Session
+    # [{name, size, content_type}] from /api/sessions/<id>/attachments.
+    # Fetched with the session so the artifacts table is populated once.
+    attachments: list = field(default_factory=list)
 
 
 @dataclass
@@ -389,6 +392,10 @@ class DetailScreen(Screen):
         self._table: DataTable | None = None
         # artifact_key -> filename mapping for the open-action dispatch
         self._artifact_index: dict[str, str] = {}
+        # Row keys in _artifact_index that are user attachments rather than
+        # pipeline output: they open through a different endpoint.
+        self._attachment_keys: set[str] = set()
+        self._attachments: list[dict] = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -428,20 +435,22 @@ class DetailScreen(Screen):
             ).row_key
         except Exception:
             return
-        name = self._artifact_index.get(str(row_key.value))
-        if name is None:
-            return
-        self._open_artifact(name)
+        self._open_row(str(row_key.value))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        name = self._artifact_index.get(str(event.row_key.value))
+        self._open_row(str(event.row_key.value))
+
+    def _open_row(self, row_key: str) -> None:
+        name = self._artifact_index.get(row_key)
         if name is None:
             return
-        self._open_artifact(name)
+        self._open_artifact(name, is_attachment=row_key in self._attachment_keys)
 
-    def _open_artifact(self, name: str) -> None:
+    def _open_artifact(self, name: str, *, is_attachment: bool = False) -> None:
         from .artifact_screen import ArtifactScreen
-        self.app.push_screen(ArtifactScreen(self.session_id, name))
+        self.app.push_screen(
+            ArtifactScreen(self.session_id, name, is_attachment=is_attachment),
+        )
 
     def action_open_labeling(self) -> None:
         from .label_screen import LabelScreen
@@ -695,7 +704,19 @@ class DetailScreen(Screen):
         if not result.is_ok():
             self.post_message(DetailFailed(error=result.error_message()))
             return
-        self.post_message(DetailLoaded(session=result.ok))
+        # Attachments are a separate call; a server that predates them (or a
+        # transient error) must not blank out the session view, so failures
+        # degrade to "no attachments".
+        attachments: list = []
+        try:
+            a_result = self.app.api.list_attachments(self.session_id)
+            if a_result.is_ok():
+                attachments = a_result.ok
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("could not list attachments: %s", exc)
+        self.post_message(
+            DetailLoaded(session=result.ok, attachments=attachments),
+        )
 
     @work(thread=True, exclusive=False, group="detail-action")
     def _action_worker(
@@ -731,6 +752,7 @@ class DetailScreen(Screen):
 
     def on_detail_loaded(self, message: DetailLoaded) -> None:
         self.session = message.session
+        self._attachments = message.attachments
         self.app.sub_title = f"session {self.session_id}"
         self._refresh_view()
 
@@ -813,9 +835,20 @@ class DetailScreen(Screen):
         assert self._table is not None
         self._table.clear()
         self._artifact_index.clear()
+        self._attachment_keys.clear()
         for key, fname in sorted(s.artifacts.items()):
             row_key = self._table.add_row(key, fname, key=key)
             self._artifact_index[str(row_key.value)] = fname
+        # User attachments after the pipeline's own output, marked in the
+        # name column and keyed apart so they open via their own endpoint.
+        for item in self._attachments:
+            fname = str(item.get("name") or "")
+            if not fname:
+                continue
+            key = f"attachment:{fname}"
+            row_key = self._table.add_row("attachment", fname, key=key)
+            self._artifact_index[str(row_key.value)] = fname
+            self._attachment_keys.add(str(row_key.value))
 
         # Action availability
         self.query_one("#share-btn", Button).disabled = not s.is_personal

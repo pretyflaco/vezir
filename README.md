@@ -238,6 +238,21 @@ After upload, artifacts (summary, transcript, PDF) auto-download into
 `~/vezir-meetings/<team>/meeting-…/`. Standalone uploads accept
 `.wav`/`.ogg`/`.mp3`.
 
+### Meeting attachments (0.13.0)
+
+`vezir scribe` prints a fixed staging folder — `~/vezir-attachments/` — when
+recording starts. Drop slides, agendas, screenshots or PDFs in there while the
+meeting runs; when recording stops, scribe lists what it found and waits for
+Enter as a last chance to add more (skipped without a TTY, or with
+`--no-pause`). The files upload with the meeting, then move into that
+recording's own `attachments/` folder so the staging folder is empty for the
+next meeting.
+
+Attachments show up in the TUI detail screen alongside the artifacts, are
+fetched by `vezir pull` into `<meeting>/attachments/`, and — with
+`millet-pipeline >= 0.15.0` — sync into the team's git archive under the
+meeting folder, names intact. They are *not* fed to summarization.
+
 ### macOS (Apple Silicon) scribe
 
 `pip install vezir` pulls `millet-record`, whose macOS wheel ships a Swift
@@ -263,10 +278,13 @@ terminal app; verify with `millet check`. The server does the heavy lifting.
 | `VEZIR_COOKIE_SECURE` | unset | `1` adds `Secure` to the session cookie (HTTPS). |
 | `VEZIR_SUMMARY_PRESET` | unset | Default preset (`high-quality`\|`confidential`\|`alternative`). |
 | `VEZIR_RECORD_DIR` | `~/vezir-meetings` | Local recordings root. |
+| `VEZIR_ATTACHMENTS_DIR` | `~/vezir-attachments` | Staging folder scribe watches for meeting attachments (0.13.0). |
 | `VEZIR_MILLET_*` | auto | Pass-throughs to `millet transcribe` (device, compute type, ASR backend, MLX model). |
 | `VEZIR_MILLET_TIMEOUT` | `14400` | Per-millet-step timeout, seconds (4 h; 0.11.0). |
 | `VEZIR_SKIP_SYNC` / `VEZIR_DELETE_AUDIO` | unset | Server-side sync kill switch / audio retention. |
-| `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Max upload (2 GiB → 413). |
+| `VEZIR_MAX_UPLOAD_BYTES` | `2147483648` | Max upload (2 GiB → 413); also the per-attachment cap. |
+| `VEZIR_MAX_ATTACHMENTS` | `50` | Attachments stored per session (matches millet's sync cap). |
+| `VEZIR_MAX_ATTACHMENT_BYTES` | `104857600` | Total attachment bytes per session (100 MiB; matches millet). |
 | `VEZIR_LOG_LEVEL` | `INFO` | Logging level. |
 | `VEZIR_TUI_DISABLE_UPDATE_CHECK` | unset | `1` disables the TUI's background "newer vezir on PyPI" check (0.12.0). |
 | `VEZIR_DISABLE_RATELIMIT` | unset | Disable the in-process rate limiter. **Test/CI only** (logs a loud warning if set). |

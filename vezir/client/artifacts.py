@@ -18,6 +18,7 @@ names so ``ls`` output is immediately useful:
         transcript.json        <- 01KSGN2X...json
         frontmatter.json       <- 01KSGN2X...frontmatter.json
         session.json           <- metadata written by this module
+        attachments/slides.pdf <- user-supplied material, name kept verbatim
         meeting-20260526-143041.wav   (raw audio, only for local recordings)
 """
 from __future__ import annotations
@@ -51,6 +52,59 @@ def _friendly_name(server_filename: str) -> str:
             return friendly
     # Unknown artifact type -- keep the original name.
     return server_filename
+
+
+def _download_attachments(
+    api: VezirClient,
+    session: Session,
+    dest_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> list[Path]:
+    """Fetch a session's attachments into ``<dest_dir>/attachments/``.
+
+    Attachments keep their original names — unlike the pipeline's output
+    they are not renamed, because the name is the user's own and is all the
+    meaning the file carries.  ``pull`` is the "share a meeting without git"
+    path, so omitting them would quietly lose material that the git archive
+    does carry (millet >= 0.15.0 pushes the same subdirectory).
+
+    Best effort: a server without the route, or a failed download, warns and
+    leaves the rest of the pull intact.
+    """
+    result = api.list_attachments(session.id)
+    if not result.is_ok():
+        log.debug(
+            "no attachments for %s: %s", session.id, result.error_message(),
+        )
+        return []
+    items = result.ok
+    if not items:
+        return []
+
+    adir = dest_dir / "attachments"
+    saved: list[Path] = []
+    for item in items:
+        name = str(item.get("name") or "")
+        # The server sanitizes names before storing, but this writes to the
+        # user's filesystem: never trust a name from the wire with a path in
+        # it.
+        if not name or "/" in name or "\\" in name or name in (".", ".."):
+            log.warning("skipping attachment with unusable name %r", name)
+            continue
+        dest = adir / name
+        if dest.exists() and not overwrite:
+            saved.append(dest)
+            continue
+        r = api.save_attachment(session.id, name, dest)
+        if r.is_ok():
+            saved.append(dest)
+        else:
+            log.warning(
+                "failed to download attachment %s/%s: %s",
+                session.id, name, r.error_message(),
+            )
+    return saved
 
 
 def download_session_artifacts(
@@ -88,6 +142,8 @@ def download_session_artifacts(
                 "failed to download %s/%s: %s",
                 session.id, server_name, result.error_message(),
             )
+
+    saved.extend(_download_attachments(api, session, dest_dir, overwrite=overwrite))
 
     # Write session metadata so the directory is self-describing.  Upgrade a
     # minimal upload-time stub ("created_by": "vezir-upload") to the full
