@@ -161,7 +161,7 @@ def _enforce_team_visibility(
 ) -> None:
     """Reject cross-team / other-user-personal access with a 404.
 
-    Mirror of ``sessions._enforce_team_visibility``.  Duplicated here
+    Mirror of ``sessions.enforce_team_visibility``.  Duplicated here
     rather than imported to keep labels.py independent of sessions.py —
     both have the same security obligation; the duplication is
     intentional belt-and-suspenders.  v0.12.1: also hides other users'

@@ -966,6 +966,26 @@ def max_upload_bytes() -> int:
     return int(raw)
 
 
+def max_attachments_per_session() -> int:
+    """Maximum number of attachments stored for one session (default: 50).
+
+    Matches millet's ``MAX_ATTACHMENTS``: millet sync drops everything past
+    that cap, so accepting more here would store files that silently never
+    reach the team repo.
+    """
+    return _positive_env_int("VEZIR_MAX_ATTACHMENTS", 50)
+
+
+def max_attachment_bytes_total() -> int:
+    """Maximum total attachment bytes per session (default: 100 MiB).
+
+    Matches millet's ``MAX_ATTACHMENTS_BYTES``, for the same reason as
+    ``max_attachments_per_session``.  The per-file cap is the ordinary
+    ``max_upload_bytes()``.
+    """
+    return _positive_env_int("VEZIR_MAX_ATTACHMENT_BYTES", 100 * 1024 * 1024)
+
+
 def _positive_env_int(name: str, default: int) -> int:
     """Read a positive integer from ``name``; fall back to ``default``.
 

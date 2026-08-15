@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Response
 
 from .. import __version__, config
 from . import (
+    attachments,
     google_auth,
     labels,
     migrations,
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(sessions.router)
     app.include_router(labels.router)
+    app.include_router(attachments.router)
     app.include_router(teams.router)
     app.include_router(nostr_auth.router)
     app.include_router(google_auth.router)
