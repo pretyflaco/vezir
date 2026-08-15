@@ -593,6 +593,13 @@ def test_run_doctor_all_clean_no_server(monkeypatch, tmp_data, capsys):
         "vezir.doctor._check_server_connectivity",
         lambda r, u, t, team_id=None: r.ok(f"server {u}: mocked ok"),
     )
+    # C6b probes the host: on darwin it warns when the `millet` CLI isn't on
+    # PATH (breaking the all-clean assertion below) and otherwise shells out
+    # to `millet check`.  No-op it so the result doesn't depend on the host.
+    monkeypatch.setattr(
+        "vezir.doctor._check_macos_recorder",
+        lambda r: None,
+    )
     code = run_doctor()
     captured = capsys.readouterr().out
     assert code == 0
