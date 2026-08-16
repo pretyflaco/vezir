@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 
 from .. import config
-from . import uploader
+from . import attachments, uploader
 
 log = logging.getLogger("vezir.client.scribe")
 
@@ -161,48 +161,24 @@ _POLL_INTERVAL = 5.0  # seconds, matches GUI
 
 # ─── meeting attachments (issue #16) ─────────────────────────────────────────
 #
-# Users drop slides/agendas/screenshots into one fixed folder while the
-# meeting runs; after recording stops they get a last chance to add more,
-# then the files ride along to the server and move into the recording's own
-# ``attachments/`` so the staging folder is empty for the next meeting.
-
-ATTACHMENTS_SUBDIR = "attachments"
+# The workflow itself lives in ``vezir/client/attachments.py`` (the TUI record
+# screen drives the same steps); what stays here is the CLI's own surface: the
+# printed folder announcement and the blocking last-chance prompt.
 
 
-def _staged_attachments() -> list[Path]:
-    """Files currently in the staging folder, in a stable order.
+def _cli_info(msg: str) -> None:
+    print(f"vezir: {msg}", flush=True)
 
-    Dotfiles are skipped (``.DS_Store`` and editor droppings are not
-    attachments).  Symlinks are followed on purpose — linking a large file
-    instead of copying it is a reasonable way to attach it, and unlike the
-    server side nothing here is copied into someone else's repository.
-    """
-    from .config import attachments_dir
 
-    adir = attachments_dir()
-    if not adir.is_dir():
-        return []
-    return sorted(
-        p for p in adir.iterdir()
-        if p.is_file() and not p.name.startswith(".")
-    )
+def _cli_error(msg: str) -> None:
+    print(f"vezir: {msg}", file=sys.stderr, flush=True)
 
 
 def _announce_attachments_folder() -> Path:
     """Create and print the staging folder before recording starts."""
-    from .config import attachments_dir
-
-    adir = attachments_dir()
-    try:
-        adir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        log.warning("could not create attachments folder %s: %s", adir, exc)
-        return adir
-    print(f"vezir: attachments folder: {adir}", flush=True)
-    print(
-        "vezir: copy slides, PDFs, images, or docs there while recording.",
-        flush=True,
-    )
+    adir = attachments.ensure_staging_dir()
+    _cli_info(f"attachments folder: {adir}")
+    _cli_info("copy slides, PDFs, images, or docs there while recording.")
     return adir
 
 
@@ -215,70 +191,21 @@ def _attachment_pause(no_pause: bool) -> None:
     and losing that to a stray keystroke is far worse than an unwanted
     upload the user can delete.
     """
-    from .config import attachments_dir
-
-    staged = _staged_attachments()
-    print(f"vezir: attachments folder: {attachments_dir()}", flush=True)
+    staged = attachments.staged_attachments()
+    _cli_info(f"attachments folder: {attachments.staging_dir()}")
     if staged:
-        print(f"vezir: found {len(staged)} attachment(s):", flush=True)
+        _cli_info(f"found {len(staged)} attachment(s):")
         for p in staged:
             print(f"  - {p.name} ({_fmt_bytes(p.stat().st_size)})", flush=True)
     else:
-        print("vezir: no attachments staged.", flush=True)
+        _cli_info("no attachments staged.")
     if no_pause or not sys.stdin.isatty():
         return
-    print("vezir: copy any last-minute documents there now.", flush=True)
+    _cli_info("copy any last-minute documents there now.")
     try:
         input("vezir: press Enter to upload when ready ... ")
     except (EOFError, KeyboardInterrupt):
         print(flush=True)
-
-
-def _unique_dest(dest_dir: Path, name: str) -> Path:
-    """``dest_dir/name``, suffixed so an existing file is never clobbered."""
-    candidate = dest_dir / name
-    if not candidate.exists():
-        return candidate
-    stem, dot, suffix = name.rpartition(".")
-    if not dot:
-        stem, suffix = name, ""
-    for n in range(2, 1000):
-        alt = f"{stem}_{n}.{suffix}" if suffix else f"{stem}_{n}"
-        candidate = dest_dir / alt
-        if not candidate.exists():
-            return candidate
-    return dest_dir / f"{stem}_{int(time.time())}{('.' + suffix) if suffix else ''}"
-
-
-def _move_staged_into_recording(session_dir: Path, staged: list[Path]) -> None:
-    """Move uploaded attachments next to the local recording.
-
-    Keeps the files (they are the user's) while emptying the fixed staging
-    folder for the next meeting.  Best effort: a failure here must not fail
-    a run whose audio and attachments are already on the server.
-    """
-    dest_dir = session_dir / ATTACHMENTS_SUBDIR
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print(
-            f"vezir: could not create {dest_dir}: {exc}; attachments left in "
-            f"the staging folder",
-            file=sys.stderr, flush=True,
-        )
-        return
-    moved = 0
-    for p in staged:
-        try:
-            shutil.move(str(p), str(_unique_dest(dest_dir, p.name)))
-            moved += 1
-        except OSError as exc:
-            print(
-                f"vezir: could not move {p.name} to {dest_dir}: {exc}",
-                file=sys.stderr, flush=True,
-            )
-    if moved:
-        print(f"vezir: moved {moved} attachment(s) to {dest_dir}", flush=True)
 
 
 def _send_attachments(
@@ -288,33 +215,11 @@ def _send_attachments(
     session_dir: Path,
     team_id: str | None,
 ) -> None:
-    """Upload staged attachments, then move them next to the recording.
-
-    A failure warns and leaves the staging folder untouched — the meeting
-    itself is already uploaded, so this must never raise.
-    """
-    staged = _staged_attachments()
-    if not staged:
-        return
-    print(f"vezir: uploading {len(staged)} attachment(s) ...", flush=True)
-    try:
-        stored = uploader.upload_attachments(
-            server_url, token, session_id, staged, team_id=team_id,
-        )
-    except Exception as exc:
-        print(
-            f"vezir: attachment upload failed: {exc}",
-            file=sys.stderr, flush=True,
-        )
-        print(
-            "vezir: the files are still in the staging folder; the meeting "
-            "itself uploaded fine.",
-            file=sys.stderr, flush=True,
-        )
-        return
-    for item in stored:
-        print(f"vezir:   attached {item.get('name')}", flush=True)
-    _move_staged_into_recording(session_dir, staged)
+    """CLI wrapper around ``attachments.send_attachments``."""
+    attachments.send_attachments(
+        server_url, token, session_id, session_dir, team_id,
+        on_info=_cli_info, on_error=_cli_error,
+    )
 
 
 # ─── library-direct recording with pause/resume ──────────────────────────────

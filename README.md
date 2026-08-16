@@ -248,6 +248,9 @@ Enter as a last chance to add more (skipped without a TTY, or with
 recording's own `attachments/` folder so the staging folder is empty for the
 next meeting.
 
+`vezir tui` does the same: the record screen shows the folder and how many
+files are staged, and prompts with the list when recording stops.
+
 Attachments show up in the TUI detail screen alongside the artifacts, are
 fetched by `vezir pull` into `<meeting>/attachments/`, and — with
 `millet-pipeline >= 0.15.0` — sync into the team's git archive under the

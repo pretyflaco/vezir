@@ -31,9 +31,16 @@ never syncs them.
   live in `<sessions_dir>/<id>/attachments/`, which is exactly the directory
   the worker hands to `millet sync`, so millet 0.15.0's verbatim passthrough
   carries them into the team repo with no further work here.
-- **TUI** — attachments appear as marked rows in the session detail screen's
-  artifacts table and open through the existing `ArtifactScreen` (inline
-  text, OS opener for binaries, save-to-disk).
+- **TUI** — the record screen shows the staging folder and how many files
+  are waiting in it, and prompts with the same last-chance list when
+  recording stops (Enter/Escape continue into the upload, `r` rescans);
+  attachments then upload with the meeting exactly as in the CLI.  In the
+  session detail screen they appear as marked rows in the artifacts table
+  and open through the existing `ArtifactScreen` (inline text, OS opener for
+  binaries, save-to-disk).
+- The shared workflow lives in `vezir/client/attachments.py`; `scribe.py`
+  keeps only its own surface (printed announcement, blocking prompt) and the
+  TUI reports through Textual messages instead of `print`.
 - **`vezir pull`** — attachments are fetched into `<meeting>/attachments/`,
   names kept verbatim, so the "share a meeting without git" path doesn't
   silently omit what the git archive carries.
@@ -52,11 +59,16 @@ never syncs them.
   de-duplicated with `_N` suffixes; symlinks are never listed or served.
 - `sessions._enforce_team_visibility` is now public as
   `enforce_team_visibility` (used by the new module).
+- Moving a staged file next to the recording skips the move when the
+  destination already holds a byte-identical copy: with client and server on
+  one host and `VEZIR_RECORD_DIR` pointing into `VEZIR_DATA/sessions`, the
+  file the server just stored *is* the move target, and the naive path would
+  leave an `_2` duplicate behind.
 - Accepted limitations: an attachment uploaded after the worker's sync step
   has already run misses that push (attachments are sent seconds after the
   audio, sync runs minutes later); attachments are not fed to summarization.
 
-Test suite grows 906 → 953.
+Test suite grows 906 → 957.
 
 ## 0.12.1 — security & correctness hardening; docs refresh
 

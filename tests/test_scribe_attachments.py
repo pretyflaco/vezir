@@ -38,23 +38,23 @@ def test_attachments_dir_honors_env(tmp_path, monkeypatch):
 
 
 def test_staged_attachments_skips_dotfiles_and_dirs(staging):
-    from vezir.client import scribe
+    from vezir.client import attachments
 
     (staging / "slides.pdf").write_bytes(b"deck")
     (staging / "agenda.md").write_text("# agenda")
     (staging / ".DS_Store").write_bytes(b"junk")
     (staging / "subdir").mkdir()
 
-    assert [p.name for p in scribe._staged_attachments()] == [
+    assert [p.name for p in attachments.staged_attachments()] == [
         "agenda.md", "slides.pdf",
     ]
 
 
 def test_staged_attachments_empty_when_folder_missing(tmp_path, monkeypatch):
-    from vezir.client import scribe
+    from vezir.client import attachments
 
     monkeypatch.setenv("VEZIR_ATTACHMENTS_DIR", str(tmp_path / "nope"))
-    assert scribe._staged_attachments() == []
+    assert attachments.staged_attachments() == []
 
 
 def test_announce_creates_the_folder(tmp_path, monkeypatch, capsys):
@@ -144,6 +144,7 @@ def test_pause_survives_ctrl_c_and_eof(staging, monkeypatch):
 
 
 def test_send_attachments_uploads_then_moves(staging, tmp_path, monkeypatch, capsys):
+    from vezir.client import attachments as attachments_mod
     from vezir.client import scribe
 
     (staging / "slides.pdf").write_bytes(b"deck")
@@ -158,7 +159,7 @@ def test_send_attachments_uploads_then_moves(staging, tmp_path, monkeypatch, cap
         seen["team_id"] = kwargs.get("team_id")
         return [{"name": p.name} for p in paths]
 
-    monkeypatch.setattr(scribe.uploader, "upload_attachments", fake_upload)
+    monkeypatch.setattr(attachments_mod.uploader, "upload_attachments", fake_upload)
     scribe._send_attachments(
         "https://vezir.example", "tok", "01SESSION", session_dir, "team-uuid",
     )
@@ -176,18 +177,20 @@ def test_send_attachments_uploads_then_moves(staging, tmp_path, monkeypatch, cap
 
 
 def test_send_attachments_noop_when_nothing_staged(staging, tmp_path, monkeypatch):
+    from vezir.client import attachments as attachments_mod
     from vezir.client import scribe
 
     def boom(*a, **k):  # pragma: no cover - must never run
         raise AssertionError("no upload should happen")
 
-    monkeypatch.setattr(scribe.uploader, "upload_attachments", boom)
+    monkeypatch.setattr(attachments_mod.uploader, "upload_attachments", boom)
     scribe._send_attachments("u", "t", "01S", tmp_path, None)
 
 
 def test_send_attachments_keeps_files_on_failure(staging, tmp_path, monkeypatch, capsys):
     """The meeting itself is already uploaded, so a failed attachment POST
     warns and leaves the staging folder untouched instead of raising."""
+    from vezir.client import attachments as attachments_mod
     from vezir.client import scribe
 
     (staging / "slides.pdf").write_bytes(b"deck")
@@ -197,7 +200,7 @@ def test_send_attachments_keeps_files_on_failure(staging, tmp_path, monkeypatch,
     def boom(*a, **k):
         raise RuntimeError("server said no")
 
-    monkeypatch.setattr(scribe.uploader, "upload_attachments", boom)
+    monkeypatch.setattr(attachments_mod.uploader, "upload_attachments", boom)
     scribe._send_attachments("u", "t", "01S", session_dir, None)
 
     assert [p.name for p in staging.iterdir()] == ["slides.pdf"]
@@ -205,7 +208,32 @@ def test_send_attachments_keeps_files_on_failure(staging, tmp_path, monkeypatch,
     assert "server said no" in capsys.readouterr().err
 
 
+def test_identical_file_at_destination_is_not_duplicated(
+    staging, tmp_path, monkeypatch
+):
+    """Same-box deployment: with VEZIR_RECORD_DIR pointing into the server's
+    own sessions dir, the copy the server just stored IS the move target.
+    Dropping the staged file beats writing a ``_2`` duplicate."""
+    from vezir.client import attachments as attachments_mod
+    from vezir.client import scribe
+
+    (staging / "slides.pdf").write_bytes(b"deck")
+    session_dir = tmp_path / "meeting"
+    (session_dir / "attachments").mkdir(parents=True)
+    (session_dir / "attachments" / "slides.pdf").write_bytes(b"deck")
+
+    monkeypatch.setattr(
+        attachments_mod.uploader, "upload_attachments", lambda *a, **k: [{"name": "slides.pdf"}],
+    )
+    scribe._send_attachments("u", "t", "01S", session_dir, None)
+
+    adir = session_dir / "attachments"
+    assert sorted(p.name for p in adir.iterdir()) == ["slides.pdf"]
+    assert list(staging.iterdir()) == []
+
+
 def test_move_does_not_clobber_an_existing_file(staging, tmp_path, monkeypatch):
+    from vezir.client import attachments as attachments_mod
     from vezir.client import scribe
 
     (staging / "shot.png").write_bytes(b"new")
@@ -214,7 +242,7 @@ def test_move_does_not_clobber_an_existing_file(staging, tmp_path, monkeypatch):
     (session_dir / "attachments" / "shot.png").write_bytes(b"old")
 
     monkeypatch.setattr(
-        scribe.uploader, "upload_attachments", lambda *a, **k: [{"name": "shot.png"}],
+        attachments_mod.uploader, "upload_attachments", lambda *a, **k: [{"name": "shot.png"}],
     )
     scribe._send_attachments("u", "t", "01S", session_dir, None)
 
@@ -293,3 +321,66 @@ def test_upload_attachments_explains_a_404(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="another team"):
         uploader.upload_attachments("https://x", "tok", "01S", [a])
+
+
+# ── TUI record screen (issue #16 review follow-up) ──────────────────────────
+
+
+def test_record_screen_prompt_lists_staged_files(staging, monkeypatch):
+    """The modal is the TUI's equivalent of scribe's Enter prompt."""
+    from vezir.client.tui.record_screen import AttachmentPromptScreen
+
+    (staging / "slides.pdf").write_bytes(b"deck")
+    screen = AttachmentPromptScreen()
+    shown: list = []
+
+    class _Static:
+        def update(self, text):
+            shown.append(text)
+
+    screen.query_one = lambda *_a, **_k: _Static()
+    screen._refresh_list()
+    assert "1 file(s) staged" in shown[0]
+    assert "slides.pdf" in shown[0]
+
+    (staging / "slides.pdf").unlink()
+    screen._refresh_list()
+    assert "No files staged" in shown[1]
+
+
+def test_record_screen_prompt_always_continues_to_upload(staging):
+    """Dismissal (button, Enter or Escape) must never cancel the upload —
+    the meeting is already recorded."""
+    from vezir.client.tui.record_screen import AttachmentPromptScreen
+
+    screen = AttachmentPromptScreen()
+    dismissed: list = []
+    screen.dismiss = lambda result=None: dismissed.append(result)
+
+    screen.action_upload()
+
+    class _Btn:
+        id = "attach-upload"
+
+    class _Event:
+        button = _Btn()
+
+    screen.on_button_pressed(_Event())
+    assert dismissed == [None, None]
+
+
+def test_record_screen_line_shows_folder_and_count(staging, monkeypatch):
+    from vezir.client.tui.record_screen import RecordBody
+
+    (staging / "slides.pdf").write_bytes(b"deck")
+    body = RecordBody.__new__(RecordBody)
+    shown: list = []
+
+    class _Static:
+        def update(self, text):
+            shown.append(text)
+
+    body.query_one = lambda *_a, **_k: _Static()
+    body._refresh_attachments_line()
+    assert str(staging) in shown[0]
+    assert "1 file(s) staged" in shown[0]
