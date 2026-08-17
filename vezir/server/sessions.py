@@ -54,7 +54,7 @@ def _decorate(row: dict) -> dict:
     return row
 
 
-def _enforce_team_visibility(
+def enforce_team_visibility(
     row: dict,
     viewer_team_id: str,
     viewer_github: str | None = None,
@@ -136,7 +136,7 @@ def api_session(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id, github, is_admin)
+    enforce_team_visibility(row, team_id, github, is_admin)
     return _decorate(row)
 
 
@@ -155,7 +155,7 @@ def artifact(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id, github, is_admin)
+    enforce_team_visibility(row, team_id, github, is_admin)
     sdir = config.sessions_dir() / session_id
     if not sdir.exists():
         raise HTTPException(404, "session not found")
@@ -208,7 +208,7 @@ def sync_now(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id, github, is_admin)
+    enforce_team_visibility(row, team_id, github, is_admin)
     if row["status"] not in ("done", "syncing", "sync_failed"):
         raise HTTPException(
             409,
@@ -282,7 +282,7 @@ def retry_summary(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id, github, is_admin)
+    enforce_team_visibility(row, team_id, github, is_admin)
     if row["status"] not in ("done", "sync_failed"):
         raise HTTPException(
             409,
@@ -364,7 +364,7 @@ def share_with_team(
     # NB: no personal-visibility enforcement here — `share` IS the
     # owner-controlled transition out of personal, and it already gates on
     # the uploader below (403).  Only the cross-team check applies.
-    _enforce_team_visibility(row, team_id)
+    enforce_team_visibility(row, team_id)
     if row.get("github") != github:
         raise HTTPException(
             403,
@@ -413,7 +413,7 @@ def set_session_title(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id, github, is_admin)
+    enforce_team_visibility(row, team_id, github, is_admin)
     if not is_admin and row.get("github") != github:
         raise HTTPException(
             403,
@@ -453,7 +453,7 @@ def delete_session(
     Authorization: the server-wide admin (token ``is_admin`` bit) OR the
     original uploader of the session.  A non-admin, non-uploader member of
     the same team gets 403; a caller from a different team gets 404 (the
-    same existence-hiding convention as ``_enforce_team_visibility``).
+    same existence-hiding convention as ``enforce_team_visibility``).
 
     This is local-only.  If the session was already synced to the team's git
     repo, that pushed copy is NOT removed (millet sync is push-only); the
@@ -463,7 +463,7 @@ def delete_session(
     row = queue.get(session_id)
     if not row:
         raise HTTPException(404, "session not found")
-    _enforce_team_visibility(row, team_id, github, is_admin)
+    enforce_team_visibility(row, team_id, github, is_admin)
     if not is_admin and row.get("github") != github:
         raise HTTPException(
             403,

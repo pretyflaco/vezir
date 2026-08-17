@@ -58,6 +58,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from ... import config
+from .. import attachments
 from ..config import load_client_prefs, save_client_prefs
 
 
@@ -303,6 +304,98 @@ class _AudioOnlyDirectoryTree(DirectoryTree):
             if p.suffix.lower() in _AUDIO_EXTS:
                 out.append(p)
         return out
+
+
+class AttachmentPromptScreen(ModalScreen[None]):
+    """Last chance to drop files into the staging folder before upload.
+
+    The TUI counterpart of ``vezir scribe``'s Enter prompt: recording has
+    stopped and the upload is about to go out, so this is the moment the
+    issue-#16 workflow asks for.  Dismissing always continues into the
+    upload — the meeting is already recorded, and there is no outcome where
+    silently dropping it is the helpful choice.
+    """
+
+    DEFAULT_CSS = """
+    AttachmentPromptScreen {
+        align: center middle;
+    }
+    #attach-box {
+        width: 70%;
+        height: auto;
+        max-height: 80%;
+        border: round $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    #attach-title {
+        height: 1;
+        margin-bottom: 1;
+        text-style: bold;
+    }
+    #attach-folder {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    #attach-list {
+        height: auto;
+        max-height: 12;
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "upload", "Upload"),
+        Binding("enter", "upload", "Upload"),
+        Binding("r", "rescan", "Rescan"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="attach-box"):
+            yield Static("Attachments — last chance", id="attach-title")
+            yield Static(
+                f"Drop files into {attachments.staging_dir()} now; they upload "
+                f"with this meeting.",
+                id="attach-folder",
+            )
+            yield Static("", id="attach-list")
+            with Horizontal(id="attach-actions"):
+                yield Button("⬆ Upload now", id="attach-upload", variant="primary")
+                yield Button("↻ Rescan folder", id="attach-rescan")
+
+    def on_mount(self) -> None:
+        self._refresh_list()
+        try:
+            self.query_one("#attach-upload", Button).focus()
+        except Exception:
+            pass
+
+    def _refresh_list(self) -> None:
+        staged = attachments.staged_attachments()
+        if staged:
+            body = "\n".join(
+                f"  • {p.name} ({_fmt_bytes(p.stat().st_size)})" for p in staged
+            )
+            text = f"{len(staged)} file(s) staged:\n{body}"
+        else:
+            text = "[dim]No files staged.[/]"
+        try:
+            self.query_one("#attach-list", Static).update(text)
+        except Exception:
+            pass
+
+    def action_rescan(self) -> None:
+        self._refresh_list()
+
+    def action_upload(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "attach-rescan":
+            self._refresh_list()
+        else:
+            self.dismiss(None)
 
 
 class ImportScreen(ModalScreen["Path | None"]):
@@ -601,6 +694,10 @@ class RecordBody(Vertical):
         margin-bottom: 1;
         color: $text-muted;
     }
+    #attachments-line {
+        height: 1;
+        color: $text-muted;
+    }
     #status-line {
         height: 1;
         margin-bottom: 1;
@@ -684,9 +781,28 @@ class RecordBody(Vertical):
             "[dim]🎤 ▁▁▁▁▁▁▁▁▁▁▁▁  🔊 ▁▁▁▁▁▁▁▁▁▁▁▁  ― idle[/]",
             id="level-row",
         )
+        yield Static("", id="attachments-line")
         yield Static(f"Status: {self.status_text}", id="status-line")
         yield Static("", id="error-line", classes="error")
         yield Static(f"v{_vezir_version()}", id="version-line")
+
+    def _refresh_attachments_line(self) -> None:
+        """Show the staging folder and how many files are waiting in it.
+
+        The folder is the whole discovery mechanism for the feature: a TUI
+        user who never reads the docs still sees where to drop slides.
+        """
+        try:
+            line = self.query_one("#attachments-line", Static)
+        except Exception:
+            return
+        try:
+            adir = attachments.staging_dir()
+            n = len(attachments.staged_attachments())
+        except Exception:  # pragma: no cover - defensive
+            return
+        count = f"{n} file(s) staged" if n else "empty"
+        line.update(f"[dim]attachments: {adir}  ({count})[/]")
 
     def _version_line_text(self) -> str:
         """Version line, annotated when the update poll found a newer release."""
@@ -719,6 +835,11 @@ class RecordBody(Vertical):
         # cheaply so the version line picks it up without a restart.
         self._refresh_version_line()
         self.set_interval(10.0, self._refresh_version_line, name="version-line-refresh")
+        attachments.ensure_staging_dir()
+        self._refresh_attachments_line()
+        self.set_interval(
+            5.0, self._refresh_attachments_line, name="attachments-line-refresh",
+        )
 
     def _warn_if_session_expiring(self) -> None:
         """Proactively warn only when re-login is genuinely needed.
@@ -1223,6 +1344,26 @@ class RecordBody(Vertical):
             except Exception as exc:
                 log.warning("could not write upload session.json: %s", exc)
 
+            # Attachments ride along after the audio, then move next to the
+            # recording.  Reports go through the status line; this never
+            # raises, so a failure can't lose an uploaded meeting.
+            def _info(msg: str) -> None:
+                self.post_message(ServerStatus(
+                    status="uploading", extra=msg, gen=gen,
+                ))
+
+            def _err(msg: str) -> None:
+                log.warning("attachments: %s", msg)
+                self.post_message(ServerStatus(
+                    status="uploading", extra=msg, gen=gen,
+                ))
+
+            attachments.send_attachments(
+                server_url, token, session_id, audio_path.parent, team_id,
+                on_info=_info, on_error=_err,
+            )
+            self.app.call_from_thread(self._refresh_attachments_line)
+
         self.post_message(UploadFinished(
             session_id=session_id,
             gen=gen,
@@ -1400,8 +1541,16 @@ class RecordBody(Vertical):
         self.status_text = (
             f"recording finished ({_fmt_bytes(size)}); uploading..."
         )
-        # Auto-kick upload to match gui.py's behavior.
-        self._kick_upload(audio_path)
+        # Auto-kick upload to match gui.py's behavior — but first give the
+        # user the same last-chance attachment prompt the CLI shows.
+        def _then_upload(_result=None) -> None:
+            self._refresh_attachments_line()
+            self._kick_upload(audio_path)
+
+        try:
+            self.app.push_screen(AttachmentPromptScreen(), _then_upload)
+        except Exception:  # pragma: no cover - defensive
+            _then_upload()
 
     def on_server_status(self, message: ServerStatus) -> None:
         if message.gen < self._gen:

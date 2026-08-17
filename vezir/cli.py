@@ -85,9 +85,14 @@ def serve(host, port, reload):
               help="Mark recording as personal (private to you, never synced; "
                    "hidden from other team members' session lists). "
                    "Per-recording flag; not persisted.")
+@click.option("--no-pause", "no_pause", is_flag=True, default=False,
+              help="Skip the post-recording pause that offers a last chance "
+                   "to drop files into the attachments folder (automatically "
+                   "skipped when stdin is not a TTY).")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
 def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
-           open_labeling, preset, auto_label, sync, personal, record_args):
+           open_labeling, preset, auto_label, sync, personal, no_pause,
+           record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `millet record`.
@@ -126,6 +131,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
             auto_label=auto_label,
             sync=sync,
             personal=personal,
+            no_pause=no_pause,
         )
     except KeyboardInterrupt:
         click.echo("vezir: interrupted", err=True)

@@ -88,9 +88,15 @@ class ArtifactScreen(Screen):
     #status-line { height: 1; color: $text-muted; }
     """
 
-    def __init__(self, session_id: str, name: str) -> None:
+    def __init__(
+        self, session_id: str, name: str, *, is_attachment: bool = False
+    ) -> None:
         super().__init__()
         self.session_id = session_id
+        # Attachments live on their own routes (user-chosen filenames would
+        # collide with millet's canonical artifact names in /artifact/...'s
+        # flat namespace), so the fetch below picks the endpoint by this flag.
+        self.is_attachment = is_attachment
         # NOTE: don't shadow Screen.name -- that's the install-name
         # property and Textual raises AttributeError on overwrite.
         # Use artifact_name for our artifact filename instead.
@@ -168,9 +174,16 @@ class ArtifactScreen(Screen):
             timeout=4,
         )
 
+    def _download(self):
+        if self.is_attachment:
+            return self.app.api.download_attachment(
+                self.session_id, self.artifact_name,
+            )
+        return self.app.api.download_artifact(self.session_id, self.artifact_name)
+
     @work(thread=True, exclusive=True, group="artifact")
     def _text_worker(self) -> None:
-        result = self.app.api.download_artifact(self.session_id, self.artifact_name)
+        result = self._download()
         if not result.is_ok():
             self.post_message(LoadFailed(error=result.error_message()))
             return
@@ -183,7 +196,7 @@ class ArtifactScreen(Screen):
 
     @work(thread=True, exclusive=True, group="artifact")
     def _binary_worker(self) -> None:
-        result = self.app.api.download_artifact(self.session_id, self.artifact_name)
+        result = self._download()
         if not result.is_ok():
             self.post_message(LoadFailed(error=result.error_message()))
             return

@@ -51,6 +51,22 @@ def teams_config_path() -> Path:
     return Path.home() / ".config" / "vezir" / "teams.json"
 
 
+def attachments_dir() -> Path:
+    """Staging folder for meeting attachments (``VEZIR_ATTACHMENTS_DIR``).
+
+    One fixed, well-known path rather than a folder per recording: it can be
+    bookmarked in the file manager once, and the workflow is "drop files
+    while the meeting runs" — which starts before the recording's own
+    directory name (timestamp + title) is settled.  ``vezir scribe`` empties
+    it into the recording's own ``attachments/`` after a successful upload,
+    so the next meeting starts from an empty folder.
+    """
+    raw = os.environ.get("VEZIR_ATTACHMENTS_DIR")
+    if raw and raw.strip():
+        return Path(raw).expanduser()
+    return Path.home() / "vezir-attachments"
+
+
 def load_client_prefs() -> dict:
     """Return the on-disk client config, or {} if it doesn't exist / is
     unreadable.  Always returns a dict (never None) so callers can do

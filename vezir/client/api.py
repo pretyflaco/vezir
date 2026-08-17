@@ -648,6 +648,49 @@ class VezirClient:
         dest.write_bytes(result.ok)
         return ApiResult.success(dest)
 
+    # ── attachments (issue #16) ──
+    #
+    # Separate from the artifact routes above: attachments carry user-chosen
+    # filenames, which would collide with millet's canonical artifact names
+    # in /artifact/{id}/{name}'s flat namespace.
+
+    def list_attachments(self, session_id: str) -> ApiResult:
+        """Return ``[{name, size, content_type}]`` for a session.
+
+        An empty list is the normal case (most meetings have none).  A server
+        too old to expose the route yields a 404, which callers should treat
+        as "no attachments" rather than an error.
+        """
+        result = self._get(
+            f"/api/sessions/{quote(session_id, safe='')}/attachments"
+        )
+        if not result.is_ok():
+            return result
+        items = result.ok.get("attachments") if isinstance(result.ok, dict) else None
+        if not isinstance(items, list):
+            return ApiResult.network(
+                ValueError(f"unexpected attachments payload: {type(result.ok)}"),
+            )
+        return ApiResult.success([i for i in items if isinstance(i, dict)])
+
+    def download_attachment(self, session_id: str, name: str) -> ApiResult:
+        """Return the raw bytes of one attachment."""
+        path = (
+            f"/api/sessions/{quote(session_id, safe='')}"
+            f"/attachments/{quote(name, safe='')}"
+        )
+        return self._get_bytes(path)
+
+    def save_attachment(self, session_id: str, name: str, dest: Path) -> ApiResult:
+        """Download an attachment and write it to ``dest``."""
+        result = self.download_attachment(session_id, name)
+        if not result.is_ok():
+            return result
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(result.ok)
+        return ApiResult.success(dest)
+
     # ── labeling ──
 
     def get_label_info(self, session_id: str) -> ApiResult:

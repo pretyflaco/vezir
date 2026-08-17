@@ -11,6 +11,11 @@ Interactive keystrokes during recording:
   Ctrl+C   stop, drain buffer, upload
   p        toggle pause / resume
 
+Meeting attachments (0.13.0): the fixed staging folder printed at record
+start collects supporting material while the meeting runs; after recording
+stops the user gets one last chance to add files, and they upload with the
+meeting.  See ``_announce_attachments_folder`` / ``_send_attachments``.
+
 The ``p`` key requires the controlling terminal to be a TTY in cbreak
 mode; if stdin isn't a TTY (piped, no controlling terminal) the
 ``p``-keystroke loop is skipped and only Ctrl+C is honored.
@@ -32,7 +37,7 @@ import time
 from pathlib import Path
 
 from .. import config
-from . import uploader
+from . import attachments, uploader
 
 log = logging.getLogger("vezir.client.scribe")
 
@@ -152,6 +157,69 @@ def _retry_line(attempt: int, retries: int, exc: Exception) -> None:
 
 _TERMINAL_STATUSES = {"done", "error", "empty"}
 _POLL_INTERVAL = 5.0  # seconds, matches GUI
+
+
+# ─── meeting attachments (issue #16) ─────────────────────────────────────────
+#
+# The workflow itself lives in ``vezir/client/attachments.py`` (the TUI record
+# screen drives the same steps); what stays here is the CLI's own surface: the
+# printed folder announcement and the blocking last-chance prompt.
+
+
+def _cli_info(msg: str) -> None:
+    print(f"vezir: {msg}", flush=True)
+
+
+def _cli_error(msg: str) -> None:
+    print(f"vezir: {msg}", file=sys.stderr, flush=True)
+
+
+def _announce_attachments_folder() -> Path:
+    """Create and print the staging folder before recording starts."""
+    adir = attachments.ensure_staging_dir()
+    _cli_info(f"attachments folder: {adir}")
+    _cli_info("copy slides, PDFs, images, or docs there while recording.")
+    return adir
+
+
+def _attachment_pause(no_pause: bool) -> None:
+    """Last chance to drop files in before the upload goes out.
+
+    Skipped without a TTY (scribe is documented for headless/ssh/scripted
+    use) or with ``--no-pause``.  A Ctrl-C or EOF at the prompt continues
+    with the upload rather than aborting: the meeting is already recorded,
+    and losing that to a stray keystroke is far worse than an unwanted
+    upload the user can delete.
+    """
+    staged = attachments.staged_attachments()
+    _cli_info(f"attachments folder: {attachments.staging_dir()}")
+    if staged:
+        _cli_info(f"found {len(staged)} attachment(s):")
+        for p in staged:
+            print(f"  - {p.name} ({_fmt_bytes(p.stat().st_size)})", flush=True)
+    else:
+        _cli_info("no attachments staged.")
+    if no_pause or not sys.stdin.isatty():
+        return
+    _cli_info("copy any last-minute documents there now.")
+    try:
+        input("vezir: press Enter to upload when ready ... ")
+    except (EOFError, KeyboardInterrupt):
+        print(flush=True)
+
+
+def _send_attachments(
+    server_url: str,
+    token: str,
+    session_id: str,
+    session_dir: Path,
+    team_id: str | None,
+) -> None:
+    """CLI wrapper around ``attachments.send_attachments``."""
+    attachments.send_attachments(
+        server_url, token, session_id, session_dir, team_id,
+        on_info=_cli_info, on_error=_cli_error,
+    )
 
 
 # ─── library-direct recording with pause/resume ──────────────────────────────
@@ -495,8 +563,12 @@ def run_scribe(
     auto_label: bool = True,
     sync: bool = True,
     personal: bool = False,
+    no_pause: bool = False,
 ) -> dict:
     """Record locally, then upload. Returns the upload response dict.
+
+    ``no_pause=True`` skips the post-recording attachment prompt (it is
+    skipped automatically when stdin is not a TTY).
 
     ``personal=True`` marks the resulting session as private to the
     uploader (hidden from other team members' session lists).  The
@@ -524,6 +596,8 @@ def run_scribe(
 
     output_dir = output_dir or _default_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    _announce_attachments_folder()
 
     # Try the library-direct path first (gets pause/resume).  Falls
     # back to subprocess invocation of `millet record` when:
@@ -565,6 +639,8 @@ def run_scribe(
             f"({ratio:.1f}x smaller)",
             flush=True,
         )
+
+    _attachment_pause(no_pause)
 
     print(f"vezir: uploading to {server_url} ...", flush=True)
     try:
@@ -622,6 +698,11 @@ def run_scribe(
         )
     except Exception as exc:
         log.warning("could not write upload session.json: %s", exc)
+
+    _send_attachments(
+        server_url, token, result["session_id"], session_dir, team_id,
+    )
+
     # v0.7.0: no dashboard URL.  Print a TUI hint instead so users
     # know how to track the session.
     print(

@@ -3,6 +3,73 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.13.0 — meeting attachments
+
+Supporting material — slides, agendas, screenshots, PDFs — can now ride
+along with a meeting (issue #16).  No DB migration: attachments are stored
+on the filesystem inside the session directory.
+
+Requires `millet-pipeline >= 0.15.0` (the `[server]` extra pins it) for the
+git-archive half; an older millet stores and serves attachments fine but
+never syncs them.
+
+### Added
+
+- **Staging folder + last-chance pause in `vezir scribe`.**  Recording
+  starts by printing a fixed, well-known folder (`~/vezir-attachments/`,
+  override with `VEZIR_ATTACHMENTS_DIR`) to drop files into while the
+  meeting runs.  When recording stops, scribe lists what it found and waits
+  for Enter — skipped when stdin is not a TTY (scribe is documented for
+  headless/ssh use) or with the new `--no-pause` flag.  A Ctrl-C or EOF at
+  that prompt continues into the upload rather than discarding a recorded
+  meeting.  After the audio lands, the staged files are POSTed and then
+  *moved* into that recording's own `attachments/`, leaving the staging
+  folder empty for the next meeting.  A failed attachment upload warns and
+  leaves the files staged; it never fails the meeting upload.
+- **Server API** — `POST`/`GET`/`GET <name>` under
+  `/api/sessions/<id>/attachments` (`vezir/server/attachments.py`).  Files
+  live in `<sessions_dir>/<id>/attachments/`, which is exactly the directory
+  the worker hands to `millet sync`, so millet 0.15.0's verbatim passthrough
+  carries them into the team repo with no further work here.
+- **TUI** — the record screen shows the staging folder and how many files
+  are waiting in it, and prompts with the same last-chance list when
+  recording stops (Enter/Escape continue into the upload, `r` rescans);
+  attachments then upload with the meeting exactly as in the CLI.  In the
+  session detail screen they appear as marked rows in the artifacts table
+  and open through the existing `ArtifactScreen` (inline text, OS opener for
+  binaries, save-to-disk).
+- The shared workflow lives in `vezir/client/attachments.py`; `scribe.py`
+  keeps only its own surface (printed announcement, blocking prompt) and the
+  TUI reports through Textual messages instead of `print`.
+- **`vezir pull`** — attachments are fetched into `<meeting>/attachments/`,
+  names kept verbatim, so the "share a meeting without git" path doesn't
+  silently omit what the git archive carries.
+- `VEZIR_MAX_ATTACHMENTS` (50) and `VEZIR_MAX_ATTACHMENT_BYTES` (100 MiB)
+  cap what one session can hold; both match millet's sync-side caps, so
+  nothing accepted here is silently dropped on the way to the repo.
+
+### Notes
+
+- Attachments are deliberately *not* served through `/artifact/<id>/<name>`:
+  that route rejects `/` outright, and user-chosen filenames would collide
+  with millet's canonical artifact names (`summary.md`, `transcript.pdf`) in
+  its flat namespace.
+- Client-supplied filenames are flattened to a single path component
+  (traversal, Windows paths, control characters, over-long names) and
+  de-duplicated with `_N` suffixes; symlinks are never listed or served.
+- `sessions._enforce_team_visibility` is now public as
+  `enforce_team_visibility` (used by the new module).
+- Moving a staged file next to the recording skips the move when the
+  destination already holds a byte-identical copy: with client and server on
+  one host and `VEZIR_RECORD_DIR` pointing into `VEZIR_DATA/sessions`, the
+  file the server just stored *is* the move target, and the naive path would
+  leave an `_2` duplicate behind.
+- Accepted limitations: an attachment uploaded after the worker's sync step
+  has already run misses that push (attachments are sent seconds after the
+  audio, sync runs minutes later); attachments are not fed to summarization.
+
+Test suite grows 906 → 957.
+
 ## 0.12.1 — security & correctness hardening; docs refresh
 
 A codebase-wide bug/security pass.  No DB migration.  All changes are

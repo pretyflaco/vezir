@@ -81,14 +81,17 @@ server = [
     # v0.7.0: jinja2 dropped along with the HTML dashboard.
     # vezir 0.4.0's worker shells out to `millet transcribe --summary-preset
     # <id>` and relies on apply_labels() accepting the summary_preset kwarg.
-    # Pin to >= 0.13.0: since vezir 0.11.0 the server hard-requires
-    # millet-pipeline >= 0.13.0 at runtime (meet_runner probes and raises
-    # otherwise), because label apply / retry-summary go through `millet label
-    # --apply-json`.  The install pin and the runtime floor now match so a
-    # `pip install vezir[server]` that satisfies the extra can't fail at
-    # runtime.  (Earlier pins: >=0.12.5 title-aware schedule matching;
-    # >=0.12.7 in-room multi-speaker collapse fix.)
-    "millet-pipeline>=0.13.0",
+    # Since vezir 0.11.0 the server hard-requires millet-pipeline >= 0.13.0 at
+    # runtime (meet_runner probes and raises otherwise), because label apply /
+    # retry-summary go through `millet label --apply-json`.  The install pin
+    # and the runtime floor match so a `pip install vezir[server]` that
+    # satisfies the extra can't fail at runtime.
+    # Raised to >= 0.15.0 for attachment passthrough in `millet sync`: the
+    # session's `attachments/` subdir is pushed to the team repo verbatim.  An
+    # older millet stores attachments fine but silently never syncs them.
+    # (Earlier pins: >=0.12.5 title-aware schedule matching; >=0.12.7 in-room
+    # multi-speaker collapse fix; >=0.13.0 label --apply-json.)
+    "millet-pipeline>=0.15.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
@@ -143,6 +146,7 @@ extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.Query"]
 "tests/*" = ["B", "RUF"]
 "vezir/client/tui/*.py" = ["RUF012"]
 "vezir/server/uploads.py" = ["B008"]
+"vezir/server/attachments.py" = ["B008"]
 "vezir/server/teams.py" = ["B008"]
 "vezir/server/labels.py" = ["B008"]
 "vezir/server/migrations.py" = ["RUF002", "RUF003"]

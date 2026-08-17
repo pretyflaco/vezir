@@ -406,6 +406,68 @@ _RESUMABLE_NET_ERRORS = (
 )
 
 
+def upload_attachments(
+    server_url: str,
+    token: str,
+    session_id: str,
+    paths: list[Path],
+    *,
+    team_id: str | None = None,
+    timeout: float = 600.0,
+    retries: int = 3,
+    verify: bool | str | None = None,
+) -> list[dict]:
+    """POST supporting documents to an existing session.
+
+    Sent after the audio, once the session id is known — the audio upload
+    itself is unchanged (it has three implementations: one-shot, multi and
+    resumable).  Returns the server's stored-attachment descriptors
+    (``{name, size, content_type}``); the stored name can differ from the
+    local one when the server sanitizes or de-duplicates it.
+
+    Retries only on connection errors: the request is not idempotent
+    server-side, so a retry after a 5xx could store a second copy.
+    """
+    from .api import VezirClient
+
+    if not paths:
+        return []
+    url = f"{server_url.rstrip('/')}/api/sessions/{session_id}/attachments"
+    resolved_verify = VezirClient._resolve_verify(verify)
+
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        handles = []
+        try:
+            files = []
+            for p in paths:
+                fh = p.open("rb")
+                handles.append(fh)
+                files.append(("files", (p.name, fh, "application/octet-stream")))
+            with httpx.Client(timeout=timeout, verify=resolved_verify) as client:
+                resp = client.post(
+                    url, headers=_auth_headers(token, team_id), files=files,
+                )
+            if resp.status_code == 404:
+                raise RuntimeError(
+                    "server does not know this session (or it belongs to "
+                    "another team); attachments not stored"
+                )
+            resp.raise_for_status()
+            return resp.json().get("attachments", [])
+        except _RESUMABLE_NET_ERRORS as exc:
+            log.warning(
+                "attachment upload attempt %d/%d failed: %s", attempt, retries, exc,
+            )
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(min(2 ** attempt, 30))
+        finally:
+            for fh in handles:
+                fh.close()
+    raise last_exc or RuntimeError("attachment upload failed")
+
+
 def server_supports_resumable(
     server_url: str, token: str, *, verify: bool | str | None = None,
     team_id: str | None = None, timeout: float = 10.0,

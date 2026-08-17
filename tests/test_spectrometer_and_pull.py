@@ -409,13 +409,22 @@ def test_download_artifacts_upgrades_upload_stub(tmp_path, monkeypatch):
     from vezir.client.artifacts import download_session_artifacts
 
     class _FakeResult:
+        def __init__(self, ok=None):
+            self.ok = ok
+
         def is_ok(self):
             return True
+
+        def error_message(self):
+            return ""
 
     class _FakeApi:
         def save_artifact(self, sid, name, dest):
             Path(dest).write_text("x")
             return _FakeResult()
+
+        def list_attachments(self, sid):
+            return _FakeResult(ok=[])
 
     class _S:
         id = "01UPLOAD"

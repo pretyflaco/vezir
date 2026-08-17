@@ -36,3 +36,7 @@ session-*.md
 # AI coding assistant context — operator-local; references sensitive
 # paths, infra topology, and cross-repo conventions not for publication.
 AGENTS.md
+.agents/
+.claude/
+_bmad/
+.history/
