@@ -1730,6 +1730,12 @@ def login(url, team_id, relay, timeout, method, verbose):
         relays=list(relay) or None,  # () -> use DEFAULT_RELAYS (blink's 5)
         name="vezir",
         on_auth_url=_on_auth_url,
+        # App origin for the signer's consent screen and (on signers that
+        # support it) the origin-bound sign_event:27235 pre-approval.  Must
+        # be the same base login_url_for() derives the NIP-98 u-tag from,
+        # so the hosts match by construction.
+        url=resolved_url.rstrip("/"),
+        image="https://raw.githubusercontent.com/pretyflaco/vezir/main/assets/logo/vezir.png",
     )
     connect_uri = client.build_connect_uri()
 

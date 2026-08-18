@@ -106,6 +106,39 @@ def test_default_relays_match_blink():
     assert q["relay"] == nip46.DEFAULT_RELAYS
 
 
+def test_build_connect_uri_includes_url_and_image_when_set():
+    """App identity metadata is emitted so signers can render the consent
+    screen and origin-bind a sign_event:27235 grant."""
+    c = nip46.Nip46Client(
+        relay="wss://relay.example",
+        url="https://vezir.example.com",
+        image="https://example.com/vezir.png",
+    )
+    q = parse_qs(urlsplit(c.build_connect_uri()).query)
+    assert q["url"] == ["https://vezir.example.com"]
+    assert q["image"] == ["https://example.com/vezir.png"]
+
+
+def test_build_connect_uri_omits_url_and_image_when_unset():
+    """Back-compat: no metadata params for default construction."""
+    c = nip46.Nip46Client(relay="wss://relay.example")
+    q = parse_qs(urlsplit(c.build_connect_uri()).query)
+    assert "url" not in q
+    assert "image" not in q
+
+
+def test_build_connect_uri_url_is_base_not_endpoint():
+    """The connect ``url`` must be the app base origin — signers compare
+    its host against the NIP-98 u-tag host.  Guards against passing the
+    full /api/auth/... login endpoint by mistake."""
+    c = nip46.Nip46Client(
+        relay="wss://relay.example", url="https://vezir.example.com"
+    )
+    q = parse_qs(urlsplit(c.build_connect_uri()).query)
+    assert urlsplit(q["url"][0]).path in ("", "/")
+    assert "/api/auth/" not in q["url"][0]
+
+
 # ── simulated remote signer ──────────────────────────────────────────────────
 
 

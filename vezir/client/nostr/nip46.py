@@ -131,6 +131,8 @@ class Nip46Client:
         name: str = "vezir",
         perms: str = DEFAULT_PERMS,
         on_auth_url: Callable[[str], None] | None = None,
+        url: str | None = None,
+        image: str | None = None,
     ) -> None:
         # Relay resolution precedence: explicit ``relays`` list, else a
         # single back-compat ``relay``, else the proven default set.
@@ -145,6 +147,13 @@ class Nip46Client:
         self.name = name
         self.perms = perms
         self.on_auth_url = on_auth_url
+        # App identity metadata for the signer's consent screen.  ``url``
+        # is the app origin (server BASE URL, not the login endpoint):
+        # signers that origin-bind a ``sign_event:27235`` grant compare its
+        # host against the NIP-98 ``u``-tag host.  ``image`` is an optional
+        # avatar shown next to the app name.
+        self.url = url
+        self.image = image
 
         self._client_priv = PrivateKey()
         self.client_pubkey = self._client_priv.public_key_xonly.format().hex()
@@ -217,6 +226,10 @@ class Nip46Client:
             ("perms", self.perms),
             ("name", self.name),
         ]
+        if self.url:
+            params.append(("url", self.url))
+        if self.image:
+            params.append(("image", self.image))
         # client-pubkey is the URI "origin"; query is percent-encoded.
         return f"nostrconnect://{self.client_pubkey}?{urlencode(params, quote_via=quote)}"
 
