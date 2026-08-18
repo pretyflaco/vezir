@@ -3,6 +3,55 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.13.1 — fast NIP-46 login
+
+Nostr sign-in drops from ~2–3 minutes to seconds of machine time plus the
+user's approval tap (measured: 2m43s → 25s with the Blink signer, 1m36s →
+20s with Amber; machine time alone is now ~2–5s).  No DB migration.
+
+### Fixed
+
+- **~2-minute NIP-46 login stall.**  With a dead relay in the default set
+  (`relay.nsec.app`), `_reconnect_dead_relays` ran a synchronous 30s-blocking
+  `create_connection` inside every `_publish` — including each 4s republish —
+  freezing the response read loop while the signer's replies sat unread in
+  socket buffers.  Both `get_public_key` and `sign_event` looked like ~34s
+  signer delays but were answered in under a second.  Reconnects now run on
+  deduped daemon threads; the read loop never blocks.  The per-relay connect
+  timeout dropped 30s → 10s (startup opens are parallel, so a dead relay
+  costs 10s once, hidden behind QR scanning).
+- **Relay-side `since` filter removed** from the NIP-46 response
+  subscription.  The filter is computed from *our* clock while responses are
+  stamped with the *signer's* clock, so a signer >60s behind had every
+  response relay-filtered.  The fresh-per-session client key has no history
+  to exclude; outgoing `created_at` clock correction is unchanged.
+
+### Added
+
+- **`url`/`image` metadata in the `nostrconnect://` URI.**  Signers can show
+  the app identity on the consent screen and origin-bind a
+  `sign_event:27235` pre-approval grant (NIP-98 host match) — one-tap login
+  against signers that implement it, unchanged behavior against the rest.
+  The consent icon is `assets/logo/vezir.png`, served from the repo.
+- **Timestamped `--verbose` login diagnostics.**  `vezir login --verbose`
+  now ms-timestamps every nip46 log line and adds phase markers
+  (relay-connect elapsed, `sign_event` publish, per-request response wait),
+  so a slow login is attributable to a phase from a single log.
+
+### Changed
+
+- **Default relay set pruned and probe-verified.**  Removed
+  `relay.nsec.app` (confirmed dead) and `relay.getportal.cc`; added
+  `relay.primal.net` and `theforest.nostr1.com`.  All five entries verified
+  reachable with sub-second handshakes; `nostr.oxtr.dev` was considered but
+  failed the probe.  Current set: `relay.damus.io`, `nos.lol`,
+  `offchain.pub`, `relay.primal.net`, `theforest.nostr1.com`.
+
+### Tests
+
+- 963 tests pass: REQ-filter shape, non-blocking reconnect, inflight
+  reconnect dedup, connect-URI `url`/`image` emission.
+
 ## 0.13.0 — meeting attachments
 
 Supporting material — slides, agendas, screenshots, PDFs — can now ride
