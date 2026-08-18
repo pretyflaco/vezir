@@ -630,6 +630,39 @@ def test_no_resubscribe_after_connect():
     assert ws.sent_verbs.count("CLOSE") == 0, ws.sent_verbs
 
 
+class _RawRecordingFakeWS(FakeWS):
+    """FakeWS that records the raw frames the client sends."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.sent_raw = []
+
+    def send(self, raw):
+        self.sent_raw.append(raw)
+        super().send(raw)
+
+
+def test_req_filter_has_no_since():
+    """Regression for the ~2min skewed-signer login: the subscription filter
+    must NOT carry a relay-side ``since``.  The filter is computed from OUR
+    clock while responses are stamped with the SIGNER's clock, so a signer
+    >60s behind had every response relay-filtered and login took the full
+    republish/timeout budget.  The client keypair is fresh per session, so
+    there is no history to exclude — the filter is kinds + #p only."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    ws = _RawRecordingFakeWS(client, signer, connect_result="ack")
+    client._ws = ws
+
+    client.wait_for_connection(timeout=5)
+    reqs = [json.loads(f) for f in ws.sent_raw if json.loads(f)[0] == "REQ"]
+    assert reqs, "no REQ sent"
+    for _verb, _sub_id, filt in reqs:
+        assert filt["kinds"] == [nip46.NIP46_KIND]
+        assert filt["#p"] == [client.client_pubkey]
+        assert "since" not in filt
+
+
 class _DropFirstPublishWS(FakeWS):
     """Simulates the laptop overlap gap: the signer does NOT receive the
     FIRST publish of each method request (it lands on a relay the signer

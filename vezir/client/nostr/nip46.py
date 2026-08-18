@@ -21,7 +21,9 @@ encrypted (see ``nip44``); request events are signed with the ephemeral
 client key (see ``event``).
 
 Best-practice details honored (per nostrconnect.org):
-  * ``since`` filter on the subscription (strfry replays old ephemerals);
+  * no ``since`` on the response subscription — the client key is fresh
+    per session (no history to exclude) and a relay-side ``since`` would
+    drop responses from signers with skewed clocks;
   * ignore duplicate responses (track handled request ids);
   * validate the connect ``secret``;
   * only the first ``auth_url`` per request is surfaced.
@@ -182,11 +184,15 @@ class Nip46Client:
         # Event ids already processed, so the same response arriving on
         # multiple relays is handled once.
         self._seen_events: set[str] = set()
-        # 60s negative margin: relays replay ephemeral events and signer
-        # clocks can be behind, so a `since` of exactly now can drop a
-        # valid response.  60s is the value nostr-tools uses (see its
-        # nip46 `since: now - 60` fix).
-        self._since = int(time.time()) - 60
+        # No relay-side ``since`` on the subscription: the filter is computed
+        # from OUR clock, but responses are stamped with the SIGNER's clock.
+        # A signer more than ~60s behind us had every response relay-filtered,
+        # making login take the full republish/timeout budget (~2 min).
+        # The client keypair is generated fresh per session, so no historical
+        # events can be addressed to this #p pubkey and ``since`` has nothing
+        # to exclude — the btcpay-nostr-login plugin uses a plain #p filter
+        # for the same reason.  Clock-skew correction still applies to our
+        # OUTGOING created_at (see _learn_clock_offset).
         # Which encryption the peer (signer) uses for kind-24133 — learned
         # from the first response we decrypt.  Real Amber (observed live)
         # uses "nip44"; some older signers/builds use "nip04".  We
@@ -330,11 +336,15 @@ class Nip46Client:
                 log.debug("REQ on reconnected %s failed: %s", url, exc)
 
     def _req_msg(self) -> str:
-        """The single REQ subscription message (kind-24133, #p == us)."""
+        """The single REQ subscription message (kind-24133, #p == us).
+
+        Deliberately NO ``since`` (see __init__): a fresh ephemeral client
+        pubkey has no history to exclude, and a relay-side ``since`` computed
+        from our clock would drop responses stamped by a skewed signer clock.
+        """
         filt: dict = {
             "kinds": [NIP46_KIND],
             "#p": [self.client_pubkey],
-            "since": self._since,
         }
         return json.dumps(["REQ", self._sub_id, filt])
 
