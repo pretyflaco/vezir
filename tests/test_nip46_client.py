@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 
@@ -90,14 +91,18 @@ def test_connect_uri_multi_relay():
     assert q["relay"] == relays  # order preserved, one entry each
 
 
-def test_default_relays_match_blink():
-    """vezir ships blink-terminal's exact proven NIP-46 relay set."""
+def test_default_relays_are_probe_verified():
+    """vezir ships a 5-relay set verified reachable + fast (<1s handshake).
+
+    relay.nsec.app (dead; its connect timeout blocked the read loop) and
+    relay.getportal.cc were removed 2026-08; nostr.oxtr.dev was considered
+    but failed the probe."""
     assert nip46.DEFAULT_RELAYS == [
-        "wss://relay.nsec.app",
         "wss://relay.damus.io",
         "wss://nos.lol",
-        "wss://relay.getportal.cc",
         "wss://offchain.pub",
+        "wss://relay.primal.net",
+        "wss://theforest.nostr1.com",
     ]
     # No explicit relays -> default set is used.
     c = nip46.Nip46Client()
@@ -810,7 +815,8 @@ def test_clock_offset_clamped(monkeypatch):
 
 def test_reconnect_dead_relays_reopens_missing(monkeypatch):
     """_reconnect_dead_relays must reopen advertised relays that aren't
-    currently connected (handles startup refusals / mid-session drops)."""
+    currently connected (handles startup refusals / mid-session drops).
+    Reopens run on background threads; join them before asserting."""
     client = nip46.Nip46Client(relays=["wss://r0", "wss://r1", "wss://r2"])
 
     class _Conn:
@@ -830,9 +836,73 @@ def test_reconnect_dead_relays_reopens_missing(monkeypatch):
 
     monkeypatch.setattr(client, "_open_relay", _fake_open)
     client._reconnect_dead_relays()
+    for t in client._bg_threads:
+        t.join(timeout=5)
 
     assert set(opened) == {"wss://r1", "wss://r2"}
     assert set(client._wss.keys()) == {"wss://r0", "wss://r1", "wss://r2"}
     # Reconnected sockets get a REQ subscription.
     for url in ("wss://r1", "wss://r2"):
         assert any('"REQ"' in s for s in client._wss[url].sent)
+
+
+def test_reconnect_does_not_block_read_loop(monkeypatch):
+    """Regression for the ~2min login stall: reconnecting a DEAD relay must
+    not block the caller.  The old synchronous _reconnect_dead_relays ran a
+    30s-blocking create_connection inside _publish, freezing the response
+    read loop while signer replies sat unread in socket buffers."""
+    client = nip46.Nip46Client(relays=["wss://live", "wss://dead"])
+    client._wss = {"wss://live": object()}
+    open_started = threading.Event()
+    open_release = threading.Event()
+    caller_thread = threading.get_ident()
+    open_threads = []
+
+    def _slow_open(url):
+        open_threads.append(threading.get_ident())
+        open_started.set()
+        open_release.wait(timeout=5)  # simulate a dead relay's slow timeout
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(client, "_open_relay", _slow_open)
+    t0 = time.time()
+    client._reconnect_dead_relays()  # must return immediately
+    elapsed = time.time() - t0
+    assert elapsed < 1.0, f"reconnect blocked the caller for {elapsed:.1f}s"
+    assert open_started.wait(timeout=2), "background open never started"
+    open_release.set()
+    for t in client._bg_threads:
+        t.join(timeout=5)
+    # The blocking open ran off the caller's thread.
+    assert open_threads and all(t != caller_thread for t in open_threads)
+    # Failed open: relay stays unregistered, inflight guard cleared.
+    assert "wss://dead" not in client._wss
+    assert "wss://dead" not in client._reconnect_inflight
+
+
+def test_reconnect_dedupes_inflight(monkeypatch):
+    """A burst of republishes against a dead relay must spawn at most ONE
+    open attempt at a time (guarded by _reconnect_inflight)."""
+    client = nip46.Nip46Client(relays=["wss://dead"])
+    open_release = threading.Event()
+    opens = []
+
+    def _slow_open(url):
+        opens.append(url)
+        open_release.wait(timeout=5)
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(client, "_open_relay", _slow_open)
+    client._reconnect_dead_relays()
+    client._reconnect_dead_relays()
+    client._reconnect_dead_relays()
+    assert len(client._bg_threads) == 1
+    open_release.set()
+    for t in client._bg_threads:
+        t.join(timeout=5)
+    assert opens == ["wss://dead"]
+    # After the attempt settles, a later reconnect may try again.
+    client._reconnect_dead_relays()
+    assert len(client._bg_threads) == 2
+    for t in client._bg_threads:
+        t.join(timeout=5)

@@ -44,7 +44,7 @@ NIP-98 login event is signed by the user-pubkey learned via
 rejected with a 403, so winning the relay race yields no vezir session.
 
 Scope: enough for ``vezir login`` (connect + get_public_key + sign_event).
-We fan out across several relays (``DEFAULT_RELAYS``, blink's proven set)
+We fan out across several relays (``DEFAULT_RELAYS``, a probe-verified set)
 for redundant delivery of the signer's ephemeral kind-24133 responses;
 ``switch_relays`` (signer asking us to move relays) is still out of scope
 for a one-shot terminal login.
@@ -55,6 +55,7 @@ import hmac
 import json
 import logging
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from urllib.parse import quote, urlencode
@@ -75,9 +76,11 @@ NIP46_KIND = 24133
 # far).  5 minutes comfortably covers realistic unsynced-clock drift.
 MAX_CLOCK_OFFSET = 300
 
-# Relays known to handle NIP-46 ephemeral events well.  This is blink
-# POS / blink-terminal's exact set (NostrConnectService.ts
-# DEFAULT_NIP46_RELAYS), which is proven to work reliably with Amber.
+# Relays known to handle NIP-46 ephemeral events well.  Originally blink
+# POS / blink-terminal's set; pruned 2026-08 after relay.nsec.app died
+# (its 30s connect timeout was blocking the response read loop — see
+# _reconnect_dead_relays) and getportal.cc was retired.  Every entry is
+# probe-verified reachable and fast (<1s handshake).
 #
 # WHY MULTIPLE RELAYS MATTERS (root cause of the old single-relay hang):
 # Amber publishes each response (connect ack, get_public_key, sign_event)
@@ -86,15 +89,15 @@ MAX_CLOCK_OFFSET = 300
 # EventNotificationConsumer.kt sends responses there).  kind-24133 events
 # are ephemeral, so if the single relay drops/evicts a response we never
 # see it and time out right after connect.  Advertising several relays
-# gives the response redundant delivery paths — exactly why blink "always
-# works".  We fan out: open all relays, broadcast each request to all, and
-# accept the first copy of each response (de-duped by event id).
+# gives the response redundant delivery paths.  We fan out: open all
+# relays, broadcast each request to all, and accept the first copy of
+# each response (de-duped by event id).
 DEFAULT_RELAYS: list[str] = [
-    "wss://relay.nsec.app",      # Popular NIP-46 relay
-    "wss://relay.damus.io",      # Very reliable general relay
-    "wss://nos.lol",             # Good uptime backup
-    "wss://relay.getportal.cc",  # Portal relay
-    "wss://offchain.pub",        # Offchain relay
+    "wss://relay.damus.io",       # Very reliable general relay
+    "wss://nos.lol",              # Good uptime backup
+    "wss://offchain.pub",         # Offchain relay
+    "wss://relay.primal.net",     # Primal relay
+    "wss://theforest.nostr1.com", # The Forest relay
 ]
 
 # Back-compat alias: some callers/tests still pass a single ``relay=``.
@@ -168,7 +171,16 @@ class Nip46Client:
         # Open websocket per relay: {relay_url: ws}.  A request is
         # broadcast to all; the first decryptable copy of each response
         # wins (others are de-duped by event id via ``_seen_events``).
+        # Guarded by _wss_lock: reconnects register sockets from background
+        # threads (see _reconnect_dead_relays).
         self._wss: dict[str, object] = {}
+        self._wss_lock = threading.Lock()
+        # Relays with a background (re)connect currently in flight — dedupes
+        # concurrent attempts so every republish doesn't spawn another
+        # 30s-blocking open against the same dead relay.
+        self._reconnect_inflight: set[str] = set()
+        # Handles for background (re)connect threads (tests join on these).
+        self._bg_threads: list[threading.Thread] = []
         # Tests inject a single fake socket via ``client._ws``; honoring it
         # keeps the existing in-process FakeWS tests working unchanged.
         self._ws = None
@@ -246,17 +258,65 @@ class Nip46Client:
 
         When a test injects a single fake socket as ``self._ws`` we use
         only that (the in-process FakeWS round-trip).  Otherwise we use the
-        per-relay connections opened by ``_connect_ws``.
+        per-relay connections opened by ``_connect_ws``.  Copied under
+        ``_wss_lock``: reconnect threads register sockets concurrently.
         """
         if self._ws is not None:
             return [self._ws]
-        return list(self._wss.values())
+        with self._wss_lock:
+            return list(self._wss.values())
 
     def _open_relay(self, url: str):
-        """Open one relay websocket (used at connect and on reconnect)."""
+        """Open one relay websocket (used at connect and on reconnect).
+
+        10s timeout: a dead relay must fail fast.  Startup opens all relays
+        in parallel so this costs 10s once at worst; reconnects run on
+        background threads (see _reconnect_dead_relays) so a dead relay
+        never blocks the response read loop.
+        """
         import websocket  # websocket-client
 
-        return websocket.create_connection(url, timeout=30)
+        return websocket.create_connection(url, timeout=10)
+
+    def _register_relay(self, url: str, ws) -> None:
+        """Register a freshly opened relay socket and subscribe it.
+
+        Safe to call from any thread.  Sends the session REQ directly so
+        sockets that come up after ``_subscribe_once`` still deliver
+        responses (a second REQ with the same sub id is a harmless replace
+        for sockets that already have it).
+        """
+        with self._wss_lock:
+            self._wss[url] = ws
+        log.info("nip46: (re)connected relay %s", url)
+        try:
+            ws.send(self._req_msg())
+        except Exception as exc:
+            log.debug("REQ on (re)connected %s failed: %s", url, exc)
+
+    def _open_relay_bg(self, url: str) -> None:
+        """Open a relay on a daemon thread; never blocks the caller.
+
+        Deduped via ``_reconnect_inflight`` so a burst of republishes
+        against a dead relay spawns at most one open attempt.
+        """
+        if url in self._reconnect_inflight:
+            return
+        self._reconnect_inflight.add(url)
+
+        def _run() -> None:
+            try:
+                ws = self._open_relay(url)
+            except Exception as exc:  # relay down / blocked — skip it
+                log.debug("relay %s unavailable: %s", url, exc)
+                return
+            finally:
+                self._reconnect_inflight.discard(url)
+            self._register_relay(url, ws)
+
+        t = threading.Thread(target=_run, daemon=True)
+        self._bg_threads.append(t)
+        t.start()
 
     def _connect_ws(self):
         # A test-injected fake socket short-circuits real networking.
@@ -276,34 +336,14 @@ class Nip46Client:
         # Open every relay concurrently; tolerate partial failure (blink
         # behaves the same — one slow/dead relay must not block login).  We
         # only hard-fail if NOT A SINGLE relay connects.
-        import threading
-
-        errors: dict[str, str] = {}
-        lock = threading.Lock()
-
-        def _open(url: str) -> None:
-            try:
-                ws = self._open_relay(url)
-            except Exception as exc:  # relay down / blocked — skip it
-                with lock:
-                    errors[url] = str(exc)
-                return
-            with lock:
-                self._wss[url] = ws
-
-        threads = [threading.Thread(target=_open, args=(u,)) for u in self.relays]
         _t0 = time.time()
-        for t in threads:
-            t.start()
-        for t in threads:
+        for url in self.relays:
+            self._open_relay_bg(url)
+        for t in self._bg_threads:
             t.join()
 
         if not self._wss:
-            detail = "; ".join(f"{u}: {e}" for u, e in errors.items())
-            raise Nip46Error(f"failed to connect to any relay ({detail})")
-        if errors:
-            for url, exc in errors.items():
-                log.debug("relay %s unavailable: %s", url, exc)
+            raise Nip46Error("failed to connect to any relay (see debug log)")
         log.info(
             "nip46: connected to %d/%d relays in %.1fs",
             len(self._wss), len(self.relays), time.time() - _t0,
@@ -311,31 +351,22 @@ class Nip46Client:
         self._subscribe_once()
 
     def _reconnect_dead_relays(self) -> None:
-        """Reopen any advertised relay that isn't currently connected.
+        """Kick off background reopens for any relay not currently connected.
 
-        Handles relays that refused at startup (e.g. transient DNS failure
-        or ``Connection refused``) or dropped mid-session, so the signer's
-        relay set and ours keep overlapping.  Best-effort, non-blocking on
-        failure.  Re-subscribes freshly reconnected sockets.
+        Handles relays that refused at startup (e.g. transient DNS failure)
+        or dropped mid-session, so the signer's relay set and ours keep
+        overlapping.  NON-BLOCKING by design: the 10s connect timeout runs
+        on a daemon thread, never on the response read loop — a synchronous
+        reconnect here was the root cause of the ~2-minute login stall
+        (responses sat unread in socket buffers while the loop was blocked
+        re-dialing a dead relay on every republish).
         """
         if self._ws is not None:
             return  # test-injected single fake socket: nothing to reconnect
-        missing = [u for u in self.relays if u not in self._wss]
-        if not missing:
-            return
+        with self._wss_lock:
+            missing = [u for u in self.relays if u not in self._wss]
         for url in missing:
-            try:
-                ws = self._open_relay(url)
-            except Exception as exc:
-                log.debug("relay %s still unavailable: %s", url, exc)
-                continue
-            self._wss[url] = ws
-            log.info("nip46: (re)connected relay %s", url)
-            # Subscribe the freshly opened socket so it delivers responses.
-            try:
-                ws.send(self._req_msg())
-            except Exception as exc:
-                log.debug("REQ on reconnected %s failed: %s", url, exc)
+            self._open_relay_bg(url)
 
     def _req_msg(self) -> str:
         """The single REQ subscription message (kind-24133, #p == us).
