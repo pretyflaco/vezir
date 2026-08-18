@@ -1687,7 +1687,13 @@ def login(url, team_id, relay, timeout, method, verbose):
 
     if verbose:
         logging.getLogger("vezir.nip46").setLevel(logging.DEBUG)
-        logging.getLogger("vezir.nip46").addHandler(logging.StreamHandler())
+        _handler = logging.StreamHandler()
+        # Timestamps (ms precision) so a slow login can be attributed to a
+        # phase: relay connect, connect-ack wait, get_public_key, sign_event.
+        _handler.setFormatter(
+            logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)s %(message)s")
+        )
+        logging.getLogger("vezir.nip46").addHandler(_handler)
 
     from .client import config as client_config
 

@@ -292,6 +292,7 @@ class Nip46Client:
                 self._wss[url] = ws
 
         threads = [threading.Thread(target=_open, args=(u,)) for u in self.relays]
+        _t0 = time.time()
         for t in threads:
             t.start()
         for t in threads:
@@ -304,7 +305,8 @@ class Nip46Client:
             for url, exc in errors.items():
                 log.debug("relay %s unavailable: %s", url, exc)
         log.info(
-            "nip46: connected to %d/%d relays", len(self._wss), len(self.relays)
+            "nip46: connected to %d/%d relays in %.1fs",
+            len(self._wss), len(self.relays), time.time() - _t0,
         )
         self._subscribe_once()
 
@@ -665,6 +667,10 @@ class Nip46Client:
             if error:
                 raise Nip46Error(f"remote signer error: {error}")
             self._handled.add(rid)
+            log.info(
+                "nip46: response received for rid=%s (waited %.1fs)",
+                rid, time.time() - (deadline - timeout),
+            )
             # Learn the remote-signer pubkey from the responder.
             if self.remote_signer_pubkey is None:
                 self.remote_signer_pubkey = author
@@ -866,6 +872,7 @@ class Nip46Client:
         )
         if self._publish(event_msg) == 0:
             raise Nip46Error("failed to publish sign_event to any relay")
+        log.info("nip46: sign_event request published (rid=%s)", rid)
         # accept_any: defensive fallback for signers that don't echo the
         # request id (real Amber does); take the signer's first
         # signed-event reply by provenance.  event_msg: re-publish while
