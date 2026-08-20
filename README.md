@@ -167,8 +167,9 @@ exhausted → Kimi K3 — by setting on the vezir service:
 ```
 MILLET_SUMMARY_PRESET_FALLBACK=1
 MILLET_SUMMARY_FALLBACK_ORDER=openai
-MILLET_OPENAI_BASE_URL=https://api.moonshot.ai/v1
-MILLET_OPENAI_API_KEY=<moonshot key>
+MILLET_OPENAI_BASE_URL=https://api.kimi.com/coding/v1   # sk-kimi… keys
+# (pay-per-token platform keys use https://api.moonshot.ai/v1 instead)
+MILLET_OPENAI_API_KEY=<kimi key>
 MILLET_OPENAI_MODEL=kimi-k3
 ```
 
