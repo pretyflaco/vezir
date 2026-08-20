@@ -83,6 +83,19 @@ module include ``VEZIR_PUBLIC_URL``, ``VEZIR_GOOGLE_CLIENT_ID`` /
 ``…_SECRET[_FILE]`` / ``…_ALLOWED_DOMAIN``, ``VEZIR_RECORD_DIR``,
 ``VEZIR_SKIP_SYNC``, ``VEZIR_DELETE_AUDIO``, ``VEZIR_CADDY_ROOT_CERT_PATH``,
 and ``VEZIR_TUI_DISABLE_UPDATE_CHECK``.
+
+Summarization fallback (v0.14.0): these are **millet** env vars, not read
+by vezir code — set them on the vezir service (e.g. in
+``~/.config/environment.d/vezir.conf``) and the HOME shim passes them
+verbatim to the millet subprocess (``meet_runner._env_for_meet``).
+``MILLET_SUMMARY_PRESET_FALLBACK=1`` lets a non-``confidential`` preset
+fall back down the chain on failure (``confidential`` never falls back);
+``MILLET_SUMMARY_FALLBACK_ORDER`` overrides the chain (e.g. ``openai``);
+``MILLET_OPENAI_BASE_URL`` / ``MILLET_OPENAI_API_KEY`` /
+``MILLET_OPENAI_MODEL`` configure the generic OpenAI-compatible backend
+(e.g. ``https://api.moonshot.ai/v1`` + ``kimi-k3``).  When a fallback
+served the summary, the worker records ``<backend>/<model>`` in
+``jobs.summary_fallback`` (read from millet's ``.summary.meta.json``).
 """
 from __future__ import annotations
 

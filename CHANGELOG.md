@@ -3,6 +3,49 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.14.0 — summary fallback provenance (Claude Max exhausted → Kimi K3)
+
+Requires millet-pipeline ≥ 0.16.0 for the fallback itself; the vezir half
+only *surfaces* it.  Migration `0.14.0-summary-fallback` (idempotent,
+additive).
+
+### Added
+
+- **Opt-in summarization fallback for non-`confidential` presets.**  When
+  the server operator sets `MILLET_SUMMARY_PRESET_FALLBACK=1` on the vezir
+  service (inherited verbatim by the millet subprocess through the HOME
+  shim), millet no longer hard-fails when an explicitly requested preset's
+  backend is down or out of quota — e.g. a Claude Max subscription
+  exhausted mid-month.  It continues down the fallback chain, which the
+  operator can point at the generic OpenAI-compatible backend:
+  `MILLET_SUMMARY_FALLBACK_ORDER=openai` +
+  `MILLET_OPENAI_BASE_URL=https://api.moonshot.ai/v1` +
+  `MILLET_OPENAI_API_KEY=…` + `MILLET_OPENAI_MODEL=kimi-k3` gives a
+  Claude-Max→Kimi K3 fallback.  The `confidential` preset **never** falls
+  back — the privacy contract stays fail-loud regardless of the opt-in.
+- **`jobs.summary_fallback` column + API/TUI surfacing.**  A fallback must
+  never be silent: millet's `.summary.meta.json` sidecar now records
+  `preset` and `fallback_used`; the worker reads it after transcribe and
+  after retry-summary and stores `"<backend>/<model>"` (e.g.
+  `openai/kimi-k3`) in the new `summary_fallback` column when a fallback
+  served the summary.  Session JSON carries the field; the sessions list
+  shows a yellow `· fallback` badge and the detail screen a "summary
+  served by fallback: …" line.  NULL when the requested preset ran.
+
+### Fixed
+
+- Bad UX when Claude Max is exhausted: sessions previously ended `done`
+  with a `summary_error` and no summary at all.  With the opt-in they now
+  get a Kimi K3 summary instead, clearly labeled as a fallback.
+
+### Tests
+
+- New `tests/test_worker_summary_fallback.py` (11 tests): meta-sidecar
+  parsing (fallback/no-fallback/missing/malformed/old-millet/lang-suffixed),
+  `update_status` sentinel semantics for the new column, migration
+  idempotency, and two end-to-end `process_one` runs asserting the column
+  is set on fallback and NULL otherwise.  Suite: 974 passed.
+
 ## 0.13.1 — fast NIP-46 login
 
 Nostr sign-in drops from ~2–3 minutes to seconds of machine time plus the

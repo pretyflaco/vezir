@@ -45,6 +45,12 @@ Tables
                          completes but `millet sync` fails (e.g. DNS, git auth),
                          this field stores the failure and the job proceeds to
                          done.  The user can retry via "Sync now".
+    summary_fallback     "<backend>/<model>" of the fallback summarizer that
+                         actually produced the summary when the requested
+                         preset's backend failed and millet fell back (opt-in
+                         via MILLET_SUMMARY_PRESET_FALLBACK).  NULL when the
+                         requested preset ran or no summary was generated.
+                         Read from millet's .summary.meta.json sidecar.
     artifacts            JSON-encoded dict of artifact paths (relative to session
                          dir): txt, srt, json, summary, pdf
 
@@ -88,6 +94,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     error               TEXT,
     summary_error       TEXT,
     sync_error          TEXT,
+    summary_fallback    TEXT,
     artifacts           TEXT
 );
 
@@ -264,6 +271,11 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str) -> None:
         # (e.g. "vezir-cli/0.11.1", "okhttp/4.12.0").  Nullable; NULL for
         # pre-0.11.1 rows and any client that sends no User-Agent.
         "ALTER TABLE jobs ADD COLUMN client_agent TEXT",
+        # v0.14.0: "<backend>/<model>" of the fallback summarizer that
+        # produced the summary when the requested preset failed and millet
+        # fell back (MILLET_SUMMARY_PRESET_FALLBACK opt-in).  NULL when the
+        # requested preset ran.
+        "ALTER TABLE jobs ADD COLUMN summary_fallback TEXT",
         # v0.7.4: teams.slug (mutable display name); teams.id is now a
         # stable UUID.  Added here for DBs predating the column; the
         # 0.7.4 data migration backfills slug=id for legacy rows then
@@ -434,13 +446,14 @@ def update_status(
     artifacts: dict | None = None,
     summary_error: str | None = ...,
     sync_error: str | None = ...,
+    summary_fallback: str | None = ...,
 ) -> None:
     """Update a job's status (and optionally error / artifacts / summary_error / sync_error).
 
-    ``summary_error`` and ``sync_error`` use a sentinel default (``...``)
-    so callers can distinguish "don't touch" from "clear it to None".
-    Pass ``None`` explicitly to clear a previous error (e.g. after a
-    successful retry).
+    ``summary_error``, ``sync_error`` and ``summary_fallback`` use a
+    sentinel default (``...``) so callers can distinguish "don't touch"
+    from "clear it to None".  Pass ``None`` explicitly to clear a
+    previous error (e.g. after a successful retry).
     """
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status}")
@@ -458,6 +471,9 @@ def update_status(
         if sync_error is not ...:
             sets.append("sync_error = ?")
             params.append(sync_error)
+        if summary_fallback is not ...:
+            sets.append("summary_fallback = ?")
+            params.append(summary_fallback)
         params.append(job_id)
         c.execute(
             f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?",

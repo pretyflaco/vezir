@@ -44,6 +44,8 @@ def _status_cell(s: Session) -> str:
     parts = [base]
     if s.summary_error:
         parts.append("[red]· summary err[/red]")
+    if s.summary_fallback:
+        parts.append("[yellow]· fallback[/yellow]")
     if s.sync_error:
         parts.append("[red]· sync err[/red]")
     if s.is_personal:

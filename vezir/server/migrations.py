@@ -844,12 +844,43 @@ def migrate_0_10_0() -> dict:
     return {"version": version, "sessions_table": "ready"}
 
 
+def migrate_0_14_0() -> dict:
+    """Add ``jobs.summary_fallback`` for fallback-summarizer provenance.
+
+    Purely additive: when millet falls back to a different summary backend
+    (opt-in via ``MILLET_SUMMARY_PRESET_FALLBACK``), the worker records the
+    actual ``<backend>/<model>`` here so the UI can show the summary was
+    *not* produced by the requested preset.  NULL for all pre-existing
+    rows.  Idempotent — the column add is also part of queue schema
+    bring-up, so a fresh DB already has it and the ALTER is a no-op.
+    """
+    version = "0.14.0-summary-fallback"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        try:
+            c.execute("ALTER TABLE jobs ADD COLUMN summary_fallback TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists (fresh schema bring-up)
+        c.commit()
+
+    _mark_applied(version)
+    log.info("migration %s complete; jobs.summary_fallback ready", version)
+    return {"version": version, "summary_fallback_column": "ready"}
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
 ALL_MIGRATIONS = [
     migrate_0_6_0, migrate_0_6_2, migrate_0_7_0, migrate_0_7_2, migrate_0_7_4,
-    migrate_0_10_0,
+    migrate_0_10_0, migrate_0_14_0,
 ]
 
 

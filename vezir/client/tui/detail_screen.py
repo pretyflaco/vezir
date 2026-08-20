@@ -814,6 +814,10 @@ class DetailScreen(Screen):
             f"  preset: {s.summary_preset or '-'}",
             f"  updated: {s.updated_at or '-'}",
         ]
+        if s.summary_fallback:
+            meta_lines.append(
+                f"  summary served by fallback: {s.summary_fallback}"
+            )
         if s.client_agent:
             meta_lines.append(f"  client: {s.client_agent}")
         if s.is_personal:

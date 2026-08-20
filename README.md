@@ -160,6 +160,22 @@ back** to another backend on failure — a silent tinfoil→cloud fallback
 would defeat the Confidential preset. Set via `vezir scribe --preset …` or
 the TUI/Android dropdown.
 
+Since v0.14.0 (with millet-pipeline ≥ 0.16.0) the operator may opt in to
+fallback for the **non-confidential** presets — e.g. Claude Max quota
+exhausted → Kimi K3 — by setting on the vezir service:
+
+```
+MILLET_SUMMARY_PRESET_FALLBACK=1
+MILLET_SUMMARY_FALLBACK_ORDER=openai
+MILLET_OPENAI_BASE_URL=https://api.moonshot.ai/v1
+MILLET_OPENAI_API_KEY=<moonshot key>
+MILLET_OPENAI_MODEL=kimi-k3
+```
+
+The `confidential` preset always stays fail-loud.  A fallback is never
+silent: the session records `summary_fallback` (e.g. `openai/kimi-k3`),
+shown as a `· fallback` badge in the TUI.
+
 ## Privacy toggles (per upload)
 
 | Toggle | Default | When set | Sticky? |

@@ -250,6 +250,10 @@ class Session:
     error: str | None = None
     summary_error: str | None = None
     sync_error: str | None = None
+    # "<backend>/<model>" of the fallback summarizer that produced the
+    # summary when the requested preset's backend failed (server-side
+    # opt-in, v0.14.0+).  None when the requested preset ran.
+    summary_fallback: str | None = None
     team_id: str | None = None
     # User-Agent of the client that uploaded the session (e.g.
     # "vezir-cli/0.11.1", "okhttp/4.12.0").  None for pre-0.11.1 uploads.
@@ -275,7 +279,7 @@ class Session:
             "id", "status", "github", "title", "summary_preset",
             "auto_label_enabled", "sync_enabled", "personal",
             "created_at", "updated_at",
-            "error", "summary_error", "sync_error",
+            "error", "summary_error", "sync_error", "summary_fallback",
             "team_id", "client_agent",
         }
         kwargs = {k: d.get(k) for k in known if k in d}

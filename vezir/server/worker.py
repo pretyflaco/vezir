@@ -17,6 +17,7 @@ Pipeline per job:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue as _pyqueue
@@ -278,6 +279,33 @@ def _extract_summary_error(log_path: Path) -> str | None:
         if "Summary failed:" in line:
             return line.strip()
     return None
+
+
+def _summary_fallback_provenance(
+    session_dir: Path, lang: str | None = None,
+) -> str | None:
+    """Return "<backend>/<model>" when the summary came from a fallback.
+
+    Reads millet's ``.summary[.<lang>].meta.json`` sidecar, which records
+    ``fallback_used: true`` when the requested preset's backend failed and
+    millet fell back down the chain (millet-pipeline >= 0.16.0, opt-in via
+    MILLET_SUMMARY_PRESET_FALLBACK).  Older millet versions don't write the
+    field — treated as "no fallback".  Returns None on any read/parse
+    problem: provenance is informational, never worth failing a job over.
+    """
+    pattern = f"*.summary.{lang}.meta.json" if lang else "*.summary.meta.json"
+    metas = sorted(session_dir.glob(pattern))
+    if not metas:
+        return None
+    try:
+        meta = json.loads(metas[0].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict) or not meta.get("fallback_used"):
+        return None
+    backend = meta.get("backend") or "unknown"
+    model = meta.get("model") or "unknown"
+    return f"{backend}/{model}"
 
 
 def _session_dir(session_id: str) -> Path:
@@ -647,6 +675,17 @@ def process_one(job: dict) -> None:
 
         artifacts = _find_artifacts(sd)
 
+        # Fallback provenance: when the requested preset's backend failed
+        # and millet fell back (opt-in MILLET_SUMMARY_PRESET_FALLBACK,
+        # millet >= 0.16.0), surface which backend actually served the
+        # summary instead of silently presenting it as the requested preset.
+        summary_fallback_msg = _summary_fallback_provenance(sd)
+        if summary_fallback_msg:
+            log.info(
+                "job %s: summary generated via fallback %s (preset '%s')",
+                job_id, summary_fallback_msg, requested_preset,
+            )
+
         # 3a. empty recording?  A transcript with zero speech segments (an
         # accidental tap, dead mic, or silence) produces empty/stub artifacts.
         # Route to the terminal `empty` status and SKIP SYNC entirely — never
@@ -655,6 +694,7 @@ def process_one(job: dict) -> None:
             queue.update_status(
                 job_id, "empty", artifacts=artifacts,
                 summary_error=summary_err_msg,
+                summary_fallback=summary_fallback_msg,
             )
             log.info(
                 "job %s: transcript has no speech segments; marking empty, "
@@ -667,6 +707,7 @@ def process_one(job: dict) -> None:
             queue.update_status(
                 job_id, "needs_labeling", artifacts=artifacts,
                 summary_error=summary_err_msg,
+                summary_fallback=summary_fallback_msg,
             )
             log.info("job %s needs labeling", job_id)
             return
@@ -716,6 +757,7 @@ def process_one(job: dict) -> None:
             job_id, "done", artifacts=artifacts,
             summary_error=summary_err_msg,
             sync_error=sync_err_msg,
+            summary_fallback=summary_fallback_msg,
         )
         parts = []
         if summary_err_msg:
@@ -1004,6 +1046,7 @@ def retry_summary_for_session(
             artifacts=artifacts,
             summary_error=None,
             sync_error=sync_err_msg,
+            summary_fallback=_summary_fallback_provenance(sd, language_override),
         )
         log.info("retry-summary %s succeeded", session_id)
     except Exception as exc:
