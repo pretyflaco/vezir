@@ -285,7 +285,7 @@ def pull_team_sessions(
     # artifacts, so they're pullable too.
     pullable = [
         s for s in sessions
-        if s.status in ("done", "sync_failed") and s.artifacts
+        if s.status in ("done", "sync_failed", "imported") and s.artifacts
     ]
     if not pullable:
         print("vezir pull: no completed sessions to pull", flush=True)

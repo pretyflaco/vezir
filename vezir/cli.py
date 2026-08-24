@@ -2738,5 +2738,76 @@ def ctx_cmd(query, print_path, no_pull):
     click.echo("\n".join(parts))
 
 
+@main.command("import")
+@click.argument("session_dir", type=click.Path(exists=True))
+@click.option(
+    "--title", default=None,
+    help="Title override (frontmatter title is used when omitted).",
+)
+@click.option(
+    "--team", "team_id", default=None,
+    help="Team slug to import into (default: active team).",
+)
+def import_cmd(session_dir, title, team_id):
+    """Import a locally-processed millet session into the vezir server.
+
+    Uploads the session's artifact bundle as-is (transcript json + txt/srt/
+    summary.md/pdf + audio) without re-transcribing — for meetings that
+    were recorded and processed locally before the team existed on the
+    server.  The session is registered with status ``imported`` and
+    becomes listable in the TUI/MCP; auto-label and sync stay off until
+    you trigger them on demand.
+
+    \b
+    Example:
+        vezir import ~/meet-recordings/meeting-20260521-143125
+        vezir import <dir> --team abboard
+    """
+    from .client import uploader
+
+    server_url = config.server_url()
+    token = config.client_token()
+    team_id = team_id or config.client_team_id()
+    if not token:
+        click.echo(
+            "vezir import: error: no token configured. "
+            "Set VEZIR_TOKEN or run `vezir login`.",
+            err=True,
+        )
+        sys.exit(1)
+    if not team_id:
+        click.echo(
+            "vezir import: error: no team configured. "
+            "Set VEZIR_TEAM_ID / pass --team / configure a team.",
+            err=True,
+        )
+        sys.exit(1)
+    config.validate_token_format(token)
+
+    try:
+        paths = uploader.collect_import_files(Path(session_dir))
+    except FileNotFoundError as exc:
+        click.echo(f"vezir import: error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(
+        f"vezir import: {Path(session_dir).name} — {len(paths)} artifact(s): "
+        + ", ".join(p.name for p in paths),
+    )
+    try:
+        result = uploader.import_session(
+            server_url, token, Path(session_dir),
+            title=title, team_id=team_id,
+        )
+    except Exception as exc:
+        click.echo(f"vezir import: error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(
+        f"vezir import: session {result.get('session_id')} registered "
+        f"(status={result.get('status')}, title={result.get('title')!r})"
+    )
+
+
 if __name__ == "__main__":
     main()

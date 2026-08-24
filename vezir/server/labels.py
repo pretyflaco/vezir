@@ -271,7 +271,7 @@ def _apply_and_finalize(
     )
 
 
-_LABELABLE_STATUSES = ("needs_labeling", "done", "error", "sync_failed")
+_LABELABLE_STATUSES = ("needs_labeling", "done", "error", "sync_failed", "imported")
 
 
 # ── JSON API (native clients) ───────────────────────────────────────────────

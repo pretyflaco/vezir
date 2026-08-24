@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -722,3 +723,200 @@ def _finalize_resumable(upload_id: str, meta: dict) -> str:
         client_agent=meta.get("client_agent"),
     )
     return session_id
+
+
+# ─── Artifact-bundle import (v0.16.0) ───────────────────────────────────────
+#
+# Sessions that were recorded AND processed locally by millet before the
+# team existed on the vezir server (or never uploaded) can't be listed by
+# the TUI/MCP — the DB only knows uploaded sessions.  This endpoint imports
+# the existing artifact bundle as-is: no re-transcription, original content
+# and labels preserved verbatim.  The job lands with status "imported";
+# auto-label and sync stay off until the user triggers them on demand.
+
+
+# Uploaded filename suffix -> on-disk suffix under <session_id>.  Order
+# matters: longest/most-specific suffixes first so "x.summary.md" isn't
+# misread as a plain ".txt"/".md"-class file and the transcript json is
+# only claimed after the sidecar jsons are ruled out.
+_IMPORT_SUFFIXES: list[tuple[str, str]] = [
+    (".summary.meta.json", ".summary.meta.json"),
+    (".frontmatter.json", ".frontmatter.json"),
+    (".session.json", ".session.json"),
+    (".autoid.json", ".autoid.json"),
+    (".summary.md", ".summary.md"),
+    (".json", ".json"),        # the transcript (mandatory)
+    (".txt", ".txt"),
+    (".srt", ".srt"),
+    (".pdf", ".pdf"),
+    (".ogg", ".ogg"),
+    (".wav", ".wav"),
+    (".mp3", ".mp3"),
+]
+
+_IMPORT_AUDIO_EXTS = {".ogg", ".wav", ".mp3"}
+
+# Bundles carry several artifacts plus possibly the audio; the audio alone
+# already approaches max_upload_bytes for long meetings, so the bundle cap
+# is the audio cap plus headroom for text artifacts.
+_IMPORT_TEXT_CAP = 32 * 1024 * 1024  # per non-audio artifact
+
+
+def _classify_import_file(filename: str) -> str | None:
+    """Map an uploaded bundle filename to its canonical on-disk suffix."""
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    lower = filename.lower()
+    for suffix, out_suffix in _IMPORT_SUFFIXES:
+        if lower.endswith(suffix):
+            return out_suffix
+    return None
+
+
+def _frontmatter_meta(sdir: Path, session_id: str) -> dict:
+    """Best-effort title/date extraction from an imported frontmatter json."""
+    p = sdir / f"{session_id}.frontmatter.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    title = data.get("title")
+    if isinstance(title, str) and title.strip():
+        out["title"] = title
+    date = data.get("date")
+    if isinstance(date, str) and date.strip():
+        # millet frontmatter dates are ISO 8601; store as-is (workers and
+        # clients parse both naive and Z-suffixed forms).
+        out["created_at"] = date.strip()
+    return out
+
+
+@router.post(
+    "/api/sessions/import",
+    dependencies=[Depends(ratelimit.limit_upload)],
+)
+async def import_session_endpoint(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    title: str | None = Form(default=None),
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Import a pre-processed session's artifact bundle, verbatim.
+
+    Multipart fields:
+        files: one or more artifact files (millet session-dir contents).
+               The transcript .json is mandatory; txt/srt/summary.md/pdf/
+               frontmatter/session/autoid jsons and the audio (.ogg/.wav/
+               .mp3) are optional but recommended (audio enables clips and
+               on-demand auto-label later).
+        title: optional meeting title override (frontmatter title wins).
+
+    The job is registered with status ``imported`` — no transcription,
+    no auto-label, no sync (both off until explicitly triggered).
+    """
+    github, team_id, _admin = auth_triple
+    config.ensure_dirs()
+    max_bytes = config.max_upload_bytes()
+
+    session_id = ulid.new().str
+    sdir = config.sessions_dir() / session_id
+    config.secure_mkdir(sdir)
+
+    transcript_path: Path | None = None
+    total_written = 0
+    total_cap = max_bytes + (8 * _IMPORT_TEXT_CAP)
+    try:
+        for uf in files:
+            out_suffix = _classify_import_file(uf.filename or "")
+            if out_suffix is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unsupported or unsafe file name: {uf.filename!r}",
+                )
+            out = sdir / f"{session_id}{out_suffix}"
+            if out.exists():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"duplicate artifact type in bundle: {uf.filename!r}",
+                )
+            cap = max_bytes if out_suffix in _IMPORT_AUDIO_EXTS else _IMPORT_TEXT_CAP
+            written = 0
+            with out.open("wb") as f:
+                config.secure_chmod_file(out)
+                first_chunk = True
+                while True:
+                    chunk = await uf.read(CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if first_chunk:
+                        if out_suffix in _IMPORT_AUDIO_EXTS:
+                            _validate_magic(out_suffix, chunk)
+                        first_chunk = False
+                    written += len(chunk)
+                    total_written += len(chunk)
+                    if written > cap or total_written > total_cap:
+                        raise HTTPException(
+                            status_code=413, detail="import bundle too large",
+                        )
+                    f.write(chunk)
+            config.secure_chmod_file(out)
+            if written == 0:
+                raise HTTPException(
+                    status_code=400, detail=f"empty file: {uf.filename!r}",
+                )
+            if out_suffix == ".json":
+                transcript_path = out
+
+        if transcript_path is None:
+            raise HTTPException(
+                status_code=400,
+                detail="bundle must include the transcript .json",
+            )
+        # The transcript must be a real millet transcript (segments list),
+        # not some other json that happened to end in .json.
+        try:
+            tdata = json.loads(transcript_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise HTTPException(
+                status_code=400, detail="transcript .json is not valid JSON",
+            ) from None
+        if not isinstance(tdata, dict) or not isinstance(tdata.get("segments"), list):
+            raise HTTPException(
+                status_code=400,
+                detail="transcript .json has no 'segments' list",
+            )
+    except BaseException:
+        shutil.rmtree(sdir, ignore_errors=True)
+        raise
+
+    meta = _frontmatter_meta(sdir, session_id)
+    from .worker import _find_artifacts
+
+    artifacts = _find_artifacts(sdir)
+    await run_in_threadpool(
+        queue.import_session,
+        session_id,
+        github,
+        team_id=team_id,
+        title=title or meta.get("title"),
+        created_at=meta.get("created_at"),
+        artifacts=artifacts,
+    )
+
+    log.info(
+        "import accepted: session=%s github=%s team=%s files=%d bytes=%d "
+        "title=%r created_at=%r",
+        session_id, github, team_id, len(files), total_written,
+        title or meta.get("title"), meta.get("created_at"),
+    )
+    return {
+        "session_id": session_id,
+        "status": "imported",
+        "artifacts": artifacts,
+        "title": title or meta.get("title"),
+    }

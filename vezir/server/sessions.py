@@ -91,6 +91,7 @@ def enforce_team_visibility(
 @router.get("/api/sessions", dependencies=[Depends(ratelimit.limit_api)])
 def api_sessions(
     limit: int = 50,
+    offset: int = 0,
     since: str | None = None,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
@@ -107,17 +108,23 @@ def api_sessions(
     v0.7.0: optional ``since`` parameter (ISO 8601 date or datetime)
     filters to sessions created at or after that timestamp.  Enables
     efficient incremental ``vezir pull``.
+
+    v0.16.0: optional ``offset`` skips the first N newest sessions —
+    powers the clients' "load more" pagination (stable newest-first
+    ordering).
     """
     github, team_id, _admin = auth_triple
     # Clamp limit: a negative value becomes SQLite ``LIMIT -1`` (= no limit,
     # returns every row); an absurd value is a cheap DoS.  Bound to 1..500
-    # (L-2).
+    # (L-2).  offset is clamped to >= 0 (negative OFFSET is a SQLite error).
     limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
     return {
         "sessions": [
             _decorate(r)
             for r in queue.list_recent(
                 limit=limit,
+                offset=offset,
                 viewer_github=github,
                 viewer_team_id=team_id,
                 since=since,
@@ -220,7 +227,7 @@ def sync_now(
     if not row:
         raise HTTPException(404, "session not found")
     enforce_team_visibility(row, team_id, github, is_admin)
-    if row["status"] not in ("done", "syncing", "sync_failed"):
+    if row["status"] not in ("done", "syncing", "sync_failed", "imported"):
         raise HTTPException(
             409,
             f"session status '{row['status']}' does not admit retroactive sync; "
@@ -294,7 +301,7 @@ def retry_summary(
     if not row:
         raise HTTPException(404, "session not found")
     enforce_team_visibility(row, team_id, github, is_admin)
-    if row["status"] not in ("done", "sync_failed"):
+    if row["status"] not in ("done", "sync_failed", "imported"):
         raise HTTPException(
             409,
             f"session status '{row['status']}' does not admit summary retry; "
@@ -384,7 +391,7 @@ def auto_label(
     if not row:
         raise HTTPException(404, "session not found")
     enforce_team_visibility(row, team_id, github, is_admin)
-    if row["status"] not in ("needs_labeling", "done", "error", "sync_failed"):
+    if row["status"] not in ("needs_labeling", "done", "error", "sync_failed", "imported"):
         raise HTTPException(
             409,
             f"session status '{row['status']}' does not admit auto-labeling; "

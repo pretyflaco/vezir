@@ -270,6 +270,137 @@ def upload(
     raise RuntimeError(f"upload failed after {retries} attempts")
 
 
+# ─── Artifact-bundle import (v0.16.0) ───────────────────────────────────────
+#
+# Import a locally-processed millet session (artifacts already on disk) into
+# the vezir server without re-transcribing — for meetings that predate the
+# team on the server.  The server registers the job with status "imported".
+
+
+# Artifact suffixes we send, in preference order.  Mirrors the server's
+# _IMPORT_SUFFIXES in vezir/server/uploads.py.
+_IMPORT_SUFFIXES = [
+    ".summary.meta.json",
+    ".frontmatter.json",
+    ".session.json",
+    ".autoid.json",
+    ".summary.md",
+    ".json",
+    ".txt",
+    ".srt",
+    ".pdf",
+    ".ogg",
+    ".wav",
+    ".mp3",
+]
+
+_IMPORT_CONTENT_TYPES = {
+    **CONTENT_TYPES,
+    ".json": "application/json",
+    ".frontmatter.json": "application/json",
+    ".session.json": "application/json",
+    ".autoid.json": "application/json",
+    ".summary.meta.json": "application/json",
+    ".txt": "text/plain",
+    ".srt": "text/plain",
+    ".summary.md": "text/markdown",
+    ".pdf": "application/pdf",
+}
+
+
+def collect_import_files(session_dir: Path) -> list[Path]:
+    """Gather a millet session dir's importable artifacts (one per type).
+
+    Picks the best candidate per artifact type: exactly one file per
+    suffix class, so the server never sees a duplicate.  Returns paths
+    sorted so the transcript .json comes first (server expects it).
+
+    Raises FileNotFoundError when no transcript .json exists.
+    """
+    session_dir = Path(session_dir)
+    if not session_dir.is_dir():
+        raise FileNotFoundError(f"session dir not found: {session_dir}")
+
+    chosen: dict[str, Path] = {}
+    # Iterate deterministically; prefer exact-name matches over globs.
+    for p in sorted(session_dir.iterdir()):
+        if not p.is_file():
+            continue
+        name = p.name.lower()
+        for suffix in _IMPORT_SUFFIXES:
+            if name.endswith(suffix):
+                # First match per suffix class wins (sorted() order).
+                chosen.setdefault(suffix, p)
+                break
+
+    if ".json" not in chosen:
+        raise FileNotFoundError(
+            f"no transcript .json found in {session_dir}"
+        )
+
+    # Transcript json first, then the rest in suffix order.
+    ordered = [chosen[".json"]]
+    ordered += [chosen[s] for s in _IMPORT_SUFFIXES if s in chosen and s != ".json"]
+    return ordered
+
+
+def import_session(
+    server_url: str,
+    token: str,
+    session_dir: Path,
+    title: str | None = None,
+    timeout: float = 300.0,
+    team_id: str | None = None,
+    refresh_cb: RefreshCallback | None = None,
+    verify: bool | str | None = None,
+) -> dict:
+    """POST a session's artifact bundle to /api/sessions/import.
+
+    Returns the JSON response (session_id, status="imported", artifacts).
+    """
+    url = server_url.rstrip("/") + "/api/sessions/import"
+    paths = collect_import_files(session_dir)
+
+    tok = {"v": token}
+    refreshed_once = False
+    while True:
+        handles = []
+        try:
+            files = []
+            for p in paths:
+                fh = p.open("rb")
+                handles.append(fh)
+                ct = next(
+                    (c for s, c in _IMPORT_CONTENT_TYPES.items()
+                     if p.name.lower().endswith(s)),
+                    "application/octet-stream",
+                )
+                files.append(("files", (p.name, fh, ct)))
+            data = {}
+            if title:
+                data["title"] = title
+
+            from .api import VezirClient
+            resolved_verify = VezirClient._resolve_verify(verify)
+            with httpx.Client(timeout=timeout, verify=resolved_verify) as client:
+                resp = client.post(
+                    url, headers=_auth_headers(tok["v"], team_id),
+                    files=files, data=data,
+                )
+        finally:
+            for fh in handles:
+                fh.close()
+
+        if resp.status_code == 401 and not refreshed_once and refresh_cb is not None:
+            new = refresh_cb()
+            if new:
+                tok["v"] = new
+                refreshed_once = True
+                continue
+        resp.raise_for_status()
+        return resp.json()
+
+
 def upload_multi(
     server_url: str,
     token: str,

@@ -194,6 +194,10 @@ VALID_STATUSES = {
     # Terminal: transcription succeeded but produced no speech (0 segments).
     # Such a session must NOT sync empty artifacts to the team repo.
     "empty",
+    # Terminal: artifacts imported as-is (pre-server local millet session).
+    # Never enters the transcription pipeline; auto-label/sync are explicit,
+    # on-demand follow-ups (v0.16.0).
+    "imported",
 }
 
 
@@ -376,6 +380,47 @@ def enqueue(
                 1 if multi_audio else 0,
                 client_agent,
                 _now(), _now(),
+            ),
+        )
+
+
+def import_session(
+    job_id: str,
+    github: str,
+    *,
+    team_id: str,
+    title: str | None = None,
+    created_at: str | None = None,
+    artifacts: dict | None = None,
+) -> None:
+    """Register a pre-processed session (artifacts imported as-is).
+
+    v0.16.0: for sessions that were recorded and processed locally by
+    millet before the team existed on the vezir server.  The job is
+    inserted directly with status ``imported`` — it never enters the
+    transcription pipeline, and sync/auto-label stay opt-in (both
+    disabled) so an import is purely archival until the user acts on it.
+
+    ``created_at`` is taken from the bundle's frontmatter when available
+    so the session sorts by its real meeting date, not import time.
+    """
+    if not team_id:
+        raise ValueError("import_session requires team_id")
+    if title is not None:
+        title = title.strip()[:256] or None
+    team_id = resolve_team_uuid(team_id) or team_id
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO jobs (id, github, team_id, title, summary_preset, "
+            "auto_label_enabled, sync_enabled, personal, multi_audio, "
+            "client_agent, status, created_at, updated_at, artifacts) "
+            "VALUES (?, ?, ?, ?, NULL, 0, 0, 0, 0, ?, 'imported', ?, ?, ?)",
+            (
+                job_id, github, team_id, title,
+                "vezir-import",
+                created_at or now, now,
+                json.dumps(artifacts) if artifacts else None,
             ),
         )
 
@@ -635,6 +680,7 @@ def list_recent(
     viewer_team_id: str | None = None,
     team_id: str | None = None,
     since: str | None = None,
+    offset: int = 0,
 ) -> list[dict]:
     """Return recent jobs, filtered for visibility.
 
@@ -652,6 +698,9 @@ def list_recent(
       flag.  Used by admin-only views and the background worker (e.g.
       ``claim_next`` doesn't go through this function but is independently
       team-blind because the worker processes ALL queued jobs).
+
+    ``offset`` (v0.16.0): skip the first N rows of the (stable, newest-
+    first) ordering — powers the clients' "load more" pagination.
 
     Back-compat shims:
 
@@ -699,22 +748,22 @@ def list_recent(
                 "SELECT * FROM jobs "
                 "WHERE team_id = ? AND (personal = 0 OR github = ?)"
                 f"{since_clause} "
-                "ORDER BY created_at DESC LIMIT ?",
-                (viewer_team_id, viewer_github, *since_params, limit),
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (viewer_team_id, viewer_github, *since_params, limit, offset),
             ).fetchall()
         elif team_id and github:
             rows = c.execute(
                 "SELECT * FROM jobs WHERE team_id = ? AND github = ?"
                 f"{since_clause} "
-                "ORDER BY created_at DESC LIMIT ?",
-                (team_id, github, *since_params, limit),
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (team_id, github, *since_params, limit, offset),
             ).fetchall()
         elif team_id:
             rows = c.execute(
                 "SELECT * FROM jobs WHERE team_id = ?"
                 f"{since_clause} "
-                "ORDER BY created_at DESC LIMIT ?",
-                (team_id, *since_params, limit),
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (team_id, *since_params, limit, offset),
             ).fetchall()
         else:
             # No team scope at all — only reachable from internal callers
@@ -722,8 +771,8 @@ def list_recent(
             where = "WHERE created_at >= ?" if since else ""
             rows = c.execute(
                 f"SELECT * FROM jobs {where} "
-                "ORDER BY created_at DESC LIMIT ?",
-                (*since_params, limit),
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (*since_params, limit, offset),
             ).fetchall()
         return [dict(r) for r in rows]
 

@@ -291,7 +291,7 @@ class Session:
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in ("done", "error", "sync_failed", "empty")
+        return self.status in ("done", "error", "sync_failed", "empty", "imported")
 
     @property
     def is_active(self) -> bool:
@@ -542,6 +542,7 @@ class VezirClient:
         self,
         limit: int = 50,
         since: str | None = None,
+        offset: int = 0,
     ) -> ApiResult:
         """List sessions visible to the current bearer.
 
@@ -549,8 +550,13 @@ class VezirClient:
 
         v0.7.0: *since* (ISO 8601 date/datetime) filters to sessions
         created at or after that timestamp.
+
+        v0.16.0: *offset* skips the first N newest sessions — the TUI's
+        "load more" pages with it.
         """
         path = f"/api/sessions?limit={int(limit)}"
+        if offset:
+            path += f"&offset={int(offset)}"
         if since is not None:
             path += f"&since={quote(since, safe='')}"
         result = self._get(path)

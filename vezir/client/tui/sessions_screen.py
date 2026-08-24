@@ -36,6 +36,7 @@ _STATUS_TAGS = {
     "sync_failed": "[red][b]sync failed[/b][/red]",
     "error": "[red][b]error[/b][/red]",
     "empty": "[dim][b]empty[/b][/dim]",
+    "imported": "[blue][b]imported[/b][/blue]",
 }
 
 
@@ -67,11 +68,20 @@ def _short_time(s: str | None) -> str:
 @dataclass
 class SessionsRefreshed(Message):
     sessions: list[Session]
+    # v0.16.0: set when this is an appended page ("load more"), not a
+    # full refresh.
+    append: bool = False
 
 
 @dataclass
 class SessionsRefreshFailed(Message):
     error: str
+
+
+# Row key for the "load more" sentinel row appended when the last page
+# was full — selecting it fetches the next page of older sessions.
+_LOAD_MORE_KEY = "__load_more__"
+_PAGE_SIZE = 50
 
 
 class SessionsBody(Vertical):
@@ -108,6 +118,10 @@ class SessionsBody(Vertical):
         self._table: DataTable | None = None
         # Map row_key -> Session for O(1) lookup on selection.
         self._row_index: dict[str, Session] = {}
+        # v0.16.0 pagination: True while the server may hold older
+        # sessions beyond what's shown (last page came back full).
+        self._has_more = False
+        self._loading_more = False
 
     @classmethod
     def body_widget(cls) -> SessionsBody:
@@ -302,7 +316,13 @@ class SessionsBody(Vertical):
                 )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        session = self._row_index.get(str(event.row_key.value))
+        row_key = str(event.row_key.value)
+        # "Load more" sentinel row: fetch the next page instead of opening
+        # a session detail.
+        if row_key == _LOAD_MORE_KEY:
+            self._load_more()
+            return
+        session = self._row_index.get(row_key)
         if session is None:
             return
         from .detail_screen import DetailScreen
@@ -316,7 +336,7 @@ class SessionsBody(Vertical):
         for attempt in range(3):
             if worker.is_cancelled:
                 return
-            result = self.app.api.get_sessions(50)
+            result = self.app.api.get_sessions(_PAGE_SIZE)
             if result.is_ok():
                 self.post_message(SessionsRefreshed(sessions=result.ok))
                 return
@@ -329,12 +349,43 @@ class SessionsBody(Vertical):
                 worker.cancelled_event.wait(10)
         self.post_message(SessionsRefreshFailed(error=last_error))
 
+    def _load_more(self) -> None:
+        """Fetch the next page of older sessions (sentinel row selected)."""
+        if self._loading_more or not self._has_more:
+            return
+        self._loading_more = True
+        self.app.sub_title = "loading older sessions…"
+        self._load_more_worker(offset=len(self.sessions))
+
+    @work(thread=True, exclusive=True, group="sessions-load-more")
+    def _load_more_worker(self, offset: int) -> None:
+        result = self.app.api.get_sessions(_PAGE_SIZE, offset=offset)
+        if result.is_ok():
+            self.post_message(
+                SessionsRefreshed(sessions=result.ok, append=True),
+            )
+        else:
+            self.post_message(SessionsRefreshFailed(error=result.error_message()))
+
     def on_sessions_refreshed(self, message: SessionsRefreshed) -> None:
-        self.sessions = message.sessions
+        if message.append:
+            # De-dupe defensively: a session created between page fetches
+            # would shift the window and could repeat boundary rows.
+            known = {s.id for s in self.sessions}
+            new = [s for s in message.sessions if s.id not in known]
+            self.sessions = [*self.sessions, *new]
+        else:
+            self.sessions = message.sessions
+        # A full page means the server may have more; a short page is the end.
+        self._has_more = len(message.sessions) == _PAGE_SIZE
+        self._loading_more = False
         self._render_table()
-        self.app.sub_title = f"sessions ({len(message.sessions)})"
+        total = len(self.sessions)
+        more = "+" if self._has_more else ""
+        self.app.sub_title = f"sessions ({total}{more})"
 
     def on_sessions_refresh_failed(self, message: SessionsRefreshFailed) -> None:
+        self._loading_more = False
         self.app.sub_title = "refresh failed"
         self.query_one("#empty-state", Static).update(
             f"[red]Failed to fetch sessions: {message.error}[/red]\n"
@@ -370,3 +421,10 @@ class SessionsBody(Vertical):
                 key=s.id,
             )
             self._row_index[str(row_key.value)] = s
+        # "Load more" sentinel row at the bottom while the server may hold
+        # older sessions.  Selecting it fetches the next page.
+        if self._has_more:
+            self._table.add_row(
+                "", "[dim]▼ load more (older sessions)[/dim]", "", "",
+                key=_LOAD_MORE_KEY,
+            )
