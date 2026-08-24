@@ -440,6 +440,47 @@ class VezirClient:
             return send()
         return result
 
+    # ── transient-network retry (v0.17.0) ──
+    #
+    # Pull on a lossy path (e.g. a far VPS reaching the server over a
+    # flaky route) used to give up on the FIRST timeout, so small
+    # artifacts squeaked through while the larger PDF/summary failed.
+    # Downloads now retry transient transport errors with backoff; HTTP
+    # errors (4xx/5xx) are NOT retried here — they are deterministic.
+    _RETRY_TRIES = 4
+    _RETRY_BACKOFF = (1.0, 2.0, 4.0)  # seconds between attempts
+
+    @staticmethod
+    def _is_transient(result: ApiResult) -> bool:
+        """True for retryable transport failures (not HTTP errors)."""
+        cause = getattr(result, "network_error", None)
+        if cause is None:
+            return False
+        return isinstance(
+            cause,
+            (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.PoolTimeout,
+                httpx.RemoteProtocolError,
+            ),
+        )
+
+    def _with_retry(self, send) -> ApiResult:
+        """Run ``send()``, retrying transient network errors with backoff."""
+        import time as _time
+
+        result = send()
+        for delay in self._RETRY_BACKOFF:
+            if not self._is_transient(result):
+                break
+            log.warning("transient network error; retrying in %.0fs", delay)
+            _time.sleep(delay)
+            result = send()
+        return result
+
     def _get(self, path: str, *, timeout: httpx.Timeout | None = None) -> ApiResult:
         url = f"{self.base_url}{path}"
 
@@ -458,7 +499,7 @@ class VezirClient:
             except Exception as exc:  # json decode error
                 return ApiResult.network(exc)
 
-        return self._with_refresh(send)
+        return self._with_refresh(lambda: self._with_retry(send))
 
     def _get_bytes(self, path: str) -> ApiResult:
         url = f"{self.base_url}{path}"
@@ -475,7 +516,7 @@ class VezirClient:
                 return ApiResult.http(r.status_code, r.text[:200])
             return ApiResult.success(r.content)
 
-        return self._with_refresh(send)
+        return self._with_refresh(lambda: self._with_retry(send))
 
     def _post(
         self,
@@ -543,6 +584,10 @@ class VezirClient:
         limit: int = 50,
         since: str | None = None,
         offset: int = 0,
+        until: str | None = None,
+        q: str | None = None,
+        who: str | None = None,
+        status: str | None = None,
     ) -> ApiResult:
         """List sessions visible to the current bearer.
 
@@ -553,12 +598,24 @@ class VezirClient:
 
         v0.16.0: *offset* skips the first N newest sessions — the TUI's
         "load more" pages with it.
+
+        v0.17.0: *until* (upper date bound), *q* (title substring),
+        *who* (scribe handle or npub) and *status* (exact match) — the
+        TUI search modal's filters.
         """
         path = f"/api/sessions?limit={int(limit)}"
         if offset:
             path += f"&offset={int(offset)}"
         if since is not None:
             path += f"&since={quote(since, safe='')}"
+        if until:
+            path += f"&until={quote(until, safe='')}"
+        if q:
+            path += f"&q={quote(q, safe='')}"
+        if who:
+            path += f"&who={quote(who, safe='')}"
+        if status:
+            path += f"&status={quote(status, safe='')}"
         result = self._get(path)
         if not result.is_ok():
             return result

@@ -614,6 +614,90 @@ async def test_detail_screen_renders_without_crash(app, mock_server, monkeypatch
         assert table.row_count == 2
 
 
+async def test_sessions_filter_modal_applies_filter(app, mock_server, monkeypatch):
+    """v0.17.0: / opens the filter modal; Apply re-fetches with the
+    filter params and the sub-title shows the active filter."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["sessions"] = [
+        {"id": "01F1", "status": "done", "title": "Board", "github": "alice",
+         "created_at": "2026-05-01T10:00:00Z"},
+    ]
+    # The spy below tracks the filter kwargs the client sends.
+    async with app.run_test() as pilot:
+        from vezir.client.tui.sessions_screen import SessionsBody
+        body = SessionsBody()
+        await app.mount(body)
+        await pilot.pause(0.5)
+
+        # Spy on get_sessions to capture filter kwargs.
+        calls: list[dict] = []
+        orig = app.api.get_sessions
+
+        def spy(limit, **kw):
+            calls.append(kw)
+            return orig(limit, **kw)
+
+        monkeypatch.setattr(app.api, "get_sessions", spy)
+
+        await pilot.press("slash")
+        await pilot.pause(0.2)
+        from vezir.client.tui.sessions_screen import SessionFilterScreen
+        if not isinstance(app.screen, SessionFilterScreen):
+            # Focus must be inside the body for its bindings to fire.
+            from textual.widgets import DataTable
+            body.query_one(DataTable).focus()
+            await pilot.pause(0.1)
+            await pilot.press("slash")
+            await pilot.pause(0.2)
+        assert isinstance(app.screen, SessionFilterScreen)
+
+        # Fill the form: title contains "board".
+        from textual.widgets import Button, Input
+        app.screen.query_one("#f-q", Input).value = "board"
+        app.screen.query_one("#f-apply", Button).press()
+        await pilot.pause(0.5)
+
+        assert isinstance(app.screen, SessionsBody) or not isinstance(
+            app.screen, SessionFilterScreen,
+        )
+        # The refresh after Apply must carry the q filter.
+        assert any(c.get("q") == "board" for c in calls), f"calls: {calls}"
+        assert "title~'board'" in (app.sub_title or "")
+
+
+async def test_sessions_filter_modal_cancel_keeps_list(app, mock_server, monkeypatch):
+    """Esc cancels the filter modal without changing the list/filters."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    async with app.run_test() as pilot:
+        from vezir.client.tui.sessions_screen import SessionsBody
+        body = SessionsBody()
+        await app.mount(body)
+        await pilot.pause(0.3)
+        calls: list[dict] = []
+        orig = app.api.get_sessions
+
+        def spy(limit, **kw):
+            calls.append(kw)
+            return orig(limit, **kw)
+
+        monkeypatch.setattr(app.api, "get_sessions", spy)
+        calls.clear()
+
+        await pilot.press("slash")
+        await pilot.pause(0.2)
+        from vezir.client.tui.sessions_screen import SessionFilterScreen
+        if not isinstance(app.screen, SessionFilterScreen):
+            from textual.widgets import DataTable
+            body.query_one(DataTable).focus()
+            await pilot.pause(0.1)
+            await pilot.press("slash")
+            await pilot.pause(0.2)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        assert calls == [], f"cancel should not re-fetch: {calls}"
+        assert body._filters == {}
+
+
 async def test_sessions_load_more_sentinel(app, mock_server, monkeypatch):
     """v0.16.0: a full first page appends a '▼ load more' sentinel row;
     selecting it fetches the next page (offset) and appends it."""
@@ -668,6 +752,12 @@ async def test_sessions_load_more_sentinel(app, mock_server, monkeypatch):
         assert not any(
             str(k.value) == "__load_more__" for k in table.rows.keys()
         ), "sentinel still present after the last page"
+        # v0.17.0: cursor is restored to the last row of the previous
+        # page (not thrown back to the top) after an append.
+        assert table.cursor_coordinate.row == _PAGE_SIZE - 1, (
+            f"cursor at row {table.cursor_coordinate.row}, "
+            f"expected {_PAGE_SIZE - 1} (anchor row)"
+        )
 
 
 async def test_auto_label_modal_buttons_dismiss(app, mock_server, monkeypatch):

@@ -681,6 +681,10 @@ def list_recent(
     team_id: str | None = None,
     since: str | None = None,
     offset: int = 0,
+    until: str | None = None,
+    q: str | None = None,
+    who: str | None = None,
+    status: str | None = None,
 ) -> list[dict]:
     """Return recent jobs, filtered for visibility.
 
@@ -736,43 +740,72 @@ def list_recent(
         team_id = resolve_team_uuid(team_id) or team_id
 
     # v0.7.0: optional ``since`` filter for incremental ``vezir pull``.
-    since_clause = ""
-    since_params: tuple = ()
+    # v0.17.0: ``until`` (upper bound), ``q`` (title substring) and
+    # ``who`` (scribe substring) filters for the TUI's search modal.
+    # All parameterized; all combine with limit/offset so pagination
+    # works inside a filter.
+    extra_where = ""
+    extra_params: list = []
     if since:
-        since_clause = " AND created_at >= ?"
-        since_params = (since,)
+        extra_where += " AND created_at >= ?"
+        extra_params.append(since)
+    if until:
+        # A bare date ("2026-05-20") means the whole day: upper-bound it
+        # to end-of-day so the range is inclusive.
+        ub = until
+        if "T" not in ub:
+            ub = f"{ub}T23:59:59"
+        extra_where += " AND created_at <= ?"
+        extra_params.append(ub)
+    if q:
+        extra_where += " AND LOWER(COALESCE(title, '')) LIKE ?"
+        extra_params.append(f"%{q.lower()}%")
+    if who:
+        extra_where += " AND LOWER(COALESCE(github, '')) LIKE ?"
+        extra_params.append(f"%{who.lower()}%")
+    if status:
+        if status not in VALID_STATUSES:
+            raise ValueError(f"unknown status filter: {status!r}")
+        extra_where += " AND status = ?"
+        extra_params.append(status)
+    extra = tuple(extra_params)
 
     with _conn() as c:
         if viewer_team_id and viewer_github:
             rows = c.execute(
                 "SELECT * FROM jobs "
                 "WHERE team_id = ? AND (personal = 0 OR github = ?)"
-                f"{since_clause} "
+                f"{extra_where} "
                 "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (viewer_team_id, viewer_github, *since_params, limit, offset),
+                (viewer_team_id, viewer_github, *extra, limit, offset),
             ).fetchall()
         elif team_id and github:
             rows = c.execute(
                 "SELECT * FROM jobs WHERE team_id = ? AND github = ?"
-                f"{since_clause} "
+                f"{extra_where} "
                 "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (team_id, github, *since_params, limit, offset),
+                (team_id, github, *extra, limit, offset),
             ).fetchall()
         elif team_id:
             rows = c.execute(
                 "SELECT * FROM jobs WHERE team_id = ?"
-                f"{since_clause} "
+                f"{extra_where} "
                 "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (team_id, *since_params, limit, offset),
+                (team_id, *extra, limit, offset),
             ).fetchall()
         else:
             # No team scope at all — only reachable from internal callers
             # (tests, admin tools) that explicitly want a global view.
             where = "WHERE created_at >= ?" if since else ""
+            if extra_where:
+                if not where:
+                    where = "WHERE 1=1" + extra_where
+                else:
+                    where = where + extra_where
             rows = c.execute(
                 f"SELECT * FROM jobs {where} "
                 "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (*since_params, limit, offset),
+                (*extra, limit, offset),
             ).fetchall()
         return [dict(r) for r in rows]
 

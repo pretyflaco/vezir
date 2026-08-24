@@ -298,10 +298,47 @@ def pull_team_sessions(
         # Already pulled?  Only skip when the mapped folder actually holds
         # artifacts — a manifest entry for an artifact-less folder (or a stale
         # entry) must NOT block re-downloading the missing files.
+        #
+        # v0.17.0 self-heal: a PARTIAL pull (some artifacts failed on a lossy
+        # path) used to be pinned forever — the manifest said "pulled" and
+        # _dir_has_artifacts saw the surviving files, so re-pulls never
+        # fetched the missing ones (the "0 sessions" trap the startups bot
+        # worked around by pulling into scratch dirs).  Now: before skipping,
+        # compare against the server's artifact list and top up anything
+        # missing.
         if session.id in manifest:
             existing = output_dir / manifest[session.id]
             if existing.is_dir() and _dir_has_artifacts(existing):
-                log.debug("skip already-pulled %s", session.id)
+                missing = missing_server_artifacts(session, existing)
+                if not missing:
+                    log.debug("skip already-pulled %s", session.id)
+                    continue
+                log.info(
+                    "self-heal %s: missing %s", session.id, missing,
+                )
+                # Fall through and re-download; download_session_artifacts
+                # skips files that already exist, so only the missing
+                # artifacts are fetched.
+                dest_dir = existing
+                download_session_artifacts(api, session, dest_dir)
+                # Report what actually got fetched (saved includes files
+                # that already existed and were skipped).
+                still_missing = missing_server_artifacts(session, dest_dir)
+                fetched = len(missing) - len(still_missing)
+                if fetched > 0:
+                    pulled += 1
+                    print(
+                        f"  repaired: {dest_dir.name}  "
+                        f"[fetched {fetched} missing file(s)]",
+                        flush=True,
+                    )
+                elif still_missing:
+                    print(
+                        f"  warning: {dest_dir.name} still missing "
+                        f"{still_missing}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 continue
 
         # Check if a directory for this session already exists on disk

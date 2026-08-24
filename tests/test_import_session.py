@@ -320,3 +320,113 @@ def test_sessions_offset_negative_is_clamped(client_and_token):
     )
     assert resp.status_code == 200
     assert resp.json()["sessions"]
+
+
+# ── filters (v0.17.0: until / q / who / status) ─────────────────────────────
+
+
+def _seed_dated(client_and_token):
+    """Three sessions with distinct dates/titles/scribes for filter tests."""
+    client, token = client_and_token
+    from vezir.server import queue
+
+    rows = [
+        ("01F1", "alice", "Board Meeting", "2026-05-01T10:00:00Z", "done"),
+        ("01F2", "bob", "Weekly Sync", "2026-05-15T10:00:00Z", "needs_labeling"),
+        ("01F3", "alice", "Board Retro", "2026-06-01T10:00:00Z", "done"),
+    ]
+    for sid, gh, title, created, status in rows:
+        queue.enqueue(sid, gh, title=title, team_id="blink")
+        # Override created_at to the meeting date (enqueue stamps now()).
+        with queue._conn() as c:
+            c.execute(
+                "UPDATE jobs SET created_at = ? WHERE id = ?", (created, sid),
+            )
+        queue.update_status(sid, status)
+    return client, token
+
+
+def test_filter_until_upper_bound(client_and_token):
+    client, token = _seed_dated(client_and_token)
+    resp = client.get(
+        "/api/sessions?until=2026-05-20", headers=_bearer(token),
+    )
+    ids = [s["id"] for s in resp.json()["sessions"]]
+    assert ids == ["01F2", "01F1"]  # newest first; 01F3 excluded
+    # Bare date includes the whole day.
+    resp = client.get(
+        "/api/sessions?until=2026-05-15", headers=_bearer(token),
+    )
+    ids = [s["id"] for s in resp.json()["sessions"]]
+    assert "01F2" in ids
+
+
+def test_filter_since_until_range(client_and_token):
+    client, token = _seed_dated(client_and_token)
+    resp = client.get(
+        "/api/sessions?since=2026-05-10&until=2026-05-31",
+        headers=_bearer(token),
+    )
+    assert [s["id"] for s in resp.json()["sessions"]] == ["01F2"]
+
+
+def test_filter_q_title_substring(client_and_token):
+    client, token = _seed_dated(client_and_token)
+    resp = client.get("/api/sessions?q=board", headers=_bearer(token))
+    ids = sorted(s["id"] for s in resp.json()["sessions"])
+    assert ids == ["01F1", "01F3"]
+
+
+def test_filter_status_exact(client_and_token):
+    client, token = _seed_dated(client_and_token)
+    resp = client.get(
+        "/api/sessions?status=needs_labeling", headers=_bearer(token),
+    )
+    assert [s["id"] for s in resp.json()["sessions"]] == ["01F2"]
+    resp = client.get("/api/sessions?status=bogus", headers=_bearer(token))
+    assert resp.status_code == 400
+
+
+def test_filter_who_substring(client_and_token):
+    client, token = _seed_dated(client_and_token)
+    resp = client.get("/api/sessions?who=alic", headers=_bearer(token))
+    ids = sorted(s["id"] for s in resp.json()["sessions"])
+    assert ids == ["01F1", "01F3"]
+
+
+def test_filter_who_accepts_npub(client_and_token):
+    """An npub in the who filter resolves to the member's github handle."""
+    client, token = _seed_dated(client_and_token)
+    from vezir import nostr_nip19
+    from vezir.server import nostr_members
+
+    hexpk = "ab" * 32
+    nostr_members.add(hexpk, "alice")
+    npub = nostr_nip19.encode_npub(hexpk)
+
+    resp = client.get(
+        f"/api/sessions?who={npub}", headers=_bearer(token),
+    )
+    ids = sorted(s["id"] for s in resp.json()["sessions"])
+    assert ids == ["01F1", "01F3"]
+
+    # Unknown npub -> empty set, not an error.
+    unknown = nostr_nip19.encode_npub("cd" * 32)
+    resp = client.get(
+        f"/api/sessions?who={unknown}", headers=_bearer(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["sessions"] == []
+
+
+def test_filters_combine_with_pagination(client_and_token):
+    client, token = _seed_dated(client_and_token)
+    resp = client.get(
+        "/api/sessions?who=alice&limit=1", headers=_bearer(token),
+    )
+    page1 = [s["id"] for s in resp.json()["sessions"]]
+    resp = client.get(
+        "/api/sessions?who=alice&limit=1&offset=1", headers=_bearer(token),
+    )
+    page2 = [s["id"] for s in resp.json()["sessions"]]
+    assert page1 == ["01F3"] and page2 == ["01F1"]  # newest first, filtered

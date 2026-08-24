@@ -34,6 +34,9 @@ _HELP_TEXT = """\
   [b]o[/b]       Open selected session in web browser
   [b]f[/b]       Open local artifacts folder (auto-pulls if needed)
   [b]d[/b]       Copy local artifacts path (auto-pulls if needed)
+  [b]/[/b]       Filter sessions (date range / title / status / who)
+  [dim]When the list is longer than one page, a "▼ load more" row at the
+  bottom fetches older sessions (also inside an active filter).[/dim]
 
 [b cyan]Teams tab[/b cyan]
   Lists every team you belong to (auto-discovered from the server --

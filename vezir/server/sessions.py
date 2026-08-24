@@ -93,6 +93,10 @@ def api_sessions(
     limit: int = 50,
     offset: int = 0,
     since: str | None = None,
+    until: str | None = None,
+    q: str | None = None,
+    who: str | None = None,
+    status: str | None = None,
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Return recent sessions visible to the authenticated user.
@@ -112,6 +116,11 @@ def api_sessions(
     v0.16.0: optional ``offset`` skips the first N newest sessions —
     powers the clients' "load more" pagination (stable newest-first
     ordering).
+
+    v0.17.0: optional filters for the TUI search modal — ``until``
+    (upper date bound), ``q`` (title substring), ``who`` (scribe: github
+    handle substring, or an npub resolved to its handle), ``status``
+    (exact status match; unknown values 400).
     """
     github, team_id, _admin = auth_triple
     # Clamp limit: a negative value becomes SQLite ``LIMIT -1`` (= no limit,
@@ -119,6 +128,37 @@ def api_sessions(
     # (L-2).  offset is clamped to >= 0 (negative OFFSET is a SQLite error).
     limit = max(1, min(int(limit), 500))
     offset = max(0, int(offset))
+
+    # Validate the status filter up front (400, not a 500 from the SQL layer).
+    if status is not None and status not in queue.VALID_STATUSES:
+        raise HTTPException(400, f"invalid status filter: {status}")
+
+    # ``who`` accepts an npub (bech32 or 64-hex): resolve to the handle
+    # first.  Unknown npub -> match nothing (empty result, not an error).
+    who_handle = (who or "").strip() or None
+    if who_handle and (
+        who_handle.lower().startswith("npub1") or len(who_handle) == 64
+    ):
+        from .. import nostr_nip19
+        from . import nostr_members
+
+        try:
+            pk = nostr_nip19.to_hex(who_handle)
+        except ValueError:
+            pk = None
+        resolved = None
+        if pk:
+            for m in nostr_members.list_members():
+                if m.get("npub") == pk:
+                    resolved = m.get("github")
+                    break
+        if resolved is None:
+            # Unknown npub: no sessions can match.  Return empty directly —
+            # a sentinel LIKE pattern is unreliable (SQLite truncates
+            # patterns at NUL bytes, turning them into match-all).
+            return {"sessions": []}
+        who_handle = resolved
+
     return {
         "sessions": [
             _decorate(r)
@@ -128,6 +168,10 @@ def api_sessions(
                 viewer_github=github,
                 viewer_team_id=team_id,
                 since=since,
+                until=until,
+                q=(q or "").strip() or None,
+                who=who_handle,
+                status=status,
             )
         ],
     }

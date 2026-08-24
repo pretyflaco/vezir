@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.17.0 — session search/filters, pull robustness, cursor fix
+
+No migration.
+
+### Added
+
+- **Session filters in the TUI (`/` in the Sessions tab).**  A filter
+  modal with date range (from/to), title substring, status, and "who"
+  (github handle substring — or an npub, resolved server-side to the
+  member's handle via `nostr_members`).  Server gains matching
+  `until`/`q`/`who`/`status` params on `GET /api/sessions`; load-more
+  pagination keeps working inside an active filter.
+- **Pull robustness (retires the startups bot's wrapper hacks).**
+  * Downloads now **retry transient network errors** (connect/timeout/
+    protocol) with backoff (3 retries) instead of giving up on the first
+    timeout — the failure mode that made PDFs/summaries time out on lossy
+    paths while small files squeaked through.
+  * **Partial-pull self-heal**: a manifest-tracked session whose folder is
+    missing server-side artifacts now gets them topped up on the next
+    pull instead of being pinned forever ("0 sessions" trap).
+
+### Fixed
+
+- **Load-more no longer throws the cursor to the top.**  Selecting "▼
+  load more" now restores the cursor to the last visible row of the
+  previous page after the append, so browsing continues where it left off.
+
 ## 0.16.0 — session import + load-more pagination
 
 No migration.  New job status: ``imported``.
