@@ -320,6 +320,132 @@ def test_label_clip_accepts_named_speaker(
     assert cached.exists()
 
 
+# ── GET /label/{session_id}/segments/{speaker_id} ───────────────────────────
+# v0.15.0: on-demand full segment list for a speaker, so labelers can read
+# everything a speaker said when the single 120-char sample is not enough.
+
+
+def _write_segments_transcript(sdir: Path, session_id: str) -> None:
+    """Minimal millet transcript JSON with two speakers."""
+    import json as _json
+
+    (sdir / f"{session_id}.json").write_text(_json.dumps({
+        "language": "en",
+        "speakers": [{"id": "SPEAKER_00"}, {"id": "SPEAKER_01"}],
+        "segments": [
+            {"start": 0.0, "end": 4.0, "text": "Welcome everyone to the sync.",
+             "speaker": "SPEAKER_00"},
+            {"start": 4.0, "end": 8.0, "text": "Thanks, glad to be here.",
+             "speaker": "SPEAKER_01"},
+            {"start": 8.0, "end": 14.5, "text": "Let's talk about the roadmap.",
+             "speaker": "SPEAKER_00"},
+            {"start": 15.0, "end": 17.0, "text": "Sounds good.",
+             "speaker": "SPEAKER_01"},
+            {"start": 18.0, "end": 30.0, "text": "x" * 500,
+             "speaker": "SPEAKER_00"},
+        ],
+    }))
+
+
+def test_label_segments_returns_all_speaker_segments(client_and_token, tmp_data):
+    client, token = client_and_token
+    _seed_session(tmp_data, "01SEG", status="needs_labeling")
+    sdir = tmp_data / "sessions" / "01SEG"
+    sdir.mkdir(parents=True, exist_ok=True)
+    _write_segments_transcript(sdir, "01SEG")
+
+    resp = client.get(
+        "/label/01SEG/segments/SPEAKER_00", headers=_bearer(token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["speaker_id"] == "SPEAKER_00"
+    assert body["total"] == 3
+    assert len(body["segments"]) == 3
+    assert body["segments"][0]["text"] == "Welcome everyone to the sync."
+    assert body["segments"][0]["start"] == 0.0
+    # Long segments are capped for transport.
+    assert len(body["segments"][2]["text"]) == 240
+
+
+def test_label_segments_unknown_speaker_is_404(client_and_token, tmp_data):
+    client, token = client_and_token
+    _seed_session(tmp_data, "01SEG", status="needs_labeling")
+    sdir = tmp_data / "sessions" / "01SEG"
+    sdir.mkdir(parents=True, exist_ok=True)
+    _write_segments_transcript(sdir, "01SEG")
+
+    resp = client.get(
+        "/label/01SEG/segments/SPEAKER_99", headers=_bearer(token),
+    )
+    assert resp.status_code == 404
+
+
+def test_label_segments_requires_bearer(client_and_token):
+    client, _ = client_and_token
+    resp = client.get("/label/01SEG/segments/SPEAKER_00")
+    assert resp.status_code == 401
+
+
+def test_label_segments_rejects_unsafe_speaker_id(client_and_token):
+    client, token = client_and_token
+    resp = client.get("/label/01SEG/segments/%2e%2e", headers=_bearer(token))
+    assert resp.status_code == 400
+
+
+def test_label_segments_named_speaker_with_spaces(client_and_token, tmp_data):
+    """Post-auto-label real names (e.g. "Juan Pablo") must work."""
+    import json as _json
+
+    client, token = client_and_token
+    _seed_session(tmp_data, "01NAMED", status="done")
+    sdir = tmp_data / "sessions" / "01NAMED"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / "01NAMED.json").write_text(_json.dumps({
+        "language": "en",
+        "speakers": [{"id": "Juan Pablo"}],
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": "Hola", "speaker": "Juan Pablo"},
+        ],
+    }))
+
+    resp = client.get(
+        "/label/01NAMED/segments/Juan%20Pablo", headers=_bearer(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["segments"][0]["text"] == "Hola"
+
+
+def test_label_segments_cross_team_is_404(tmp_data):
+    """Segments carry transcript content — same cross-team rule as clips."""
+    from fastapi.testclient import TestClient
+
+    from vezir.server import auth
+    from vezir.server.app import create_app
+
+    client = TestClient(create_app(), follow_redirects=False)
+    _seed_session(tmp_data, "01TEAMX", status="needs_labeling")
+    sdir = tmp_data / "sessions" / "01TEAMX"
+    sdir.mkdir(parents=True, exist_ok=True)
+    _write_segments_transcript(sdir, "01TEAMX")
+
+    # Alice (blink member) sees her team's session's segments.
+    alice_tok = auth.issue("alice", team_id="blink")
+    resp = client.get(
+        "/label/01TEAMX/segments/SPEAKER_00",
+        headers=_bearer(alice_tok, team="blink"),
+    )
+    assert resp.status_code == 200
+
+    # Bob is a member of twentyone only; the blink session must 404.
+    bob_tok = auth.issue("bob", team_id="twentyone")
+    resp = client.get(
+        "/label/01TEAMX/segments/SPEAKER_00",
+        headers=_bearer(bob_tok, team="twentyone"),
+    )
+    assert resp.status_code == 404
+
+
 # ── POST /api/sessions/{id}/retry-summary — language override ────────────────
 
 

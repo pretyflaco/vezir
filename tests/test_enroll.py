@@ -103,9 +103,12 @@ def test_payload_ca_rejected_when_too_large(monkeypatch, tmp_path):
 
 def test_render_qr_terminal_produces_ansi_output():
     """``render_qr_terminal`` returns a multi-line string that the CLI
-    prints during ``vezir token enroll``.  segno's terminal() output
-    uses ANSI reverse-video escape sequences so the QR scans against
-    any terminal background.
+    prints during ``vezir token enroll``.
+
+    v0.15.0: segno's terminal() runs in ``compact`` mode — half-block
+    Unicode characters with NO ANSI escape sequences, so the same art is
+    safe to embed in Textual widgets (the reauth modal's QR was rendered
+    as literal ``\\x1b[7m`` garbage before).
     """
     from vezir.server.enroll import build_payload, render_qr_terminal
 
@@ -113,8 +116,9 @@ def test_render_qr_terminal_produces_ansi_output():
     art = render_qr_terminal(payload)
     assert isinstance(art, str)
     assert "\n" in art
-    # ANSI escape sequences from segno terminal().
-    assert "\x1b[" in art
+    # Compact mode: no ANSI escapes, half-block characters present.
+    assert "\x1b[" not in art
+    assert any(ch in art for ch in "▄▀█")
 
 
 def test_render_qr_terminal_handles_v2_payload(tmp_path, monkeypatch):

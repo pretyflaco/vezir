@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
@@ -72,9 +72,16 @@ class ReauthScreen(ModalScreen["dict | None"]):
         margin-bottom: 1;
         text-style: bold;
     }
+    /* v0.15.0: the QR art lives in a scrollable container so a tall QR can
+       never push the buttons out of the viewport (they are OUTSIDE this
+       container and always visible). */
+    #reauth-scroll {
+        height: auto;
+        max-height: 60%;
+        margin-bottom: 1;
+    }
     #reauth-body {
         height: auto;
-        margin-bottom: 1;
     }
     #reauth-buttons {
         height: auto;
@@ -101,14 +108,18 @@ class ReauthScreen(ModalScreen["dict | None"]):
             yield Static(
                 "Session expired — sign in again", id="reauth-title",
             )
-            yield Static(
-                "Your session couldn't be refreshed and needs a fresh "
-                "sign-in (HTTP 401).\n\n"
-                "  n  Sign in with nostr (NIP-46 / Amber / nsec.app)\n"
-                "  g  Sign in with Google\n"
-                "  Esc  Cancel\n",
-                id="reauth-body",
-            )
+            # QR/progress text lives in a scrollable container; the buttons
+            # below are pinned OUTSIDE it and always visible.
+            with VerticalScroll(id="reauth-scroll"):
+                yield Static(
+                    "Your session couldn't be refreshed and needs a fresh "
+                    "sign-in (HTTP 401).\n\n"
+                    "  n  Sign in with nostr (NIP-46 / Amber / nsec.app)\n"
+                    "  g  Sign in with Google\n"
+                    "  Esc  Cancel\n",
+                    id="reauth-body",
+                    markup=False,
+                )
             with Horizontal(id="reauth-buttons"):
                 yield Button("Nostr (n)", id="reauth-nostr", variant="primary")
                 yield Button("Google (g)", id="reauth-google")

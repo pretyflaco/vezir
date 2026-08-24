@@ -80,12 +80,16 @@ def build_payload(server_url: str, token: str, ca_pem: str | None = None) -> str
 def render_qr_terminal(payload: str) -> str:
     """Render a QR code as UTF-8 terminal art.
 
-    Uses segno's ``terminal()`` method which produces half-block
-    characters (``\\u2584 \\u2580 \\u2588``) that work in any modern
-    terminal emulator. Returns a multi-line string ready for print().
+    Uses segno's ``terminal()`` in ``compact`` mode: half-block
+    characters (``\\u2584 \\u2580 \\u2588``) with NO ANSI color escapes,
+    so the result is safe to embed in Textual widgets (v0.15.0 fixed the
+    reauth modal, where the default non-compact output's raw ``\\x1b[7m``
+    sequences rendered as literal garbage and the ~106-col block
+    overflowed the modal, clipping the buttons out of reach).
+    Returns a multi-line string ready for print().
     """
     import io
     qr = segno.make(payload, error="m")
     buf = io.StringIO()
-    qr.terminal(out=buf, border=2)
+    qr.terminal(out=buf, border=2, compact=True)
     return buf.getvalue()

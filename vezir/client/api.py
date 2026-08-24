@@ -756,6 +756,19 @@ class VezirClient:
         )
         return self._get_bytes(path)
 
+    def get_speaker_segments(self, session_id: str, speaker_id: str) -> ApiResult:
+        """Return a speaker's transcript segments for labeling decisions.
+
+        v0.15.0: ``{speaker_id, total, segments: [{start, end, text}]}`` —
+        the label screen's "More" view fetches this lazily so the main
+        label payload stays small.
+        """
+        path = (
+            f"/label/{quote(session_id, safe='')}"
+            f"/segments/{quote(speaker_id, safe='')}"
+        )
+        return self._get(path)
+
     def save_clip(
         self,
         session_id: str,

@@ -274,6 +274,9 @@ def _apply_and_finalize(
 _LABELABLE_STATUSES = ("needs_labeling", "done", "error", "sync_failed")
 
 
+# ── JSON API (native clients) ───────────────────────────────────────────────
+
+
 @router.get(
     "/api/team",
     dependencies=[Depends(ratelimit.limit_api)],
@@ -289,7 +292,64 @@ def api_team(auth_triple: tuple = Depends(auth.require_team_context)):
     return {"team": _team_handles(team_id)}
 
 
-# ── JSON API (native clients) ───────────────────────────────────────────────
+# ── speaker segments (labeling aid) ─────────────────────────────────────────
+
+_MAX_SEGMENTS = 200
+_MAX_SEGMENT_CHARS = 240
+
+
+@router.get(
+    "/label/{session_id}/segments/{speaker_id}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def label_segments(
+    session_id: str,
+    speaker_id: str,
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Return a speaker's transcript segments for labeling decisions.
+
+    The main ``GET /api/label/<id>`` payload carries only one 120-char
+    sample per speaker; this endpoint serves the full segment list on
+    demand (TUI "More" button / Android label screen), so labelers can
+    read everything a speaker said when the sample is not enough to
+    identify them.
+    """
+    github, team_id, is_admin = auth_triple
+    if not _is_safe_clip_id(speaker_id):
+        raise HTTPException(400, "invalid speaker id")
+
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    _enforce_team_visibility(row, team_id, github, is_admin)
+
+    sdir = _session_dir(session_id)
+    if not sdir.exists():
+        raise HTTPException(404, "session not found")
+
+    from millet.label import _find_session_files, _load_transcript
+
+    files = _find_session_files(sdir)
+    if "json" not in files:
+        raise HTTPException(404, "transcript not found")
+    transcript = _load_transcript(files["json"])
+
+    segs = [
+        {"start": s.start, "end": s.end,
+         "text": (s.text or "").strip()[:_MAX_SEGMENT_CHARS]}
+        for s in transcript.segments
+        if s.speaker == speaker_id
+    ]
+    if not segs:
+        raise HTTPException(404, f"speaker {speaker_id} not found in transcript")
+
+    return {
+        "speaker_id": speaker_id,
+        "total": len(segs),
+        "segments": segs[:_MAX_SEGMENTS],
+    }
+
 
 
 @router.get(

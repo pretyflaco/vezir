@@ -80,6 +80,7 @@ _HELP_TEXT = """\
 [b cyan]Label screen[/b cyan]
   [b]tab[/b]     Next field (Textual default focus traversal)
   [b]enter[/b]   Submit all labels (from any handle input)
+  [b]click ▤[/b] Show all of the speaker's transcript segments
   [b]click ▶[/b] Play / stop the speaker's audio clip
   [b]escape[/b]  Cancel
 

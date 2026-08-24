@@ -27,7 +27,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
 from ..api import LabelInfo
@@ -82,6 +82,87 @@ class SubmitDone(Message):
     error: str = ""
 
 
+@dataclass
+class SegmentsLoaded(Message):
+    speaker_id: str
+    body: dict
+
+
+@dataclass
+class SegmentsFailed(Message):
+    speaker_id: str
+    error: str
+
+
+def _fmt_ts(seconds: float) -> str:
+    """mm:ss timestamp for the segments modal."""
+    s = max(0, int(seconds))
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+class SegmentsScreen(ModalScreen[None]):
+    """Modal: all transcript segments for one speaker (labeling aid).
+
+    Opened by the "More" button on a speaker row when the single sample
+    line is not enough to identify the speaker.  Esc closes.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Close")]
+
+    CSS = """
+    SegmentsScreen { align: center middle; }
+    #segments-box {
+        width: 80%;
+        max-width: 100;
+        height: 70%;
+        max-height: 90%;
+        border: solid $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    #segments-body { height: 1fr; overflow-y: auto; }
+    """
+
+    def __init__(self, speaker_id: str, body: dict | None = None) -> None:
+        super().__init__()
+        self._speaker_id = speaker_id
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import RichLog
+
+        with Vertical(id="segments-box"):
+            yield Label(f"[b]{self._speaker_id}[/b] — all segments")
+            log_widget = RichLog(id="segments-body", markup=False, wrap=True)
+            yield log_widget
+            yield Label("[dim]Esc to close[/dim]")
+
+    def on_mount(self) -> None:
+        from textual.widgets import RichLog
+
+        log_widget = self.query_one("#segments-body", RichLog)
+        if self._body is None:
+            log_widget.write("loading…")
+            return
+        segs = self._body.get("segments") or []
+        total = self._body.get("total", len(segs))
+        for seg in segs:
+            log_widget.write(
+                f"[{_fmt_ts(seg.get('start', 0.0))}]  {seg.get('text', '')}"
+            )
+        if total > len(segs):
+            log_widget.write(f"\n… ({total - len(segs)} more segments not shown)")
+
+    def set_body(self, body: dict) -> None:
+        """Replace the loading placeholder once segments arrive."""
+        self._body = body
+        from textual.widgets import RichLog
+
+        log_widget = self.query_one("#segments-body", RichLog)
+        log_widget.clear()
+        self.on_mount()
+
+
 class LabelScreen(Screen):
     """Apply speaker labels to a session."""
 
@@ -123,6 +204,7 @@ class LabelScreen(Screen):
         content-align: left middle;
     }
     .play-btn { min-width: 10; margin: 0 1; }
+    .more-btn { min-width: 10; margin: 0 0 0 1; }
     .name-input { width: 32; }
     #actions { height: 3; margin-top: 1; }
     """
@@ -235,6 +317,35 @@ class LabelScreen(Screen):
                 f"Submit failed: {message.error}", severity="error",
             )
 
+    # ── segments modal ──
+
+    def _open_segments(self, speaker_id: str) -> None:
+        screen = SegmentsScreen(speaker_id)
+        self._segments_screen = screen
+        self.app.push_screen(screen)
+        self._segments_worker(speaker_id)
+
+    @work(thread=True, exclusive=False, group="label-segments")
+    def _segments_worker(self, speaker_id: str) -> None:
+        result = self.app.api.get_speaker_segments(self.session_id, speaker_id)
+        if result.is_ok():
+            self.post_message(SegmentsLoaded(speaker_id=speaker_id, body=result.ok))
+        else:
+            self.post_message(SegmentsFailed(
+                speaker_id=speaker_id, error=result.error_message(),
+            ))
+
+    def on_segments_loaded(self, message: SegmentsLoaded) -> None:
+        screen = getattr(self, "_segments_screen", None)
+        if screen is not None and screen._speaker_id == message.speaker_id:
+            screen.set_body(message.body)
+
+    def on_segments_failed(self, message: SegmentsFailed) -> None:
+        self.notify(
+            f"Could not load segments for {message.speaker_id}: {message.error}",
+            severity="error",
+        )
+
     # ── buttons ──
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -266,6 +377,12 @@ class LabelScreen(Screen):
             return
         if bid == "submit-btn":
             self._do_submit()
+            return
+        # "More" buttons have id "more-<row-index>".
+        if bid and bid.startswith("more-"):
+            speaker_id = self._row_sid.get(bid[len("more-"):])
+            if speaker_id is not None:
+                self._open_segments(speaker_id)
             return
         # Play buttons have id "play-<row-index>"; recover the real speaker
         # id (which may contain spaces) from the row map.
@@ -343,6 +460,15 @@ class LabelScreen(Screen):
                 id_label = f"{sid} [dim]({round(confidence * 100)}%)[/dim]"
             row.mount(Label(id_label, classes="speaker-id"))
             row.mount(Label(sample, classes="sample"))
+            # "More" opens a modal with ALL of the speaker's segments —
+            # the single 120-char sample is often not enough to identify
+            # a speaker.  Lazy: fetched on demand from the server.
+            more_btn = Button(
+                "▤ More",
+                id=f"more-{tok}",
+                classes="more-btn",
+            )
+            row.mount(more_btn)
             play_btn = Button(
                 "▶ Play",
                 id=f"play-{tok}",

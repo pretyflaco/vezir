@@ -63,6 +63,15 @@ def mock_server(monkeypatch):
             if info is not None:
                 return httpx.Response(200, json=info)
             return httpx.Response(404, text="not found")
+        # v0.15.0: /label/{id}/segments/{speaker} for the label screen's
+        # "More" modal.  Tests populate state["segments"][(sid, speaker)].
+        if "/segments/" in p:
+            parts = p.strip("/").split("/")
+            key = (parts[1], parts[-1])
+            segs = state.get("segments", {}).get(key)
+            if segs is not None:
+                return httpx.Response(200, json=segs)
+            return httpx.Response(404, text="not found")
         if p == "/health":
             return httpx.Response(200, json={"ok": True})
         return httpx.Response(200, json={"ok": True})
@@ -661,6 +670,57 @@ async def test_label_screen_renders_without_crash(app, mock_server, monkeypatch)
             raise AssertionError(
                 f"speaker rows never populated; final count: {len(inputs)}"
             )
+
+
+async def test_label_screen_more_button_opens_segments(app, mock_server, monkeypatch):
+    """v0.15.0: the label screen's '▤ More' button opens a modal listing
+    all of the speaker's segments (fetched lazily from the server)."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["label_info"]["01LABEL"] = {
+        "session_id": "01LABEL",
+        "status": "needs_labeling",
+        "speakers": [
+            {"id": "SPEAKER_00", "channel": "mic", "sample_text": "Hi"},
+        ],
+        "team": ["alice"],
+        "audio_available": False,
+    }
+    mock_server.setdefault("segments", {})[("01LABEL", "SPEAKER_00")] = {
+        "speaker_id": "SPEAKER_00",
+        "total": 2,
+        "segments": [
+            {"start": 0.0, "end": 4.0, "text": "Welcome everyone to the sync."},
+            {"start": 8.0, "end": 14.5, "text": "Let's talk about the roadmap."},
+        ],
+    }
+    async with app.run_test() as pilot:
+        from vezir.client.tui.label_screen import LabelScreen
+        await app.push_screen(LabelScreen(session_id="01LABEL"))
+        # Wait for the speaker row to render.
+        from textual.widgets import Input
+        for _ in range(20):
+            await pilot.pause(0.1)
+            if app.screen.query(Input):
+                break
+        await pilot.click("#more-0")
+        await pilot.pause(0.1)
+        assert app.screen.__class__.__name__ == "SegmentsScreen"
+        # Segments arrive via worker; poll the RichLog content.
+        from textual.widgets import RichLog
+        for _ in range(20):
+            await pilot.pause(0.1)
+            log_widget = app.screen.query_one("#segments-body", RichLog)
+            text = "\n".join("".join(s.text for s in line._segments)
+                             for line in log_widget.lines)
+            if "roadmap" in text:
+                break
+        else:
+            raise AssertionError(f"segments never rendered; got: {text!r}")
+        assert "[00:00]" in text and "Welcome everyone" in text
+        # Esc closes the modal.
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert app.screen.__class__.__name__ == "LabelScreen"
 
 
 async def test_label_screen_inputs_have_visible_text_area(
