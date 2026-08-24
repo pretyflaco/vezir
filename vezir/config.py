@@ -1181,6 +1181,72 @@ def sanitize_title(title: str) -> str:
     return slug[:60] if slug else ""
 
 
+def artifact_title_slug(title: str) -> str:
+    """Lowercase filesystem-safe slug for artifact filenames.
+
+    Unlike :func:`sanitize_title` (which uppercases for meeting-folder
+    names), artifact filenames use the lowercase form:
+
+      * Replace any run of non-alphanumeric characters with a single
+        underscore.
+      * Lowercase and strip leading/trailing underscores.
+      * Cap at 60 characters.
+
+    >>> artifact_title_slug("Brainstorm Phoenix")
+    'brainstorm_phoenix'
+    >>> artifact_title_slug("  Weekly Sync / @blink!  ")
+    'weekly_sync_blink'
+    """
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", title.strip()).lower()
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug[:60].rstrip("_") if slug else ""
+
+
+def artifact_stem(date_yyyymmdd: str, title: str | None) -> str:
+    """Build the ``YYYYMMDD_<slug>`` stem used for downloaded artifacts.
+
+    Falls back to ``<date>_recording`` when the title slug is empty, so
+    untitled sessions still produce sortable filenames.
+
+    >>> artifact_stem("20260824", "Brainstorm Phoenix")
+    '20260824_brainstorm_phoenix'
+    >>> artifact_stem("20260824", "")
+    '20260824_recording'
+    """
+    slug = artifact_title_slug(title or "")
+    if not slug:
+        slug = "recording"
+    return f"{date_yyyymmdd}_{slug}"
+
+
+# Artifact type suffixes matched against millet's stored filenames; first
+# match wins.  The mapped extension is appended to the artifact stem.
+# The structured-JSON entry must come AFTER .frontmatter.json to avoid
+# shadowing it.
+ARTIFACT_EXTENSIONS: list[tuple[str, str]] = [
+    (".summary.md", ".md"),
+    (".frontmatter.json", ".frontmatter.json"),
+    (".srt", ".srt"),
+    (".txt", ".txt"),
+    (".pdf", ".pdf"),
+    (".json", ".json"),
+]
+
+
+def artifact_friendly_name(server_filename: str, date_yyyymmdd: str, title: str | None) -> str:
+    """Friendly ``YYYYMMDD_<title>.<ext>`` name for a stored artifact.
+
+    Shared by the download paths: the client renames files on save and
+    the server mirrors the same logic in the ``Content-Disposition``
+    filename.  Unknown artifact types keep their stored name.
+    """
+    stem = artifact_stem(date_yyyymmdd, title)
+    for suffix, ext in ARTIFACT_EXTENSIONS:
+        if server_filename.endswith(suffix):
+            return f"{stem}{ext}"
+    return server_filename
+
+
 def rename_session_dir_with_title(session_dir: Path, title: str | None) -> Path:
     """Append ``_TITLE`` to a ``meeting-YYYYMMDD-HHMMSS`` directory name.
 

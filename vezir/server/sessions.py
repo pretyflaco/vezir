@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -166,7 +167,16 @@ def artifact(
     p = sdir / name
     if not p.exists():
         raise HTTPException(404, "artifact not found")
-    return FileResponse(p, filename=name)
+    # Friendly download name (v0.14.1): YYYYMMDD_<title_slug>.<ext> so
+    # browser/Android downloads don't get the ULID-based stored name.
+    # Best effort: fall back to today's date when created_at is unusable.
+    try:
+        clean = str(row.get("created_at") or "").replace("Z", "+00:00")
+        date_str = datetime.fromisoformat(clean).astimezone().strftime("%Y%m%d")
+    except (ValueError, TypeError):
+        date_str = datetime.now().strftime("%Y%m%d")
+    friendly = config.artifact_friendly_name(name, date_str, row.get("title"))
+    return FileResponse(p, filename=friendly)
 
 
 class _SyncBody(BaseModel):

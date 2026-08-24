@@ -162,20 +162,20 @@ def test_pull_rejects_a_path_in_an_attachment_name(tmp_path):
 
 
 def test_pull_survives_a_server_without_attachments(tmp_path):
-    from vezir.client.artifacts import download_session_artifacts
+    from vezir.client.artifacts import _friendly_name, download_session_artifacts
 
     saved = download_session_artifacts(_Api(None), _Session(), tmp_path)
-    assert (tmp_path / "summary.md").exists()
+    assert (tmp_path / _friendly_name(_Session(), "01PULL.summary.md")).exists()
     assert not (tmp_path / "attachments").exists()
     assert saved
 
 
 def test_pull_survives_a_failed_attachment_download(tmp_path):
-    from vezir.client.artifacts import download_session_artifacts
+    from vezir.client.artifacts import _friendly_name, download_session_artifacts
 
     api = _Api([{"name": "slides.pdf"}], fail_download=True)
     saved = download_session_artifacts(api, _Session(), tmp_path)
-    assert (tmp_path / "summary.md").exists()
+    assert (tmp_path / _friendly_name(_Session(), "01PULL.summary.md")).exists()
     assert not (tmp_path / "attachments" / "slides.pdf").exists()
     assert saved
 

@@ -8,50 +8,55 @@ Downloads the tracked artifacts (summary, transcript, PDF, etc.) from
 the server into a local directory alongside the raw audio recording.
 
 Artifact files are renamed from ULID-based server names to human-friendly
-names so ``ls`` output is immediately useful:
+``YYYYMMDD_<title_slug>`` names so ``ls`` output is immediately useful:
 
     ~/vezir-meetings/blink/meeting-20260526-143041_ABBOARD/
-        summary.md             <- 01KSGN2X...summary.md
-        transcript.txt         <- 01KSGN2X...txt
-        transcript.srt         <- 01KSGN2X...srt
-        transcript.pdf         <- 01KSGN2X...pdf
-        transcript.json        <- 01KSGN2X...json
-        frontmatter.json       <- 01KSGN2X...frontmatter.json
-        session.json           <- metadata written by this module
-        attachments/slides.pdf <- user-supplied material, name kept verbatim
+        20260526_ab_board.md          <- 01KSGN2X...summary.md
+        20260526_ab_board.txt         <- 01KSGN2X...txt
+        20260526_ab_board.srt         <- 01KSGN2X...srt
+        20260526_ab_board.pdf         <- 01KSGN2X...pdf
+        20260526_ab_board.json        <- 01KSGN2X...json
+        20260526_ab_board.frontmatter.json
+        session.json                  <- metadata written by this module
+        attachments/slides.pdf        <- user-supplied material, name kept verbatim
         meeting-20260526-143041.wav   (raw audio, only for local recordings)
+
+The date comes from the session's ``created_at`` converted to the local
+timezone; untitled sessions fall back to ``<date>_recording``.
 """
 from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
+from .. import config as cfg
 from .api import Session, VezirClient
 
 log = logging.getLogger("vezir.client.artifacts")
 
-# Map artifact server filenames to human-friendly local names.
-# The key suffix is matched against the server filename; first match wins.
-_FRIENDLY_NAMES: list[tuple[str, str]] = [
-    (".summary.md", "summary.md"),
-    (".frontmatter.json", "frontmatter.json"),
-    (".srt", "transcript.srt"),
-    (".txt", "transcript.txt"),
-    (".pdf", "transcript.pdf"),
-    # The structured JSON transcript (full segments + speaker data).
-    # Must come AFTER .frontmatter.json to avoid shadowing.
-    (".json", "transcript.json"),
-]
+
+def _artifact_date(session: Session) -> str:
+    """Session date as ``YYYYMMDD`` in the local timezone.
+
+    Parses ``created_at`` (ISO 8601 UTC) like ``pull.py``'s directory
+    naming; falls back to today when missing/unparsable.
+    """
+    ts = session.created_at or ""
+    try:
+        clean = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean).astimezone()
+    except (ValueError, TypeError):
+        dt = datetime.now()
+    return dt.strftime("%Y%m%d")
 
 
-def _friendly_name(server_filename: str) -> str:
+def _friendly_name(session: Session, server_filename: str) -> str:
     """Convert a ULID-prefixed server filename to a human-friendly name."""
-    for suffix, friendly in _FRIENDLY_NAMES:
-        if server_filename.endswith(suffix):
-            return friendly
-    # Unknown artifact type -- keep the original name.
-    return server_filename
+    return cfg.artifact_friendly_name(
+        server_filename, _artifact_date(session), session.title,
+    )
 
 
 def _download_attachments(
@@ -127,7 +132,7 @@ def download_session_artifacts(
     saved: list[Path] = []
 
     for _key, server_name in session.artifacts.items():
-        friendly = _friendly_name(server_name)
+        friendly = _friendly_name(session, server_name)
         dest = dest_dir / friendly
         if dest.exists() and not overwrite:
             log.debug("skip existing %s", dest)

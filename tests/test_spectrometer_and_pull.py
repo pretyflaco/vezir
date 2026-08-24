@@ -330,9 +330,12 @@ def test_dir_has_artifacts(tmp_path):
 
 
 def test_missing_server_artifacts(tmp_path):
+    from vezir.client.artifacts import _friendly_name
     from vezir.client.pull import missing_server_artifacts
 
     class _S:
+        title = "Weekly"
+        created_at = "2026-08-15T10:00:00Z"
         artifacts = {
             "summary": "01X.summary.md",
             "txt": "01X.txt",
@@ -341,11 +344,11 @@ def test_missing_server_artifacts(tmp_path):
 
     rec = tmp_path / "rec"
     rec.mkdir()
-    (rec / "summary.md").write_text("x")  # only summary present locally
+    # Summary already present locally under its dated friendly name.
+    (rec / _friendly_name(_S(), "01X.summary.md")).write_text("x")
     missing = missing_server_artifacts(_S(), rec)
-    assert "summary.md" not in missing
-    assert "transcript.txt" in missing
-    assert "transcript.pdf" in missing
+    assert len(missing) == 2
+    assert all(n.endswith((".txt", ".pdf")) for n in missing)
 
 
 def test_pull_repulls_when_manifest_folder_lacks_artifacts(tmp_path, monkeypatch):

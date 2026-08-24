@@ -8,15 +8,15 @@ Output layout::
 
     ~/vezir-meetings/<team>/
         meeting-20260525-223319_BACK_2_BACK/
-            summary.md
-            transcript.txt
-            transcript.srt
-            transcript.pdf
-            frontmatter.json
+            20260525_back_2_back.md
+            20260525_back_2_back.txt
+            20260525_back_2_back.srt
+            20260525_back_2_back.pdf
+            20260525_back_2_back.frontmatter.json
             session.json       # metadata (session_id, title, github, ...)
         meeting-20260526-014608_BLINK_MEETING/
             meeting-20260526-014608.wav   # raw audio (only local recordings)
-            summary.md                    # downloaded artifacts
+            20260526_blink_meeting.pdf    # downloaded artifacts
             ...
 
 Idempotent: sessions already pulled (tracked in ``.pull-manifest.json``)
@@ -101,8 +101,9 @@ def record_uploaded_session(
 def _dir_has_artifacts(session_dir: Path) -> bool:
     """True if the folder contains downloaded meeting artifacts.
 
-    Artifacts are saved under friendly names (``summary.md``,
-    ``transcript.{txt,srt,pdf,json}``).  A folder with only the audio +
+    Artifacts are saved under friendly names (``YYYYMMDD_<title>.md``,
+    ``YYYYMMDD_<title>.{txt,srt,pdf,json}``; legacy pulls may still hold
+    ``summary.md`` / ``transcript.*``).  A folder with only the audio +
     ``session.json`` stub (written at upload time) does NOT count — the
     artifacts still need downloading.
     """
@@ -110,16 +111,24 @@ def _dir_has_artifacts(session_dir: Path) -> bool:
         return False
     if (session_dir / "summary.md").exists():
         return True
-    return any(session_dir.glob("transcript.*"))
+    if any(session_dir.glob("transcript.*")):
+        return True
+    # v0.14.1+ dated names: <date>_<slug>.<ext>.  Match on the date prefix
+    # so we don't need the session to enumerate.
+    return any(
+        p.name[:8].isdigit() and len(p.name) > 9 and p.name[8] == "_"
+        for p in session_dir.iterdir()
+        if p.is_file()
+    )
 
 
 def missing_server_artifacts(session: Session, session_dir: Path) -> list[str]:
     """Return the friendly artifact filenames the server has but disk lacks."""
     if not session_dir.is_dir():
-        return [_friendly_name(n) for n in (session.artifacts or {}).values()]
+        return [_friendly_name(session, n) for n in (session.artifacts or {}).values()]
     missing = []
     for server_name in (session.artifacts or {}).values():
-        friendly = _friendly_name(server_name)
+        friendly = _friendly_name(session, server_name)
         if not (session_dir / friendly).exists():
             missing.append(friendly)
     return missing
