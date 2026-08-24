@@ -54,10 +54,11 @@ def list_sessions(limit: int = 20, status: str | None = None) -> list[dict]:
     """List recent vezir sessions (team meetings) with id/title/status/date.
 
     Use the session ``id`` with get_summary / get_transcript to pull the
-    meeting's content as context.
+    meeting's content as context.  ``limit`` may go up to 500 (the
+    server's clamp); raise it to reach older sessions.
     """
     api = _client()
-    result = api.get_sessions(limit=min(max(limit, 1), 200))
+    result = api.get_sessions(limit=min(max(limit, 1), 500))
     if not result.is_ok():
         raise RuntimeError(f"could not list sessions: {result.error_message()}")
     sessions = result.ok
@@ -67,9 +68,12 @@ def list_sessions(limit: int = 20, status: str | None = None) -> list[dict]:
 
 
 def search_sessions(query: str, limit: int = 20) -> list[dict]:
-    """Search vezir sessions by title substring (case-insensitive)."""
+    """Search vezir sessions by title substring (case-insensitive).
+
+    Searches up to 500 recent sessions (the server's clamp).
+    """
     api = _client()
-    result = api.get_sessions(limit=200)
+    result = api.get_sessions(limit=500)
     if not result.is_ok():
         raise RuntimeError(f"could not list sessions: {result.error_message()}")
     q = (query or "").strip().lower()

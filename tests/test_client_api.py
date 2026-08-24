@@ -379,6 +379,29 @@ def test_retry_summary_with_preset_includes_body(mocked_client):
     assert "high-quality" in seen["body"]
 
 
+def test_get_sessions_sends_offset(mocked_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("offset") == "50"
+        assert request.url.params.get("limit") == "50"
+        return httpx.Response(200, json={"sessions": []})
+
+    client = mocked_client(handler)
+    client.get_sessions(50, offset=50).unwrap()
+
+
+def test_get_sessions_omits_offset_on_first_page(mocked_client):
+    """offset=0 (first page) omits the param — old servers unaffected."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"sessions": []})
+
+    client = mocked_client(handler)
+    client.get_sessions(50).unwrap()
+    assert "offset" not in seen["params"]
+
+
 def test_auto_label_path_and_body(mocked_client):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

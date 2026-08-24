@@ -41,7 +41,18 @@ def mock_server(monkeypatch):
     def default_handler(request: httpx.Request) -> httpx.Response:
         p = request.url.path
         if p == "/api/sessions":
-            return httpx.Response(200, json={"sessions": state["sessions"]})
+            # v0.16.0: honor limit+offset so load-more tests can page.
+            try:
+                offset = int(request.url.params.get("offset", "0"))
+            except ValueError:
+                offset = 0
+            try:
+                limit = int(request.url.params.get("limit", "50"))
+            except ValueError:
+                limit = 50
+            return httpx.Response(
+                200, json={"sessions": state["sessions"][offset:offset + limit]},
+            )
         if p == "/api/me":
             return httpx.Response(200, json={
                 "github": "tester",
@@ -601,6 +612,62 @@ async def test_detail_screen_renders_without_crash(app, mock_server, monkeypatch
         # Artifact table populated.
         table = app.screen.query_one("#artifacts-table", DataTable)
         assert table.row_count == 2
+
+
+async def test_sessions_load_more_sentinel(app, mock_server, monkeypatch):
+    """v0.16.0: a full first page appends a '▼ load more' sentinel row;
+    selecting it fetches the next page (offset) and appends it."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    from vezir.client.tui.sessions_screen import _PAGE_SIZE, SessionsBody
+
+    # One full page + one straggler: sentinel appears, then disappears.
+    mock_server["sessions"] = [
+        {"id": f"01S{i:03d}", "status": "done", "title": f"m{i}",
+         "github": "alice", "created_at": "2026-08-24T10:00:00Z"}
+        for i in range(_PAGE_SIZE + 1)
+    ]
+
+    # Boot the app and mount a SessionsBody directly (avoids tab plumbing).
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        from textual.widgets import DataTable
+        body = SessionsBody()
+        await app.mount(body)
+        await pilot.pause(0.2)
+        table = body.query_one(DataTable)
+        for _ in range(30):
+            await pilot.pause(0.1)
+            if table.row_count >= _PAGE_SIZE:
+                break
+        else:
+            raise AssertionError(f"first page never rendered ({table.row_count})")
+
+        assert table.row_count == _PAGE_SIZE + 1  # 50 sessions + sentinel
+        sentinel = next(
+            (k for k in table.rows.keys() if str(k.value) == "__load_more__"),
+            None,
+        )
+        assert sentinel is not None, "sentinel row missing after full page"
+
+        # Selecting the sentinel fetches page 2 (offset=50) and appends.
+        await pilot.pause(0.1)
+        # Drive the same path as a click/enter on the row.
+        body.on_data_table_row_selected(
+            DataTable.RowSelected(table, _PAGE_SIZE, sentinel)
+        )
+        for _ in range(30):
+            await pilot.pause(0.1)
+            if not any(
+                str(k.value) == "__load_more__" for k in table.rows.keys()
+            ):
+                break
+        assert table.row_count == _PAGE_SIZE + 1, (
+            f"expected {_PAGE_SIZE + 1} rows after last page, "
+            f"got {table.row_count}"
+        )
+        assert not any(
+            str(k.value) == "__load_more__" for k in table.rows.keys()
+        ), "sentinel still present after the last page"
 
 
 async def test_auto_label_modal_buttons_dismiss(app, mock_server, monkeypatch):

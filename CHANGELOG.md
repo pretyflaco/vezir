@@ -3,6 +3,38 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.16.0 — session import + load-more pagination
+
+No migration.  New job status: ``imported``.
+
+### Added
+
+- **Session import (`POST /api/sessions/import`, `vezir import <dir>`).**
+  Sessions that were recorded AND processed locally by millet before the
+  team existed on the vezir server couldn't be listed anywhere — the DB
+  only knows uploaded sessions.  Import uploads the existing artifact
+  bundle verbatim (transcript json mandatory; txt/srt/summary.md/pdf/
+  frontmatter and the audio .ogg/.wav/.mp3 optional — audio enables clips
+  and on-demand auto-label later), with title and original meeting date
+  taken from the frontmatter.  The job lands as ``imported`` — never
+  enters the transcription pipeline; sync and auto-label stay off until
+  triggered on demand (both gates, plus labeling and segments, now admit
+  ``imported``).  Pullable via `vezir pull` / `ctx` / MCP like any other
+  finished session.
+- **"Load more" pagination.**  The sessions API gains an ``offset``
+  parameter (clamped ≥0), the TUI sessions list appends a "▼ load more"
+  sentinel row when a full page comes back (selecting it fetches the next
+  50 older sessions), and the MCP `list_sessions`/`search_sessions` caps
+  rise 200 → 500 to match the server clamp.  Teams with more than 50
+  sessions (e.g. blink at ~390) can now reach their full history.
+
+### Notes
+
+- The TUI/Android/mcp listings previously had no way to show more than
+  50 sessions — that cap, not retention, was hiding older sessions for
+  large teams.  (Separately, pre-server locally-processed meetings were
+  never in the DB at all; that's what the import fixes.)
+
 ## 0.15.1 — MCP get_transcript returns the full transcript
 
 Client-only fix; no migration.
