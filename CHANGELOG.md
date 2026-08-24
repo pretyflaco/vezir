@@ -3,6 +3,41 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.15.0 — more segments for labeling, QR fix, MCP + ctx
+
+No migration.
+
+### Fixed
+
+- **Reauth modal QR was unscannable and froze the TUI.**
+  `render_qr_terminal` used segno's non-compact mode: raw ANSI color
+  escapes (`\x1b[7m…`) rendered as literal garbage inside the modal's
+  `Static`, and the ~106-col × 53-row block overflowed the non-scrollable
+  modal, clipping the buttons out of reach (only Esc worked).  Now renders
+  compact half-block Unicode (no ANSI, ~53 cols), and the QR body lives in
+  a scrollable container with the button row pinned outside.  Regression
+  covered by a pilot test that asserts no ESC bytes, viewport fit, and
+  clickable buttons.
+
+### Added
+
+- **"More" segments view for speaker labeling.**  The label payload still
+  carries one 120-char sample per speaker; a new
+  `GET /label/{id}/segments/{speaker}` endpoint serves that speaker's
+  full transcript segments on demand (capped at 200 segments / 240 chars
+  each, `total` reports the real count).  TUI label screen gains a
+  `▤ More` button per row opening a scrollable, timestamped modal;
+  vezir-android 0.11.1 gets the same on its label screen.
+- **`vezir mcp` — MCP server for AI harnesses** (optional `[mcp]` extra).
+  Read-only stdio server exposing `list_sessions`, `search_sessions`,
+  `get_summary`, `get_transcript` over the existing client API and config
+  (teams.json / VEZIR_TOKEN / VEZIR_TEAM_ID).  Wire into opencode:
+  `"mcp": {"vezir": {"type": "local", "command": ["vezir", "mcp"]}}`.
+- **`vezir ctx <id-or-title>`** — pull a session (unless `--no-pull`) and
+  print a concatenated context doc (header + summary + transcript) to
+  stdout, or just the artifacts dir with `--path`.  Universal harness
+  glue: `vezir ctx brainstorm | opencode run "…"`.
+
 ## 0.14.3 — auto-label modal buttons were inert (TUI)
 
 ### Fixed

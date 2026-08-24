@@ -2603,5 +2603,140 @@ def pull_cmd(server_url, token, limit, since, session_id, output_dir):
     sys.exit(0 if pulled >= 0 else 1)
 
 
+# ── mcp + ctx (v0.15.0: harness context integration) ────────────────────────
+
+
+@main.command("mcp")
+def mcp_cmd():
+    """Run the vezir MCP server (stdio) for AI harnesses.
+
+    Exposes read-only tools (list_sessions, search_sessions, get_summary,
+    get_transcript) over the Model Context Protocol so opencode / Claude
+    Code / other harnesses can pull meeting context directly.  Requires
+    the 'mcp' extra:  pip install 'vezir[mcp]'
+
+    opencode config (~/.config/opencode/opencode.json):
+        "mcp": {"vezir": {"type": "local", "command": ["vezir", "mcp"]}}
+    """
+    from .client.mcp_server import serve
+
+    serve()
+
+
+@main.command("ctx")
+@click.argument("query")
+@click.option(
+    "--path", "print_path", is_flag=True, default=False,
+    help="Print only the local artifacts directory path (no content).",
+)
+@click.option(
+    "--no-pull", "no_pull", is_flag=True, default=False,
+    help="Don't pull from the server if the session isn't on disk yet.",
+)
+def ctx_cmd(query, print_path, no_pull):
+    """Print a session's artifacts as one context document for a harness.
+
+    QUERY is a session id or a title substring (e.g. "brainstorm phoenix").
+    The session is pulled to local disk first (unless --no-pull), then a
+    concatenated context document (header + summary + transcript) is
+    written to stdout:
+
+        vezir ctx "brainstorm phoenix" | opencode run "..."
+        opencode run "$(vezir ctx 01KSG...)"           # inline as prompt
+        vezir ctx 01KSG... --path                      # just the dir path
+    """
+    from .client import pull as pull_mod
+    from .client.api import VezirClient
+
+    server_url = config.server_url()
+    token = config.client_token()
+    team_id = config.client_team_id()
+    if not token:
+        click.echo(
+            "vezir ctx: error: no token configured. "
+            "Set VEZIR_TOKEN or run `vezir login`.",
+            err=True,
+        )
+        sys.exit(1)
+    if not team_id:
+        click.echo(
+            "vezir ctx: error: no team configured. "
+            "Set VEZIR_TEAM_ID or configure a team.",
+            err=True,
+        )
+        sys.exit(1)
+    config.validate_token_format(token)
+
+    api = VezirClient(server_url, token, team_id=team_id)
+
+    # Resolve query -> session (id prefix, else title substring).
+    result = api.get_sessions(limit=200)
+    if not result.is_ok():
+        click.echo(
+            f"vezir ctx: failed to list sessions: {result.error_message()}",
+            err=True,
+        )
+        sys.exit(1)
+    q = query.strip().lower()
+    matches = [
+        s for s in result.ok
+        if s.id.lower().startswith(q) or q in (s.title or "").lower()
+    ]
+    if not matches:
+        click.echo(f"vezir ctx: no session matches {query!r}", err=True)
+        sys.exit(1)
+    if len(matches) > 1:
+        click.echo(
+            f"vezir ctx: {query!r} matches {len(matches)} sessions; "
+            "be more specific:",
+            err=True,
+        )
+        for s in matches[:10]:
+            click.echo(f"  {s.id}  {s.created_at}  {s.title}", err=True)
+        sys.exit(1)
+    session = matches[0]
+
+    # Ensure artifacts are on disk (idempotent pull of just this session).
+    # Pull progress goes to stdout normally; here it must not pollute the
+    # context document, so redirect it to stderr.
+    out = config.recordings_dir(team_id=team_id)
+    if not no_pull:
+        import contextlib
+        with contextlib.redirect_stdout(sys.stderr):
+            pull_mod.pull_team_sessions(api, session_id=session.id)
+
+    session_dir = pull_mod._find_existing_dir(out, session)
+    if session_dir is None or not pull_mod._dir_has_artifacts(session_dir):
+        click.echo(
+            f"vezir ctx: no local artifacts for {session.id}; "
+            f"run `vezir pull --session {session.id}` first",
+            err=True,
+        )
+        sys.exit(1)
+
+    if print_path:
+        click.echo(session_dir)
+        return
+
+    # Concatenate: header + summary + transcript, in that order.
+    parts: list[str] = [
+        f"# Meeting context: {session.title or session.id}",
+        f"# session {session.id} · {session.created_at} · "
+        f"recorded by {session.github or '?'}",
+        "",
+    ]
+    summary_files = sorted(
+        p for p in session_dir.glob("*.md") if "frontmatter" not in p.name
+    )
+    txt_files = sorted(session_dir.glob("*.txt"))
+    for label, files in (("Summary", summary_files), ("Transcript", txt_files)):
+        if not files:
+            continue
+        parts.append(f"## {label}\n")
+        parts.append(files[0].read_text(encoding="utf-8", errors="replace"))
+        parts.append("")
+    click.echo("\n".join(parts))
+
+
 if __name__ == "__main__":
     main()

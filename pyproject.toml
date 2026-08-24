@@ -129,6 +129,10 @@ nostr = [
     "segno>=1.5",
 ]
 tui = ["textual>=0.80", "vezir[nostr]"]
+# MCP server (`vezir mcp`): exposes sessions/summaries/transcripts as
+# read-only tools to opencode and other MCP-capable harnesses.
+# See vezir/client/mcp_server.py.
+mcp = ["mcp>=1.0"]
 dev = ["ruff", "pytest", "pytest-asyncio", "pytest-timeout", "mypy"]
 
 [tool.ruff]
