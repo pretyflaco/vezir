@@ -3,6 +3,18 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.15.1 — MCP get_transcript returns the full transcript
+
+Client-only fix; no migration.
+
+### Fixed
+
+- **`vezir mcp`'s `get_transcript` silently truncated transcripts longer
+  than 24k characters.**  When a harness deliberately asks for a session's
+  transcript it should get all of it.  The tool now returns the complete
+  transcript by default; `max_chars` remains as an opt-in limit for callers
+  that explicitly want a preview (the truncation note now points at that).
+
 ## 0.15.0 — more segments for labeling, QR fix, MCP + ctx
 
 No migration.

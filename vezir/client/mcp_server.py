@@ -20,8 +20,6 @@ import logging
 
 log = logging.getLogger("vezir.client.mcp")
 
-_DEFAULT_MAX_TRANSCRIPT_CHARS = 24_000
-
 
 def _client():
     """Build a VezirClient from the ambient client config, like `vezir pull`."""
@@ -111,18 +109,21 @@ def get_summary(session_id: str) -> str:
 
 
 def get_transcript(session_id: str, max_chars: int = 0) -> str:
-    """Return the diarized transcript (plain text) for a vezir session.
+    """Return the complete diarized transcript (plain text) for a session.
 
-    Transcripts are truncated to ``max_chars`` (default 24k) with a note
-    appended, so huge meetings don't blow up the context window.
+    Full by default (v0.15.1): when you ask for a session's transcript you
+    want all of it — no silent truncation.  Pass ``max_chars`` only when
+    you explicitly want just a snippet (e.g. a preview for a very long
+    meeting); a truncation note is appended in that case.
     """
     text = _fetch_artifact_text(session_id, "txt", ".txt")
-    cap = max_chars if max_chars > 0 else _DEFAULT_MAX_TRANSCRIPT_CHARS
-    if len(text) > cap:
+    cap = max_chars  # 0 / negative = no cap
+    if cap > 0 and len(text) > cap:
         text = (
             text[:cap]
             + f"\n\n[… truncated: showing {cap} of {len(text)} chars; "
-            "call get_transcript with a larger max_chars for more]"
+            "call get_transcript without max_chars (or a larger value) "
+            "for the full transcript]"
         )
     return text
 

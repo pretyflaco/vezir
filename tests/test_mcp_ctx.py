@@ -99,6 +99,15 @@ def test_get_summary_returns_markdown(fake_client):
     assert "Phoenix plan." in mcp_server.get_summary("01AAA")
 
 
+def test_get_transcript_full_by_default(fake_client):
+    """v0.15.1: no truncation unless max_chars is explicitly passed."""
+    from vezir.client import mcp_server
+
+    text = mcp_server.get_transcript("01AAA")
+    assert text == "[00:00] ALICE: welcome\n"
+    assert "truncated" not in text
+
+
 def test_get_transcript_truncates_with_note(fake_client, monkeypatch):
     from vezir.client import mcp_server
 
