@@ -3,6 +3,45 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.14.2 — dated artifact filenames + auto-label button
+
+No migration.  No server-side storage change — millet's stored artifact
+names are untouched; only the download paths rename.
+
+### Changed
+
+- **Downloaded artifacts are named `YYYYMMDD_<title_slug>.<ext>`** instead
+  of generic names (`summary.md`, `transcript.pdf`, …).  Example:
+  `20260824_brainstorm_phoenix.pdf`.  The date is the session's
+  `created_at` converted to the local timezone; the title slug is
+  lowercase with underscores (untitled sessions fall back to
+  `<date>_recording`).  Applies to every download path: TUI auto-download,
+  `vezir pull`, and detail-screen self-heal.
+- **`GET /artifact/<id>/<name>` now sends a friendly `Content-Disposition`
+  filename**, so browser and Android downloads get the dated name too.
+  Clients that ignore the header (older Android builds) are unaffected.
+
+### Added
+
+- **Auto-label re-run from the client (`POST /api/sessions/{id}/auto-label`,
+  TUI `[a] Auto-label`).**  Re-runs voiceprint auto-labeling against the
+  team's DB for an already-transcribed session stuck in `needs_labeling`
+  (e.g. processed while the DB was empty, or with auto-label off at
+  upload).  Confident matches are applied on the background worker;
+  unrecognized speakers stay raw and the session remains `needs_labeling`.
+  Explicit consent: overrides an upload-time `auto_label_enabled=0`.
+  Optional `{"sync": true}` pushes to the team repo when every speaker is
+  resolved.  (Previously only reachable via the server-side CLI
+  `vezir relabel`.)
+
+### Notes
+
+- Folders pulled before this release keep their old-named files; a re-pull
+  adds duplicates under the new names (`missing_server_artifacts` no longer
+  recognizes the old names as "already have it").  Delete the stale
+  `transcript.*` / `summary.*` files manually if you care.
+- Test count: 1009.
+
 ## 0.14.0 — summary fallback provenance (Claude Max exhausted → Kimi K3)
 
 Requires millet-pipeline ≥ 0.16.0 for the fallback itself; the vezir half

@@ -379,6 +379,32 @@ def test_retry_summary_with_preset_includes_body(mocked_client):
     assert "high-quality" in seen["body"]
 
 
+def test_auto_label_path_and_body(mocked_client):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"session_id": "01X", "queued": True},
+        )
+
+    client = mocked_client(handler)
+    result = client.auto_label("01X", sync=True)
+    assert result.is_ok()
+    assert result.unwrap() == {"session_id": "01X", "queued": True}
+
+
+def test_auto_label_default_body(mocked_client):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["content"] = request.content
+        return httpx.Response(200, json={"session_id": "01Y", "queued": True})
+
+    client = mocked_client(handler)
+    client.auto_label("01Y").unwrap()
+    assert seen["path"] == "/api/sessions/01Y/auto-label"
+    assert seen["content"] == b"{}"
+
+
 def test_retry_summary_without_preset_sends_empty_object(mocked_client):
     seen: dict = {}
 

@@ -50,6 +50,7 @@ _HELP_TEXT = """\
   [b]f[/b]       Open local artifacts folder
   [b]d[/b]       Copy local artifacts path
   [b]l[/b]       Open labeling for this session
+  [b]a[/b]       Re-run voiceprint auto-labeling (team DB)
   [b]t[/b]       Edit title (add/change; admin or uploader)
   [b]y[/b]       Sync now
   [b]e[/b]       Retry summary

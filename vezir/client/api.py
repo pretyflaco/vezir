@@ -616,6 +616,21 @@ class VezirClient:
             json=body,
         )
 
+    def auto_label(
+        self, session_id: str, *, sync: bool = False
+    ) -> ApiResult:
+        """Re-run voiceprint auto-labeling on a transcribed session.
+
+        Queues a server-side ``millet label --auto`` re-run against the
+        team's voiceprint DB.  Explicit consent: overrides an upload-time
+        auto-label opt-out.
+        """
+        body = {"sync": sync} if sync else None
+        return self._post(
+            f"/api/sessions/{quote(session_id, safe='')}/auto-label",
+            json=body,
+        )
+
     def sync_now(
         self, session_id: str, meeting_type: str | None = None
     ) -> ApiResult:

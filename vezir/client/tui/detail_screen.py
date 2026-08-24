@@ -348,6 +348,45 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
             self.dismiss(False)
 
 
+class AutoLabelScreen(ModalScreen["bool | None"]):
+    """Modal: re-run voiceprint auto-labeling, with a sync choice.
+
+    Dismisses with ``True`` (auto-label + sync when fully resolved),
+    ``False`` (auto-label only), or ``None`` on cancel.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+    CSS = """
+    AutoLabelScreen { align: center middle; }
+    #autolabel-box {
+        width: 72;
+        max-width: 90%;
+        height: auto;
+        border: solid $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    #autolabel-box Label { margin-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="autolabel-box"):
+            yield Label("[b]Re-run auto-labeling?[/b]")
+            yield Label(
+                "  Matches speakers against the team's voiceprint DB and\n"
+                "  applies confident names to this session's artifacts.\n"
+                "  Unrecognized speakers stay raw."
+            )
+            yield Label(
+                "  Also sync to the team git repo if every speaker is resolved?"
+            )
+            with Horizontal():
+                yield Button("No sync", id="nosync-btn", variant="primary")
+                yield Button("Sync if resolved", id="sync-btn")
+                yield Button("Cancel", id="cancel-btn")
+
+
 class DetailScreen(Screen):
     """One session's metadata + artifacts + actions."""
 
@@ -359,6 +398,7 @@ class DetailScreen(Screen):
         Binding("p", "share_with_team", "Share"),
         Binding("t", "edit_title", "Edit title"),
         Binding("l", "open_labeling", "Label"),
+        Binding("a", "auto_label", "Auto-label"),
         Binding("c", "copy_session_id", "Copy id"),
         Binding("f", "open_folder", "Open folder"),
         Binding("d", "copy_path", "Copy path"),
@@ -416,6 +456,7 @@ class DetailScreen(Screen):
             yield Button("[p] Share with team", id="share-btn")
             yield Button("[t] Edit title", id="title-btn")
             yield Button("[l] Label speakers", id="label-btn", variant="primary")
+            yield Button("[a] Auto-label", id="auto-label-btn", variant="success")
             yield Button("[^d] Delete", id="delete-btn", variant="error")
         yield Footer()
 
@@ -455,6 +496,16 @@ class DetailScreen(Screen):
     def action_open_labeling(self) -> None:
         from .label_screen import LabelScreen
         self.app.push_screen(LabelScreen(self.session_id))
+
+    def action_auto_label(self) -> None:
+        self.app.push_screen(AutoLabelScreen(), self._on_auto_label_choice)
+
+    def _on_auto_label_choice(self, choice: bool | None) -> None:
+        if choice is None:
+            return
+        self._action_worker(
+            "auto-label", "auto_label", sync=bool(choice),
+        )
 
     def action_retry_summary(self) -> None:
         current_preset = (self.session.summary_preset if self.session else None)
@@ -693,6 +744,8 @@ class DetailScreen(Screen):
             self.action_edit_title()
         elif bid == "label-btn":
             self.action_open_labeling()
+        elif bid == "auto-label-btn":
+            self.action_auto_label()
         elif bid == "delete-btn":
             self.action_delete_session()
 

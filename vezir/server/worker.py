@@ -53,7 +53,7 @@ _TASKS: _pyqueue.Queue = _pyqueue.Queue()
 _ACTIVE_TASKS: set[tuple[str, str]] = set()
 _TASKS_LOCK = threading.Lock()
 
-_TASK_KINDS = ("sync", "retry_summary", "finalize_labels")
+_TASK_KINDS = ("sync", "retry_summary", "finalize_labels", "auto_label")
 
 
 def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
@@ -95,6 +95,12 @@ def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
                 )
             elif kind == "finalize_labels":
                 _finalize_labels_task(session_id, kwargs.get("label_map") or {})
+            elif kind == "auto_label":
+                reauto_label_session(
+                    session_id,
+                    sync=kwargs.get("sync", False),
+                    force=kwargs.get("force", False),
+                )
     except Exception:
         log.exception("task %s failed for session %s", kind, session_id)
     finally:
@@ -1097,7 +1103,9 @@ def _finalize_labels_task(session_id: str, label_map: dict[str, str]) -> None:
     finalize_after_labeling(session_id)
 
 
-def reauto_label_session(session_id: str, *, sync: bool = False) -> dict:
+def reauto_label_session(
+    session_id: str, *, sync: bool = False, force: bool = False,
+) -> dict:
     """Re-run ``millet label --auto`` for an already-transcribed session.
 
     Use case: a session was processed while its team's voiceprint DB was
@@ -1115,6 +1123,11 @@ def reauto_label_session(session_id: str, *, sync: bool = False) -> dict:
     ``sync`` (default False): when True and the session fully resolves, sync to
     the team repo exactly like the main pipeline.  For controlled recovery runs
     leave it False — labels/artifacts/status are updated but nothing is pushed.
+
+    ``force`` (default False): run even when the job was uploaded with
+    ``auto_label_enabled=0``.  The per-job opt-out still applies to implicit
+    recovery runs; an explicit user action ("Auto-label" button / API call)
+    passes force=True because clicking the button IS the consent.
 
     Returns a small result dict for CLI reporting:
     ``{"session_id", "team_id", "status", "matched", "unresolved", "synced",
@@ -1146,9 +1159,10 @@ def reauto_label_session(session_id: str, *, sync: bool = False) -> dict:
             log.error("relabel: session %s has empty team_id; aborting", session_id)
             return result
 
-        if not bool(job.get("auto_label_enabled", 1)):
-            # Respect the per-job opt-out: don't auto-label a session the
-            # uploader explicitly wanted human-only.
+        if not bool(job.get("auto_label_enabled", 1)) and not force:
+            # Respect the per-job opt-out for implicit runs; an explicit
+            # user action passes force=True (clicking the button IS the
+            # consent to run auto-labeling).
             result["error"] = "auto_label_enabled=0 (skipped)"
             result["status"] = job.get("status")
             log.info("relabel: job %s auto_label_enabled=0; skipping", session_id)

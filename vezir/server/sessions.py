@@ -345,6 +345,72 @@ def retry_summary(
     return {"session_id": session_id, "queued": True}
 
 
+# ── auto-label (voiceprint re-run on a transcribed session) ─────────────────
+
+
+class _AutoLabelBody(BaseModel):
+    # When True and auto-labeling fully resolves every speaker, sync the
+    # session to the team git repo exactly like the main pipeline.
+    sync: bool = False
+
+
+@router.post(
+    "/api/sessions/{session_id}/auto-label",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def auto_label(
+    session_id: str,
+    body: _AutoLabelBody | None = Body(default=None),
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Re-run voiceprint auto-labeling for an already-transcribed session.
+
+    Use case: the session was processed while its team's voiceprint DB was
+    empty/sparse (or auto-label was off at upload), so speakers landed as raw
+    placeholders.  Re-runs ``millet label --auto`` against the per-team DB on
+    the background worker; confident matches are applied and artifacts are
+    updated.  Speakers the DB can't recognize stay raw.
+
+    Explicit user consent: this endpoint always runs with ``force=True``,
+    overriding an upload-time ``auto_label_enabled=0`` opt-out — clicking
+    the button IS the consent.
+
+    Returns immediately; poll ``GET /api/sessions/{id}`` to observe the
+    status transition (``needs_labeling`` -> ``needs_labeling`` partial /
+    ``syncing`` / ``done``).
+    """
+    github, team_id, is_admin = auth_triple
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    enforce_team_visibility(row, team_id, github, is_admin)
+    if row["status"] not in ("needs_labeling", "done", "error", "sync_failed"):
+        raise HTTPException(
+            409,
+            f"session status '{row['status']}' does not admit auto-labeling; "
+            "session must be in 'needs_labeling', 'done', 'error' or "
+            "'sync_failed' status",
+        )
+
+    log.info(
+        "session=%s auto-label requested by %s (sync=%s)",
+        session_id, github, bool(body and body.sync),
+    )
+
+    queued = worker.enqueue_task(
+        "auto_label", session_id,
+        sync=bool(body and body.sync),
+        force=True,
+    )
+    if not queued:
+        log.info(
+            "session=%s auto-label already pending; duplicate dropped",
+            session_id,
+        )
+
+    return {"session_id": session_id, "queued": queued}
+
+
 # ── personal → team sharing ──────────────────────────────────────────────────
 
 
