@@ -594,6 +594,35 @@ async def test_detail_screen_renders_without_crash(app, mock_server, monkeypatch
         assert table.row_count == 2
 
 
+async def test_auto_label_modal_buttons_dismiss(app, mock_server, monkeypatch):
+    """v0.14.3 regression: AutoLabelScreen shipped without an
+    ``on_button_pressed`` handler, so clicking any button did nothing and
+    only ESC dismissed the modal (auto-label never ran).
+
+    Each button must dismiss with its sync choice so the
+    ``_on_auto_label_choice`` callback fires.
+    """
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    from vezir.client.tui.detail_screen import AutoLabelScreen
+
+    cases = [
+        ("#al-nosync-btn", False),
+        ("#al-sync-btn", True),
+        ("#al-cancel-btn", None),
+    ]
+    async with app.run_test() as pilot:
+        for selector, expected in cases:
+            dismissed: list = []
+            await app.push_screen(AutoLabelScreen(), dismissed.append)
+            await pilot.pause(0.1)
+            assert app.screen.__class__.__name__ == "AutoLabelScreen"
+            await pilot.click(selector)
+            await pilot.pause(0.1)
+            assert dismissed == [expected], (
+                f"{selector} dismissed with {dismissed}, expected [{expected}]"
+            )
+
+
 async def test_label_screen_renders_without_crash(app, mock_server, monkeypatch):
     """Same regression guard for LabelScreen.
 

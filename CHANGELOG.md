@@ -3,6 +3,23 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.14.3 — auto-label modal buttons were inert (TUI)
+
+### Fixed
+
+- **`[a] Auto-label` modal buttons did nothing.**  The 0.14.2
+  `AutoLabelScreen` composed its three buttons (No sync / Sync if resolved /
+  Cancel) but never registered an `on_button_pressed` handler, so clicking
+  any of them was a no-op, the modal stayed open, and auto-label never
+  ran — only `escape` dismissed it.  Added the missing handler (each button
+  now dismisses with its sync choice) and renamed the button ids to
+  modal-local `al-*` names so they no longer collide with DetailScreen's
+  `sync-btn`/`cancel-btn`.  Server endpoint is unaffected (it worked when
+  driven directly); this is a pure TUI-client fix.
+- Covered by a click-level `run_test()` pilot test that pushes the modal,
+  clicks each button, and asserts the dismissed value — closing the gap
+  that let 0.14.2 ship with only a binding-level assertion.
+
 ## 0.14.2 — dated artifact filenames + auto-label button
 
 No migration.  No server-side storage change — millet's stored artifact

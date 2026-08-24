@@ -382,9 +382,18 @@ class AutoLabelScreen(ModalScreen["bool | None"]):
                 "  Also sync to the team git repo if every speaker is resolved?"
             )
             with Horizontal():
-                yield Button("No sync", id="nosync-btn", variant="primary")
-                yield Button("Sync if resolved", id="sync-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button("No sync", id="al-nosync-btn", variant="primary")
+                yield Button("Sync if resolved", id="al-sync-btn")
+                yield Button("Cancel", id="al-cancel-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "al-nosync-btn":
+            self.dismiss(False)
+        elif bid == "al-sync-btn":
+            self.dismiss(True)
+        else:
+            self.dismiss(None)
 
 
 class DetailScreen(Screen):
