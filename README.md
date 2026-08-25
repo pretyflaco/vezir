@@ -18,30 +18,47 @@ transcripts and summaries — with speakers resolved to GitHub handles.
 
 ## Status
 
-Alpha (**0.12.1**). Built for small teams that want meeting audio to stay
+Alpha (**0.17.0**). Built for small teams that want meeting audio to stay
 inside their own infrastructure: one GPU server (Linux/CUDA or Apple
 Silicon) reachable over ordinary HTTPS. Full history in
 [`CHANGELOG.md`](CHANGELOG.md).
 
-**What's new (0.9 → 0.12):**
+**What's new (0.13 → 0.17):**
 
-- **Rotating refresh-token sessions (0.10.0).** A login mints a **pair**: a
-  short-lived **access JWT** (default 60 min) used as `Authorization:
-  Bearer`, and a long-lived **refresh token** that rotates on each use
-  (RFC 9700 reuse detection). Clients refresh transparently on 401 — no more
-  forced re-login on expiry. `vezir logout` revokes a session. (0.12.1
-  hardened the lost-response grace window against stale-token replay.)
-- **Auth hardening + subprocess boundary restored (0.11.0).** Label apply /
-  retry-summary go back through `millet label --apply-json`; follow-up work
-  is serialized on the single worker thread (no ad-hoc threads racing it).
-- **Multi-file meetings (0.9.0).** `vezir upload-multi` / `POST /upload/multi`
-  stitch several audio files into one meeting.
-- **Session retitle (0.12.0).** `vezir session set-title <id> "…"` /
-  `POST /api/sessions/{id}/title`, or `[t]` in the TUI, to name a session
-  after the fact.
-- **Empty-recording handling (0.11.1).** Silent/no-speech recordings reach a
-  terminal `empty` status and are not synced. Client provenance
-  (`client_agent`) is recorded per session.
+- **Session filters + pull robustness (0.17.0).** The TUI Sessions tab gains
+  a filter modal (`/`) — date range, title substring, status, and "who"
+  (github-handle substring, or an npub resolved server-side); `GET
+  /api/sessions` gains matching `until`/`q`/`who`/`status` params. Artifact
+  downloads now **retry transient network errors** with backoff, and a
+  partial pull **self-heals** (missing artifacts top up on the next pull
+  instead of being pinned forever).
+- **Session import + load-more pagination (0.16.0).** `vezir import <dir>` /
+  `POST /api/sessions/import` registers meetings recorded and processed
+  locally by millet before the team existed on the server (new terminal
+  status `imported`; never re-enters the pipeline). Session listings gain an
+  `offset` param and a "▼ load more" row, so large teams reach their full
+  history past the old 50-row cap.
+- **AI harness integration (0.15.0/0.15.1).** `vezir mcp` — a read-only
+  [MCP](https://modelcontextprotocol.io) server (optional `[mcp]` extra)
+  exposing `list_sessions` / `search_sessions` / `get_summary` /
+  `get_transcript` to opencode, Claude Code, and other harnesses — plus
+  `vezir ctx <id-or-title>` for a one-shot context doc on stdout. See
+  [AI harness integration (MCP)](#ai-harness-integration-mcp).
+- **Dated artifact filenames + client auto-label (0.14.2/0.14.3).**
+  Downloads land as `YYYYMMDD_<title_slug>.<ext>`; `vezir` / the TUI can
+  re-run voiceprint auto-labeling on a `needs_labeling` session
+  (`POST /api/sessions/{id}/auto-label`, TUI `[a]`).
+- **Summary-fallback provenance (0.14.0).** With an explicit operator
+  opt-in, the **non-confidential** presets may fall back (e.g. Claude Max
+  exhausted → Kimi K3); never silent — the session records
+  `summary_fallback` and the TUI shows a `· fallback` badge. `confidential`
+  always stays fail-loud.
+- **Meeting attachments (0.13.0).** Files dropped in the scribe's watch
+  folder ride along with a recording into the team git archive.
+- **Rotating refresh-token sessions (0.10.0, hardened 0.12.1).** A login
+  mints a short-lived **access JWT** + a rotating **refresh token** (RFC
+  9700 reuse detection); clients refresh transparently on 401. `vezir
+  logout` revokes a session.
 - **Identity sign-in.** Members sign in with **Nostr** (a remote signer like
   [Amber](https://github.com/greenart7c3/Amber) via NIP-46, or the NIP-55
   Android intent flow) or with **Google** (`@workspace-domain` accounts via
@@ -144,6 +161,46 @@ All desktop clients resolve credentials from a `vezir login` session
 `VEZIR_URL`+`VEZIR_TOKEN` for machine/CI. The TUI/Android auto-discover
 every team you belong to from `/api/me`.
 
+## AI harness integration (MCP)
+
+Pull meeting context — session lists, summaries, transcripts — straight
+into an AI coding harness (opencode, Claude Code, …) instead of manually
+running `vezir pull` and pasting paths. Both entry points are **read-only**,
+reuse the same credentials as `vezir pull` (`teams.json` / `VEZIR_URL` /
+`VEZIR_TOKEN` / `VEZIR_TEAM_ID`), and need no server-side changes.
+
+**`vezir mcp`** — a stdio [Model Context Protocol](https://modelcontextprotocol.io)
+server (optional `[mcp]` extra):
+
+```bash
+pip install 'vezir[mcp]'
+```
+
+Wire it into opencode (`~/.config/opencode/opencode.json`):
+
+```json
+{ "mcp": { "vezir": { "type": "local", "command": ["vezir", "mcp"] } } }
+```
+
+It exposes four read-only tools:
+
+| Tool | Returns |
+|---|---|
+| `list_sessions(limit, status?)` | Recent sessions (id / title / status / date / github), up to 500. |
+| `search_sessions(query, limit)` | Sessions whose title matches a substring. |
+| `get_summary(session_id)` | The AI summary (markdown). |
+| `get_transcript(session_id, max_chars?)` | The full diarized transcript (pass `max_chars` only for a preview). |
+
+**`vezir ctx <id-or-title>`** — a one-shot alternative for any harness (no
+extra needed; base install). It pulls the session (unless `--no-pull`) and
+prints a single context document (header + summary + transcript) to stdout:
+
+```bash
+vezir ctx "brainstorm phoenix" | opencode run "summarize the decisions"
+opencode run "$(vezir ctx 01M0TS2SWWD15JT0VQHNDREFKH)"   # inline as prompt
+vezir ctx 01M0TS2SWWD15JT0VQHNDREFKH --path              # just the artifacts dir
+```
+
 ## Summarization presets
 
 The client sends a preset id as the `summary_preset` form field; the worker
@@ -195,6 +252,7 @@ CLI: `--auto-label/--no-auto-label`, `--sync/--no-sync`, `--personal` on
 |---|---|---|
 | **Scribe client (CLI)** | `pip install --user vezir` | ~30 MB |
 | **Scribe client + TUI** *(recommended desktop)* | `pip install --user 'vezir[tui]'` | ~35 MB |
+| **MCP add-on** (AI harness integration) | `pip install --user 'vezir[mcp]'` | +~2 MB (the `mcp` SDK; combine as `vezir[tui,mcp]`) |
 | **Server** (FastAPI + worker + pipeline) | `pip install --user 'vezir[server]'` | ~3 GB (Linux/CUDA: whisperx+torch+pyannote); +`mlx-whisper` on Apple Silicon |
 
 The base install uses
