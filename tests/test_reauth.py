@@ -235,6 +235,66 @@ async def test_reauth_nostr_failure_keeps_modal_open(monkeypatch):
         assert app.result == "UNSET"
 
 
+async def test_reauth_esc_cancels_inflight_nostr_and_dismisses(monkeypatch):
+    """v0.17.1: Esc during a live nostr wait must cancel the client and
+    close the modal — not silently no-op for ~3 minutes.
+
+    Pre-fix, ``action_cancel`` returned early while ``_busy``, so Esc (and
+    the Google/Cancel buttons) were dead while ``wait_for_connection``
+    blocked.  Now Esc calls ``client.cancel()`` and dismisses with None.
+    """
+    import threading
+
+    cancelled = threading.Event()
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            self.user_pubkey = "npubFAKE"
+            self.clock_offset = 0
+            self._stop = threading.Event()
+        def build_connect_uri(self):
+            return "nostrconnect://fake"
+        def wait_for_connection(self, timeout=180):
+            # Block like the real client until cancelled.
+            if self._stop.wait(timeout):
+                raise RuntimeError("cancelled")
+            raise RuntimeError("timeout")
+        def sign_event(self, template, timeout=180):
+            return {}
+        def cancel(self):
+            cancelled.set()
+            self._stop.set()
+        def close(self):
+            pass
+
+    import vezir.client.nostr.nip46 as nip46_mod
+    monkeypatch.setattr(nip46_mod, "Nip46Client", _FakeClient)
+
+    app = _Harness.make()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause(0.3)  # let the worker enter wait_for_connection
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+    assert cancelled.is_set(), "Esc did not cancel the in-flight nostr client"
+    assert app.result is None, "Esc did not dismiss the modal"
+
+
+async def test_reauth_stale_worker_message_ignored(monkeypatch):
+    """v0.17.1: a ReauthDone from a superseded attempt (different gen) must
+    not dismiss/clobber the modal — this is what let a cancelled nostr
+    worker's late reply race a freshly started Google attempt."""
+    from vezir.client.tui.reauth_screen import ReauthDone, ReauthScreen
+
+    screen = ReauthScreen("http://s", "blink")
+    screen._gen = 5
+    # A late message tagged with an old generation is dropped.
+    stale = ReauthDone({"session_jwt": "stale"}, gen=4)
+    # Should not raise and should not attempt to dismiss (no app mounted).
+    screen.on_reauth_done(stale)  # no exception == handled/ignored
+
+
 async def test_reauth_qr_is_plain_compact_unicode(monkeypatch):
     """v0.15.0 regression: the reauth modal's QR must render as plain
     half-block Unicode with NO ANSI escape codes, and the modal must fit
@@ -265,6 +325,8 @@ async def test_reauth_qr_is_plain_compact_unicode(monkeypatch):
             raise RuntimeError("done")
         def sign_event(self, template, timeout=180):
             raise RuntimeError("done")
+        def cancel(self):
+            pass
         def close(self):
             pass
 
@@ -308,3 +370,73 @@ async def test_reauth_qr_is_plain_compact_unicode(monkeypatch):
             f"QR rows {max_w} cols wide vs box {box.region.width}"
         )
         assert app.screen.__class__.__name__ == "ReauthScreen"
+
+
+async def test_reauth_qr_fits_without_scrolling_on_tall_terminal(monkeypatch):
+    """v0.17.1 regression: a realistic 4-relay nostrconnect:// URI renders a
+    ~39-row QR that must be shown WHOLE (no clipping) on a normal terminal.
+
+    Before the fix, the QR lived in a container capped at ``max-height: 60%``,
+    so on a 55-row terminal only ~29 rows were visible and the QR always
+    scrolled — the exact symptom the user reported ("QR never displayed in
+    full on screen").  Now the scroll container is ``1fr`` and takes all the
+    height left after the title/buttons, so the QR needs no scrolling.
+    """
+    # A realistic connect URI: 4 relays + secret + perms + name (~336 chars
+    # in production → segno version 14 → 39 rows).
+    LONG_URI = (
+        "nostrconnect://" + "bc" * 32
+        + "?relay=wss://relay.damus.io&relay=wss://nos.lol"
+        + "&relay=wss://offchain.pub&relay=wss://relay.primal.net"
+        + "&secret=" + "a" * 32
+        + "&perms=sign_event%3A27235&name=vezir"
+    )
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            self.user_pubkey = "npubFAKE"
+            self.clock_offset = 0
+        def build_connect_uri(self):
+            return LONG_URI
+        def wait_for_connection(self, timeout=180):
+            import time as _t
+            _t.sleep(3)  # stay in "waiting for approval" state
+            raise RuntimeError("done")
+        def sign_event(self, template, timeout=180):
+            raise RuntimeError("done")
+        def cancel(self):
+            pass
+        def close(self):
+            pass
+
+    import vezir.client.nostr.nip46 as nip46_mod
+    monkeypatch.setattr(nip46_mod, "Nip46Client", _FakeClient)
+
+    # A normal terminal: 120 cols × 55 rows.  The real QR for this URI is
+    # ~39 rows; with title/margin/buttons overhead (~7 rows) it fits in the
+    # remaining ~48 rows without scrolling.
+    app = _Harness.make()
+    async with app.run_test(size=(120, 55)) as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        from textual.containers import VerticalScroll
+        from textual.widgets import Static
+        body = None
+        for _ in range(30):
+            await pilot.pause(0.1)
+            body = app.screen.query_one("#reauth-body", Static)
+            content = str(getattr(body, "content", ""))
+            if content.count("\n") > 20:  # QR rows have landed
+                break
+        assert body is not None
+
+        scroll = app.screen.query_one("#reauth-scroll", VerticalScroll)
+        # The QR fits without scrolling: the container's virtual (content)
+        # height does not exceed its visible height.
+        assert scroll.virtual_size.height <= scroll.container_size.height, (
+            f"QR needs scrolling: virtual {scroll.virtual_size.height} rows "
+            f"> visible {scroll.container_size.height} rows"
+        )
+        # Buttons remain visible below the QR.
+        buttons = app.screen.query_one("#reauth-buttons")
+        assert 0 < buttons.region.bottom <= 55

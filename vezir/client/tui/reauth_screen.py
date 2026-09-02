@@ -33,18 +33,27 @@ log = logging.getLogger("vezir.client.tui.reauth")
 
 @dataclass
 class ReauthProgress(Message):
-    """A human-readable progress line from the login worker."""
+    """A human-readable progress line from the login worker.
+
+    ``gen`` tags the attempt that produced it so a stale message from a
+    cancelled worker (e.g. nostr, after the user switched to Google) is
+    dropped instead of clobbering the live attempt's UI.
+    """
 
     text: str
+    gen: int = 0
 
 
 @dataclass
 class ReauthDone(Message):
     """Login worker finished.  ``body`` is the login response (with
-    ``session_jwt``) on success, or ``None`` with ``error`` set on failure."""
+    ``session_jwt``) on success, or ``None`` with ``error`` set on failure.
+
+    ``gen`` tags the attempt (see ``ReauthProgress``)."""
 
     body: dict | None
     error: str = ""
+    gen: int = 0
 
 
 class ReauthScreen(ModalScreen["dict | None"]):
@@ -61,10 +70,10 @@ class ReauthScreen(ModalScreen["dict | None"]):
     #reauth-box {
         width: 80%;
         max-width: 90;
-        height: auto;
-        max-height: 90%;
+        height: 100%;
+        max-height: 100%;
         border: round $primary;
-        padding: 1 2;
+        padding: 0 2;
         background: $surface;
     }
     #reauth-title {
@@ -72,12 +81,13 @@ class ReauthScreen(ModalScreen["dict | None"]):
         margin-bottom: 1;
         text-style: bold;
     }
-    /* v0.15.0: the QR art lives in a scrollable container so a tall QR can
-       never push the buttons out of the viewport (they are OUTSIDE this
-       container and always visible). */
+    /* v0.17.1: the QR art lives in a flex (1fr) scrollable container so it
+       takes ALL the height left after the title/buttons — a real 39-row QR
+       (a 4-relay nostrconnect:// URI) is shown whole on a >=46-row terminal
+       instead of being capped at 60% and clipped.  The buttons are OUTSIDE
+       this container and stay pinned/visible regardless. */
     #reauth-scroll {
-        height: auto;
-        max-height: 60%;
+        height: 1fr;
         margin-bottom: 1;
     }
     #reauth-body {
@@ -102,6 +112,13 @@ class ReauthScreen(ModalScreen["dict | None"]):
         self._server_url = server_url
         self._team_id = team_id or ""
         self._busy = False
+        # Attempt generation: bumped each time a login worker starts so a
+        # message posted by a superseded/cancelled worker can be ignored.
+        self._gen = 0
+        # In-flight cancellation handles (0.17.1): the nostr client (whose
+        # cancel() aborts the blocking wait) and the Google stop Event.
+        self._nostr_client = None
+        self._google_stop = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="reauth-box"):
@@ -135,23 +152,47 @@ class ReauthScreen(ModalScreen["dict | None"]):
             self.action_cancel()
 
     def action_cancel(self) -> None:
-        if self._busy:
-            return  # don't cancel mid-login
+        # Cancel means cancel: abort any in-flight login and close the modal.
+        # (Pre-0.17.1 this silently returned while busy, so Esc — and every
+        # other key/button — was dead for up to ~3 min while the nostr
+        # wait blocked.)
+        self._cancel_inflight()
         self.dismiss(None)
 
     def action_login_nostr(self) -> None:
-        if self._busy:
-            return
+        # Switching provider mid-attempt is allowed: abort the current one
+        # (exclusive=True already supersedes the worker; cancel() unblocks
+        # its network wait so it exits promptly) and start nostr fresh.
+        self._cancel_inflight()
+        self._gen += 1
         self._busy = True
         self._set_body("Starting nostr sign-in…")
-        self._nostr_worker()
+        self._nostr_worker(self._gen)
 
     def action_login_google(self) -> None:
-        if self._busy:
-            return
+        self._cancel_inflight()
+        self._gen += 1
         self._busy = True
         self._set_body("Starting Google sign-in…")
-        self._google_worker()
+        self._google_worker(self._gen)
+
+    def _cancel_inflight(self) -> None:
+        """Abort whatever login worker is currently running (if any)."""
+        client = self._nostr_client
+        self._nostr_client = None
+        if client is not None:
+            try:
+                client.cancel()
+            except Exception:
+                pass
+        stop = self._google_stop
+        self._google_stop = None
+        if stop is not None:
+            try:
+                stop.set()
+            except Exception:
+                pass
+        self._busy = False
 
     # ── helpers ──
     def _set_body(self, text: str) -> None:
@@ -169,22 +210,27 @@ class ReauthScreen(ModalScreen["dict | None"]):
 
     # ── workers ──
     @work(thread=True, exclusive=True, group="reauth")
-    def _nostr_worker(self) -> None:
+    def _nostr_worker(self, gen: int) -> None:
         try:
             from ..nostr import login as nostr_login
             from ..nostr import nip46
         except Exception as exc:  # pragma: no cover - import guard
             self.post_message(ReauthDone(
-                None, error=f"nostr support not installed ({exc})"
+                None, error=f"nostr support not installed ({exc})", gen=gen,
             ))
             return
 
         client = None
         try:
             def _on_auth_url(u: str) -> None:
-                self.post_message(ReauthProgress(text=f"Approve in signer: {u}"))
+                self.post_message(
+                    ReauthProgress(text=f"Approve in signer: {u}", gen=gen)
+                )
 
             client = nip46.Nip46Client(name="vezir", on_auth_url=_on_auth_url)
+            # Register the cancel handle so Esc / provider-switch can abort
+            # the blocking wait_for_connection below from the UI thread.
+            self._nostr_client = client
             connect_uri = client.build_connect_uri()
             # Render a scannable QR for phone signers (Amber); on the same
             # machine the nostrconnect request is already live, so a signer
@@ -192,18 +238,21 @@ class ReauthScreen(ModalScreen["dict | None"]):
             qr = ""
             try:
                 from ...server.enroll import render_qr_terminal
-                qr = render_qr_terminal(connect_uri) + "\n\n"
+                qr = render_qr_terminal(connect_uri) + "\n"
             except Exception:
                 qr = ""
             self.post_message(ReauthProgress(
+                gen=gen,
                 text=(
-                    "Sign in again with nostr.\n\n"
-                    "• Phone signer (Amber): scan the QR below.\n"
-                    "• Same-device signer (nsec.app): just approve the "
-                    "request — it's already sent.\n\n"
                     f"{qr}"
+                    "Sign in again with nostr.\n"
+                    "• Phone signer (Amber): scan the QR above.\n"
+                    "• Same-device signer (nsec.app): just approve — it's "
+                    "already sent.\n"
+                    "(If the QR is cut off, enlarge the terminal — a full QR "
+                    "needs ~46 rows.)\n"
                     "Waiting for approval…  (Esc to cancel)"
-                )
+                ),
             ))
             client.wait_for_connection(timeout=180)
             template = nostr_login.build_login_event_template(
@@ -217,9 +266,9 @@ class ReauthScreen(ModalScreen["dict | None"]):
                 verify=self._verify(),
             )
             body.setdefault("npub", client.user_pubkey or "")
-            self.post_message(ReauthDone(body))
+            self.post_message(ReauthDone(body, gen=gen))
         except Exception as exc:
-            self.post_message(ReauthDone(None, error=str(exc)))
+            self.post_message(ReauthDone(None, error=str(exc), gen=gen))
         finally:
             if client is not None:
                 try:
@@ -228,38 +277,49 @@ class ReauthScreen(ModalScreen["dict | None"]):
                     pass
 
     @work(thread=True, exclusive=True, group="reauth")
-    def _google_worker(self) -> None:
+    def _google_worker(self, gen: int) -> None:
         try:
             from .. import google_login
         except Exception as exc:  # pragma: no cover - import guard
             self.post_message(ReauthDone(
-                None, error=f"Google support unavailable ({exc})"
+                None, error=f"Google support unavailable ({exc})", gen=gen,
             ))
             return
+        import threading
+        stop = threading.Event()
+        self._google_stop = stop
         try:
             def _on_prompt(user_code: str, url: str) -> None:
                 self.post_message(ReauthProgress(
+                    gen=gen,
                     text=(
                         f"Open {url}\nand enter code:  {user_code}\n\n"
-                        "Waiting for approval…"
-                    )
+                        "Waiting for approval…  (Esc to cancel)"
+                    ),
                 ))
 
             body = google_login.login(
                 self._server_url,
                 verify=self._verify(),
                 on_prompt=_on_prompt,
+                stop=stop,
             )
-            self.post_message(ReauthDone(body))
+            self.post_message(ReauthDone(body, gen=gen))
         except Exception as exc:
-            self.post_message(ReauthDone(None, error=str(exc)))
+            self.post_message(ReauthDone(None, error=str(exc), gen=gen))
 
     # ── message handlers ──
     def on_reauth_progress(self, message: ReauthProgress) -> None:
+        if message.gen != self._gen:
+            return  # stale: from a superseded/cancelled attempt
         self._set_body(message.text)
 
     def on_reauth_done(self, message: ReauthDone) -> None:
+        if message.gen != self._gen:
+            return  # stale: a cancelled worker finishing after we moved on
         self._busy = False
+        self._nostr_client = None
+        self._google_stop = None
         if message.body is not None and (
             message.body.get("session_jwt") or message.body.get("access_jwt")
         ):

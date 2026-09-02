@@ -3,6 +3,35 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.17.1 — reauth QR fits on screen + cancellable login
+
+No migration.
+
+### Fixed
+
+- **Reauth modal QR was still clipped and the TUI froze after choosing a
+  provider.**  Two bugs on the "Session expired — sign in again" modal:
+  * *QR never shown in full.*  A real 4-relay `nostrconnect://` URI is
+    ~336 chars → segno version 14 → **39 rows**, but the QR container was
+    capped at `max-height: 60%`, so on a normal terminal only ~29 rows
+    were visible and it always scrolled (unscannable).  The container is
+    now `height: 1fr` and takes all the space left after the title/buttons
+    (the box is full-height), so the whole QR shows on a ≳46-row terminal;
+    the QR now leads the body text with an "enlarge the terminal" hint.
+  * *TUI unresponsive after clicking Nostr.*  Once a login started,
+    `action_cancel` / `action_login_google` / the buttons all silently
+    returned while `_busy`, and the nostr worker blocked in
+    `wait_for_connection` for up to 180s — so Esc, Google, and Cancel were
+    dead for minutes.  `Nip46Client.cancel()` (and a `stop` Event for the
+    Google device poll) now abort the blocking wait promptly; Esc cancels
+    and closes, and switching provider mid-attempt aborts the first.  A
+    generation counter drops stale messages from a superseded worker.
+  * Regression tests: QR fits without scrolling on a 55-row terminal; Esc
+    cancels the in-flight client and dismisses; `cancel()` unblocks
+    `wait_for_connection` in well under the timeout; stale-gen messages
+    are ignored.
+
+
 ## 0.17.0 — session search/filters, pull robustness, cursor fix
 
 No migration.

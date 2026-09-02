@@ -15,6 +15,7 @@ the same way.
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
@@ -46,12 +47,18 @@ def login(
     verify=True,
     timeout: float = 300,
     on_prompt: Callable[[str, str], None] | None = None,
+    stop: threading.Event | None = None,
 ) -> dict:
     """Run the full device-grant login; return the login response body.
 
     ``on_prompt(user_code, verification_url)`` is invoked once the device
     code is obtained so the caller can show the user where to go.  Polls
     until the user approves (or ``timeout`` seconds elapse).
+
+    ``stop`` (0.17.1): an optional ``threading.Event`` a caller on another
+    thread can set to abort the poll loop promptly (e.g. the TUI reauth
+    modal on Esc), instead of leaving a background thread polling for the
+    full ``timeout``.
     """
     import httpx
 
@@ -80,7 +87,10 @@ def login(
         # Poll for completion.
         deadline = time.time() + timeout
         while time.time() < deadline:
-            time.sleep(interval)
+            if stop is not None and stop.wait(interval):
+                raise GoogleLoginError("cancelled")
+            if stop is None:
+                time.sleep(interval)
             pr = c.post(
                 f"{_base(base_url)}/api/auth/google/device/poll",
                 json={"device_code": device_code},

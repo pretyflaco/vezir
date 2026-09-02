@@ -227,6 +227,11 @@ class Nip46Client:
         # events clear the signer's `since` regardless of local skew.
         # Clamped to a sane range to reject absurd/malicious values.
         self._clock_offset: int = 0
+        # Cooperative cancellation (0.17.1): a caller on another thread
+        # (e.g. the TUI reauth modal on Esc) sets this via cancel() to make
+        # the blocking wait_for_connection / _read_response loops bail out
+        # promptly instead of spinning to their timeout deadline.
+        self._cancelled = threading.Event()
 
     # ── connection token ─────────────────────────────────────────────────────
 
@@ -286,6 +291,13 @@ class Nip46Client:
         responses (a second REQ with the same sub id is a harmless replace
         for sockets that already have it).
         """
+        if self._cancelled.is_set():
+            # Cancelled mid-reconnect: don't resurrect a socket after close().
+            try:
+                ws.close()
+            except Exception:
+                pass
+            return
         with self._wss_lock:
             self._wss[url] = ws
         log.info("nip46: (re)connected relay %s", url)
@@ -603,6 +615,8 @@ class Nip46Client:
         last_publish = time.time()  # _send_request already published once
         republishes = 0
         while time.time() < deadline:
+            if self._cancelled.is_set():
+                raise Nip46Error("cancelled")
             # Re-broadcast the request periodically so a dropped/mis-routed
             # publish self-heals (and pick up any relay that came back).
             if event_msg is not None and (time.time() - last_publish) >= republish_interval:
@@ -725,6 +739,8 @@ class Nip46Client:
         # result equals our secret (or "ack").  We don't know the signer
         # pubkey yet, so read raw until we see a decryptable response.
         while time.time() < deadline:
+            if self._cancelled.is_set():
+                raise Nip46Error("cancelled")
             remaining = deadline - time.time()
             raw = self._recv_raw(remaining)
             if not raw:
@@ -855,6 +871,8 @@ class Nip46Client:
             raise Nip46Error("not connected; cannot get_public_key")
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
+            if self._cancelled.is_set():
+                raise Nip46Error("cancelled")
             remaining = deadline - time.time()
             if remaining <= 0:
                 break
@@ -921,6 +939,17 @@ class Nip46Client:
         # record it (get_public_key may have been skipped/unreliable).
         self.user_pubkey = signed.get("pubkey") or self.user_pubkey
         return signed
+
+    def cancel(self) -> None:
+        """Abort an in-flight blocking wait from another thread (0.17.1).
+
+        Sets the cancel flag so ``wait_for_connection`` / ``_read_response``
+        bail out promptly with a ``cancelled`` error, then tears down the
+        relay sockets.  Safe to call from a thread other than the one
+        blocked in the wait (e.g. the TUI reauth modal on Esc).
+        """
+        self._cancelled.set()
+        self.close()
 
     def close(self) -> None:
         close_msg = json.dumps(["CLOSE", self._sub_id])

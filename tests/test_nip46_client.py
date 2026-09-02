@@ -906,3 +906,54 @@ def test_reconnect_dedupes_inflight(monkeypatch):
     assert len(client._bg_threads) == 2
     for t in client._bg_threads:
         t.join(timeout=5)
+
+
+# ── cooperative cancellation (0.17.1) ─────────────────────────────────────────
+
+
+class _SilentWS:
+    """A fake ws the signer never answers on: recv always times out.
+
+    Drives ``wait_for_connection`` into its blocking read loop so we can
+    verify ``cancel()`` from another thread breaks it out promptly instead
+    of spinning to the timeout deadline.
+    """
+
+    def send(self, raw):
+        pass
+
+    def recv(self):
+        time.sleep(0.02)
+        raise TimeoutError("no message")
+
+    def settimeout(self, t):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_cancel_unblocks_wait_for_connection():
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = _SilentWS()
+
+    # Cancel shortly after the wait starts (from another thread, like the
+    # TUI reauth modal's Esc handler does).
+    threading.Timer(0.2, client.cancel).start()
+
+    t0 = time.time()
+    with pytest.raises(nip46.Nip46Error, match="cancelled"):
+        # A long timeout: without cancel this would block ~10s.  With
+        # cancel it must return in well under a second.
+        client.wait_for_connection(timeout=10)
+    elapsed = time.time() - t0
+    assert elapsed < 3, f"cancel did not unblock the wait promptly ({elapsed:.1f}s)"
+
+
+def test_cancel_is_idempotent_and_sets_flag():
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client.cancel()
+    assert client._cancelled.is_set()
+    # A second cancel (and a plain close) must not raise.
+    client.cancel()
+    client.close()
