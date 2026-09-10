@@ -45,6 +45,21 @@ def _ok_ffmpeg(cmd, stdout=None, stderr=None):
     return _R()
 
 
+def _ffprobe_aware(start_time: str):
+    """Fake subprocess.run that answers ffprobe with *start_time* and
+    otherwise behaves like _ok_ffmpeg."""
+    def _run(cmd, stdout=None, stderr=None, **kw):
+        if cmd and cmd[0] == "ffprobe":
+            class _R:
+                returncode = 0
+                stdout = start_time + "\n"
+
+            return _R()
+        return _ok_ffmpeg(cmd, stdout=stdout, stderr=stderr)
+
+    return _run
+
+
 def _write_transcript(sdir: Path, sid: str, starts: list[float]) -> None:
     segments = [{"start": s, "end": s + 2.0, "text": "x", "speaker": "YOU"} for s in starts]
     (sdir / f"{sid}.json").write_text(json.dumps({"segments": segments}))
@@ -256,6 +271,80 @@ def test_extract_frames_failed_seek_is_skipped(tmp_data, monkeypatch):
     written = worker._extract_frames(sdir, sid, _log_path(tmp_data, sid))
     assert written == 1
     assert not (sdir / "attachments" / "cue_00-00-05.png").exists()
+
+
+# ── offset-timeline videos (v0.19.1) ─────────────────────────────────────────
+
+
+def test_extract_frames_seeks_with_start_time_offset(tmp_data, monkeypatch):
+    """Pre-0.12.2 android screen recordings carry boot-clock PTS
+    (start_time ≈ uptime): seeks must be start_time + cue, not cue."""
+    from vezir.server import worker
+
+    sid = "01HZOFFSET000000000000A"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    _write_transcript(sdir, sid, [0.0, 65.0])
+
+    calls: list = []
+
+    def _run(cmd, stdout=None, stderr=None, **kw):
+        if cmd[0] == "ffprobe":
+            class _R:
+                returncode = 0
+                stdout = "270487.521800\n"
+
+            return _R()
+        calls.append(cmd)
+        return _ok_ffmpeg(cmd)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    written = worker._extract_frames(sdir, sid, _log_path(tmp_data, sid))
+
+    assert written == 2
+    seeks = [cmd[cmd.index("-ss") + 1] for cmd in calls]
+    assert seeks == [
+        worker._hhmmss(270487.521800 + 0.0),
+        worker._hhmmss(270487.521800 + 65.0),
+    ]
+    # Frame files keep the CUE names (offset only affects the seek).
+    names = sorted(p.name for p in (sdir / "attachments").iterdir())
+    assert names == ["cue_00-00-00.png", "cue_00-01-05.png"]
+
+
+def test_extract_frames_ffprobe_failure_falls_back_to_zero(tmp_data, monkeypatch):
+    from vezir.server import worker
+
+    sid = "01HZOFFSET000000000000B"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    _write_transcript(sdir, sid, [0.0])
+
+    def _run(cmd, stdout=None, stderr=None, **kw):
+        if cmd[0] == "ffprobe":
+            raise FileNotFoundError("ffprobe not installed")
+        return _ok_ffmpeg(cmd)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    assert worker._video_start_time(sdir / f"{sid}.mp4") == 0.0
+    written = worker._extract_frames(sdir, sid, _log_path(tmp_data, sid))
+    assert written == 1
+
+
+def test_video_start_time_parses_and_clamps(tmp_data, monkeypatch):
+    from vezir.server import worker
+
+    vid = tmp_data / "v.mp4"
+    vid.write_bytes(b"x")
+
+    monkeypatch.setattr(subprocess, "run", _ffprobe_aware("12.500000"))
+    assert worker._video_start_time(vid) == 12.5
+
+    monkeypatch.setattr(subprocess, "run", _ffprobe_aware("-3.0"))
+    assert worker._video_start_time(vid) == 0.0
+
+    monkeypatch.setattr(subprocess, "run", _ffprobe_aware("not-a-number"))
+    assert worker._video_start_time(vid) == 0.0
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

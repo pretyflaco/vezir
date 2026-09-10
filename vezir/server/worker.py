@@ -689,6 +689,35 @@ def _hhmmss(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _video_start_time(video: Path) -> float:
+    """The video stream's timeline offset in seconds (0 when well-behaved).
+
+    Screen recordings produced before vezir-android 0.12.2 carry raw
+    boot-clock timestamps (start_time ≈ system uptime, e.g. 270487s):
+    an absolute ``ffmpeg -ss <cue>`` seek then lands BEFORE the first
+    frame and produces empty output.  Seeking at ``start_time + cue``
+    works for both offset and normal videos.  Probe failures (no
+    ffprobe, unparseable output) fall back to 0 — the pre-0.19.1
+    behavior — rather than skipping extraction entirely.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=start_time",
+                "-of", "csv=p=0",
+                str(video),
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode == 0:
+            return max(0.0, float(proc.stdout.strip()))
+    except Exception as exc:
+        log.warning("ffprobe start_time probe failed for %s: %s", video, exc)
+    return 0.0
+
+
 def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
     """Extract one PNG frame per narrated cue into attachments/.
 
@@ -710,6 +739,15 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
             job_id, len(cues), _MAX_FRAMES,
         )
 
+    # Offset-timeline videos (pre-0.12.2 android screen recordings): seek
+    # relative to the stream's start_time, not the wall-clock zero.
+    offset = _video_start_time(video)
+    if offset > 0:
+        log.info(
+            "session %s: video timeline starts at %.1fs; seeking with offset",
+            job_id, offset,
+        )
+
     frames_dir = session_dir / "attachments"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -724,7 +762,7 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
                 written += 1
                 continue
             cmd = [
-                "ffmpeg", "-y", "-ss", stamp, "-i", str(video),
+                "ffmpeg", "-y", "-ss", _hhmmss(offset + ts), "-i", str(video),
                 "-frames:v", "1", "-q:v", "2", str(out),
             ]
             proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)

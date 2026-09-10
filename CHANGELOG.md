@@ -3,6 +3,27 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.19.1 — cue frames for offset-timeline videos
+
+No migration.
+
+### Fixed
+
+- **Frame extraction silently produced zero frames for android screen
+  recordings** (vezir-android <= 0.12.1).  Those MP4s carry raw
+  boot-clock video timestamps (`start_time` ≈ system uptime, e.g.
+  270487 s), so every absolute `ffmpeg -ss <cue>` seek landed before the
+  first frame — "No filtered frames", empty output, all cue frames
+  missing while transcript + iteration plan were fine.  The worker now
+  probes the video stream's `start_time` once via ffprobe and seeks at
+  `start_time + cue`; well-behaved videos (start_time 0) behave exactly
+  as before, and a probe failure falls back to the old behavior instead
+  of skipping extraction.  (Root-cause fix on the recorder side ships in
+  vezir-android 0.12.2; this server change rescues existing recordings
+  and any other offset-timeline source.)  3 new tests; 19 in
+  `test_worker_video.py`.
+
+
 ## 0.19.0 — TUI parity for the screenrecording iteration loop
 
 No migration.
