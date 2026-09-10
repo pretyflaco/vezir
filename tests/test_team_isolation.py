@@ -279,6 +279,66 @@ def test_retry_summary_cross_team_returns_404(client_factory):
     assert r.status_code == 404
 
 
+# ── retry-summary template override (v0.18.0) ────────────────────────────────
+
+
+def test_retry_summary_template_accepted_on_successful_session(
+    client_factory, monkeypatch,
+):
+    """A template produces a NEW artifact, so it's allowed even when the
+    session's summary already succeeded (no summary_error)."""
+    client = client_factory()
+    from vezir.server import queue, worker
+    queue.enqueue("01TMPLDONE", "alice", team_id="blink", title="demo")
+    queue.update_status("01TMPLDONE", "done")
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        worker, "enqueue_task",
+        lambda kind, sid, **kw: captured.update(kind=kind, sid=sid, **kw) or True,
+    )
+
+    tok = _issue_for("alice", "blink")
+    r = client.post(
+        "/api/sessions/01TMPLDONE/retry-summary",
+        headers=_headers(tok, "blink"),
+        json={"template": "iteration-plan"},
+    )
+    assert r.status_code == 200, r.text
+    assert captured["kind"] == "retry_summary"
+    assert captured["template_override"] == "iteration-plan"
+
+
+def test_retry_summary_template_shape_validated(client_factory):
+    client = client_factory()
+    from vezir.server import queue
+    queue.enqueue("01TMPLBAD", "alice", team_id="blink", title="demo")
+    queue.update_status("01TMPLBAD", "done")
+
+    tok = _issue_for("alice", "blink")
+    r = client.post(
+        "/api/sessions/01TMPLBAD/retry-summary",
+        headers=_headers(tok, "blink"),
+        json={"template": "../evil"},
+    )
+    assert r.status_code == 400
+
+
+def test_retry_summary_plain_still_requires_summary_error(client_factory):
+    client = client_factory()
+    from vezir.server import queue
+    queue.enqueue("01PLAIN", "alice", team_id="blink", title="demo")
+    queue.update_status("01PLAIN", "done")
+
+    tok = _issue_for("alice", "blink")
+    r = client.post(
+        "/api/sessions/01PLAIN/retry-summary",
+        headers=_headers(tok, "blink"),
+        json={},
+    )
+    assert r.status_code == 409
+
+
 # ── Non-member requests are 403 ─────────────────────────────────────────────
 
 

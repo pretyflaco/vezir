@@ -36,9 +36,16 @@ class _FakeApi:
         self.sessions = [
             _FakeSession("01AAA", "Brainstorm Phoenix",
                          artifacts={"summary": "01AAA.summary.md",
-                                    "txt": "01AAA.txt"}),
+                                    "txt": "01AAA.txt",
+                                    "iteration_plan": "01AAA.iteration-plan.md"}),
             _FakeSession("01BBB", "Weekly Sync", status="needs_labeling"),
         ]
+        self.attachments = {
+            "01AAA": [
+                {"name": "cue_00-01-05.png", "size": 12345,
+                 "content_type": "image/png"},
+            ],
+        }
 
     def get_sessions(self, limit=50, since=None):
         return _FakeResult(ok=self.sessions)
@@ -52,9 +59,21 @@ class _FakeApi:
     def download_artifact(self, sid, name):
         if name.endswith(".summary.md"):
             return _FakeResult(ok=b"# Summary\n\nPhoenix plan.\n")
+        if name.endswith(".iteration-plan.md"):
+            return _FakeResult(ok=b"# Plan\n\n- [00:01:05] high: fix it\n")
         if name.endswith(".txt"):
             return _FakeResult(ok=b"[00:00] ALICE: welcome\n")
+        if name.endswith(".mp4"):
+            return _FakeResult(ok=b"\x00\x00\x00\x18ftypmp42VIDEOBYTES")
         return _FakeResult(ok=None)
+
+    def list_attachments(self, sid):
+        return _FakeResult(ok=self.attachments.get(sid, []))
+
+    def download_attachment(self, sid, name):
+        if name == "cue_00-01-05.png":
+            return _FakeResult(ok=b"\x89PNG\r\n\x1a\nFAKEFRAME")
+        return _FakeResult(ok=None, success=False)
 
 
 @pytest.fixture
@@ -128,6 +147,70 @@ def test_get_summary_missing_artifact_errors(fake_client):
 
     with pytest.raises(RuntimeError, match="no 'summary' artifact"):
         mcp_server.get_summary("01BBB")
+
+
+# ── MCP artifact tools (v0.18.0) ─────────────────────────────────────────────
+
+
+def test_list_artifacts_returns_artifacts_and_attachments(fake_client):
+    from vezir.client import mcp_server
+
+    out = mcp_server.list_artifacts("01AAA")
+    assert out["artifacts"]["summary"] == "01AAA.summary.md"
+    assert out["artifacts"]["iteration_plan"] == "01AAA.iteration-plan.md"
+    assert out["attachments"][0]["name"] == "cue_00-01-05.png"
+
+
+def test_list_artifacts_empty_attachments(fake_client):
+    from vezir.client import mcp_server
+
+    out = mcp_server.list_artifacts("01BBB")
+    assert out["artifacts"] == {}
+    assert out["attachments"] == []
+
+
+def test_get_artifact_by_type_key(fake_client):
+    from vezir.client import mcp_server
+
+    assert "fix it" in mcp_server.get_artifact("01AAA", "iteration_plan")
+
+
+def test_get_artifact_text_by_filename(fake_client):
+    from vezir.client import mcp_server
+
+    assert "Phoenix plan." in mcp_server.get_artifact("01AAA", "01AAA.summary.md")
+
+
+def test_get_artifact_attachment_binary_requires_save_path(fake_client):
+    from vezir.client import mcp_server
+
+    with pytest.raises(RuntimeError, match="binary"):
+        mcp_server.get_artifact("01AAA", "cue_00-01-05.png")
+
+
+def test_get_artifact_binary_with_save_path(fake_client, tmp_path):
+    from vezir.client import mcp_server
+
+    dest = tmp_path / "frame.png"
+    out = mcp_server.get_artifact("01AAA", "cue_00-01-05.png", save_path=str(dest))
+    assert out == str(dest)
+    assert dest.read_bytes() == b"\x89PNG\r\n\x1a\nFAKEFRAME"
+
+
+def test_get_artifact_source_video_by_name(fake_client, tmp_path):
+    from vezir.client import mcp_server
+
+    dest = tmp_path / "demo.mp4"
+    out = mcp_server.get_artifact("01AAA", "01AAA.mp4", save_path=str(dest))
+    assert out == str(dest)
+    assert dest.read_bytes().startswith(b"\x00\x00\x00\x18ftyp")
+
+
+def test_get_artifact_missing_session_errors(fake_client):
+    from vezir.client import mcp_server
+
+    with pytest.raises(RuntimeError, match="session 01ZZZ"):
+        mcp_server.get_artifact("01ZZZ", "summary")
 
 
 # ── vezir ctx ────────────────────────────────────────────────────────────────

@@ -569,6 +569,17 @@ def _meet_label_help() -> str:
     return "\n".join(part for part in (proc.stdout, proc.stderr) if part)
 
 
+def meet_label_supports_option(option: str) -> bool:
+    """Return True if `millet label --help` advertises an option."""
+    help_text = _meet_label_help()
+    if not help_text:
+        return False
+    return any(
+        line.lstrip().startswith(option)
+        for line in help_text.splitlines()
+    )
+
+
 def meet_label_supports_apply_json() -> bool:
     """True if the installed millet's `label` command has `--apply-json`.
 
@@ -578,13 +589,7 @@ def meet_label_supports_apply_json() -> bool:
     probe to fail loudly with an actionable upgrade message rather than
     a confusing argv error.
     """
-    help_text = _meet_label_help()
-    if not help_text:
-        return False
-    return any(
-        line.lstrip().startswith("--apply-json")
-        for line in help_text.splitlines()
-    )
+    return meet_label_supports_option("--apply-json")
 
 
 def millet_timeout_seconds() -> int | None:
@@ -1224,6 +1229,9 @@ def artifact_stem(date_yyyymmdd: str, title: str | None) -> str:
 # The structured-JSON entry must come AFTER .frontmatter.json to avoid
 # shadowing it.
 ARTIFACT_EXTENSIONS: list[tuple[str, str]] = [
+    # Template summaries (0.18.0) before the plain summary: distinct suffix,
+    # no overlap, but keep them grouped for readability.
+    (".iteration-plan.md", ".iteration-plan.md"),
     (".summary.md", ".md"),
     (".frontmatter.json", ".frontmatter.json"),
     (".srt", ".srt"),

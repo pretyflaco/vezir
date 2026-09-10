@@ -193,6 +193,104 @@ def test_upload_rejects_invalid_mp3_header(client_and_token):
     assert list((tmp_data / "sessions").iterdir()) == []
 
 
+# ── video uploads (v0.18.0) ──────────────────────────────────────────────────
+
+_MP4_MAGIC = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 56
+_MOV_MAGIC = b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 56
+
+
+def test_upload_accepts_mp4_and_flags_video(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        files={"audio": ("demo.mp4", _MP4_MAGIC, "video/mp4")},
+    )
+
+    assert resp.status_code == 200
+    sid = resp.json()["session_id"]
+    uploaded = tmp_data / "sessions" / sid / f"{sid}.mp4"
+    assert uploaded.exists()
+
+    from vezir.server import queue
+    row = queue.get(sid)
+    assert row["video"] == 1
+    assert row["summary_template"] is None
+
+
+def test_upload_accepts_mov_by_extension(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        files={"audio": ("demo.mov", _MOV_MAGIC, "video/quicktime")},
+    )
+
+    assert resp.status_code == 200
+    sid = resp.json()["session_id"]
+    assert (tmp_data / "sessions" / sid / f"{sid}.mov").exists()
+
+
+def test_upload_rejects_spoofed_mp4(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        files={"audio": ("demo.mp4", b"OggS" + b"\x00" * 64, "video/mp4")},
+    )
+
+    assert resp.status_code == 415
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
+def test_upload_stores_summary_template(client_and_token):
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload",
+        headers=_bearer(token),
+        data={"summary_template": "iteration-plan"},
+        files={"audio": ("demo.mp4", _MP4_MAGIC, "video/mp4")},
+    )
+
+    assert resp.status_code == 200
+    from vezir.server import queue
+    row = queue.get(resp.json()["session_id"])
+    assert row["summary_template"] == "iteration-plan"
+
+
+def test_upload_multi_rejects_video(client_and_token):
+    """Video is single-file only: /upload/multi 415s video parts up front."""
+    client, token, tmp_data = client_and_token
+
+    resp = client.post(
+        "/upload/multi",
+        headers=_bearer(token),
+        files=[
+            ("audio", ("a.mp4", _MP4_MAGIC, "video/mp4")),
+            ("audio", ("b.mp4", _MP4_MAGIC, "video/mp4")),
+        ],
+    )
+
+    assert resp.status_code == 415
+    assert list((tmp_data / "sessions").iterdir()) == []
+
+
+def test_validate_magic_ftyp():
+    from fastapi import HTTPException
+
+    from vezir.server.uploads import _validate_magic
+
+    _validate_magic(".mp4", _MP4_MAGIC)  # no raise
+    _validate_magic(".mov", _MOV_MAGIC)  # no raise
+    _validate_magic(".mp4", b"")  # empty first chunk passes (deferred)
+    with pytest.raises(HTTPException):
+        _validate_magic(".mp4", b"RIFF" + b"\x00" * 16)
+
+
 def test_upload_rejects_oversized_body(monkeypatch, client_and_token):
     client, token, tmp_data = client_and_token
     monkeypatch.setenv("VEZIR_MAX_UPLOAD_BYTES", "100")

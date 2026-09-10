@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -30,12 +31,20 @@ class _RetrySummaryBody(BaseModel):
     # auto-detected summary is preserved).  "auto"/None = use the transcript's
     # own language (rewrites the primary summary).
     language: str | None = None
+    # Optional millet summary template (e.g. "iteration-plan").  Regenerates
+    # with the template's prompts and saves <base>.<template>.md alongside
+    # the primary summary.
+    template: str | None = None
 
 
 _VALID_PRESETS = {"high-quality", "confidential", "alternative"}
 # Languages with localized section headers in millet (millet.languages).
 # "auto" means "use the transcript's detected language".
 _VALID_SUMMARY_LANGUAGES = {"auto", "en", "de", "fr", "es", "tr", "fa"}
+# Template names become millet prompt filenames; millet validates the same
+# charset ([a-z0-9][a-z0-9_-]*) and unknown templates fall back to the
+# default prompts, so this is a shape check, not an allowlist.
+_TEMPLATE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _decorate(row: dict) -> dict:
@@ -363,12 +372,21 @@ def retry_summary(
     # The summary_error guard only applies to a plain retry (fixing a failed
     # summary).  A language override is an intentional re-summary of a
     # *successful* session in another language, so we allow it even when the
-    # summary already succeeded.
-    if not language_override and not row.get("summary_error"):
+    # summary already succeeded.  A template override likewise produces a NEW
+    # artifact (<base>.<template>.md), so it is allowed on success too.
+    template_override: str | None = None
+    if body and body.template:
+        tpl = body.template.strip().lower()
+        if not _TEMPLATE_RE.match(tpl):
+            raise HTTPException(400, f"invalid template: {body.template}")
+        template_override = tpl
+
+    if not language_override and not template_override and not row.get("summary_error"):
         raise HTTPException(
             409,
             "session has no summary_error; summary already succeeded "
-            "(pass a 'language' to generate an additional-language summary)",
+            "(pass a 'language' to generate an additional-language summary, "
+            "or a 'template' to generate a templated summary)",
         )
 
     preset_override = None
@@ -378,14 +396,15 @@ def retry_summary(
         preset_override = body.preset
 
     log.info(
-        "session=%s summary retry requested by %s (language=%s)",
-        session_id, github, language_override or "auto",
+        "session=%s summary retry requested by %s (language=%s template=%s)",
+        session_id, github, language_override or "auto", template_override,
     )
 
     queued = worker.enqueue_task(
         "retry_summary", session_id,
         preset_override=preset_override,
         language_override=language_override,
+        template_override=template_override,
     )
     if not queued:
         log.info(

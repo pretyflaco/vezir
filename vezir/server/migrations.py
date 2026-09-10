@@ -875,12 +875,48 @@ def migrate_0_14_0() -> dict:
     return {"version": version, "summary_fallback_column": "ready"}
 
 
+def migrate_0_18_0() -> dict:
+    """Add ``jobs.video`` and ``jobs.summary_template`` (screenrecording loop).
+
+    Purely additive: ``video`` flags uploads whose source file is video
+    (.mp4/.mov) so the worker extracts the audio track with ffmpeg before
+    transcription; ``summary_template`` carries the millet summary template
+    name (e.g. "iteration-plan") forwarded as millet's --summary-template.
+    Defaults: video=0, summary_template=NULL for all pre-existing rows.
+    Idempotent — both column adds are also part of queue schema bring-up,
+    so on a fresh DB the ALTERs are no-ops.
+    """
+    version = "0.18.0-video-template"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        for ddl in (
+            "ALTER TABLE jobs ADD COLUMN video INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE jobs ADD COLUMN summary_template TEXT",
+        ):
+            try:
+                c.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # column already exists (fresh schema bring-up)
+        c.commit()
+
+    _mark_applied(version)
+    log.info("migration %s complete; jobs.video + jobs.summary_template ready", version)
+    return {"version": version, "video_template_columns": "ready"}
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
 ALL_MIGRATIONS = [
     migrate_0_6_0, migrate_0_6_2, migrate_0_7_0, migrate_0_7_2, migrate_0_7_4,
-    migrate_0_10_0, migrate_0_14_0,
+    migrate_0_10_0, migrate_0_14_0, migrate_0_18_0,
 ]
 
 

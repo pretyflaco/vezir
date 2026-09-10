@@ -92,6 +92,7 @@ def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
                     session_id,
                     preset_override=kwargs.get("preset_override"),
                     language_override=kwargs.get("language_override"),
+                    template_override=kwargs.get("template_override"),
                 )
             elif kind == "finalize_labels":
                 _finalize_labels_task(session_id, kwargs.get("label_map") or {})
@@ -347,6 +348,11 @@ def _find_artifacts(session_dir: Path) -> dict:
         lang = stem.rsplit(".summary.", 1)[-1]  # <lang>
         if lang and "." not in lang:
             out[f"summary_{lang}"] = p.name
+    # Template summary (v0.18.0, e.g. millet --summary-template iteration-plan):
+    # <base>.<template>.md.  Exposed as artifact key "iteration_plan".
+    for p in sorted(session_dir.glob("*.iteration-plan.md")):
+        out["iteration_plan"] = p.name
+        break
     for p in sorted(session_dir.glob("*.pdf")):
         out["pdf"] = p.name
         break
@@ -355,7 +361,7 @@ def _find_artifacts(session_dir: Path) -> dict:
             marker in p.name
             for marker in (
                 ".session.", ".summary.", ".translation.",
-                ".frontmatter.", ".autoid.",
+                ".frontmatter.", ".autoid.", ".meta.",
             )
         ):
             continue
@@ -580,6 +586,161 @@ def _merge_multi_audio(session_dir: Path, job_id: str, log_path: Path) -> None:
              job_id, out.name, out.stat().st_size)
 
 
+def _find_source_video(session_dir: Path, job_id: str) -> Path | None:
+    """Return the session's source video file, or None for audio sessions."""
+    for ext in (".mp4", ".mov"):
+        candidate = session_dir / f"{job_id}{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _extract_video_audio(session_dir: Path, job_id: str, log_path: Path) -> None:
+    """Extract the audio track of a video upload into ``<id>.ogg``.
+
+    Video uploads (v0.18.0, screenrecording iteration loop) land as
+    ``<id>.mp4``/``<id>.mov`` at the session root.  millet resolves exactly
+    one ``*.wav/*.ogg/*.mp3`` per session dir, so we decode the audio track
+    to 16 kHz mono Opus (whisperx's expected input) before transcribe.  The
+    source video is NOT touched: it stays at the session root for cue-frame
+    extraction (:func:`_extract_frames`) and on-demand fetch via
+    ``GET /artifact/{id}/{name}``; it is never git-synced.
+
+    Idempotent: a pre-existing ``<id>.ogg`` (e.g. job re-run) is left alone.
+    """
+    out = session_dir / f"{job_id}.ogg"
+    if out.exists():
+        return
+    video = _find_source_video(session_dir, job_id)
+    if video is None:
+        raise RuntimeError(
+            f"job {job_id} is flagged video but no .mp4/.mov found in {session_dir}"
+        )
+
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video),
+        "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "48k",
+        str(out),
+    ]
+    log.info("extracting audio from video %s for session %s", video.name, job_id)
+    with log_path.open("a", encoding="utf-8") as lf:
+        lf.write(f"\n[video-extract] {' '.join(cmd)}\n")
+        lf.flush()
+        proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
+    if proc.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+        out.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ffmpeg failed to extract audio from {video.name} "
+            f"for session {job_id} (rc={proc.returncode}); see {log_path}"
+        )
+    config.secure_chmod_file(out)
+    log.info("extracted audio for session %s -> %s (%d bytes)",
+             job_id, out.name, out.stat().st_size)
+
+
+# ── Cue-frame extraction (v0.18.0) ──────────────────────────────────────────
+#
+# For video sessions, pull one PNG frame per narrated cue (transcript segment
+# start) into ``attachments/`` as ``cue_HH-MM-SS.png``.  Frames are stored
+# FLAT (no frames/ subdir) on purpose: the attachments list/download routes,
+# `vezir pull`, and millet's attachments sync all iterate the directory
+# non-recursively — flat files ride all three channels with zero new plumbing.
+#
+# The attachments sync caps (millet MAX_ATTACHMENTS=50 files) are shared with
+# user-uploaded attachments, so frames cap at 45 to leave headroom; when a
+# demo has more cues than that we sample evenly across the timeline so
+# coverage spans the whole recording instead of truncating the tail.
+
+_MAX_FRAMES = 45
+
+
+def _cue_timestamps(session_dir: Path, job_id: str) -> list[float]:
+    """Segment start times (seconds) from the session's transcript JSON."""
+    tj = session_dir / f"{job_id}.json"
+    if not tj.exists():
+        return []
+    try:
+        data = json.loads(tj.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    starts = []
+    for seg in data.get("segments", []) or []:
+        try:
+            starts.append(float(seg["start"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(starts)
+
+
+def _even_sample(items: list[float], cap: int) -> list[float]:
+    """Downsample to at most ``cap`` items, evenly across the list."""
+    if len(items) <= cap:
+        return items
+    if cap <= 1:
+        return items[:1]
+    step = (len(items) - 1) / (cap - 1)
+    return [items[round(i * step)] for i in range(cap)]
+
+
+def _hhmmss(seconds: float) -> str:
+    total = max(0, round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
+    """Extract one PNG frame per narrated cue into attachments/.
+
+    Returns the number of frames written (0 when the session has no video
+    source or no transcript cues).  Idempotent: existing frame files are
+    kept, so a re-run only fills gaps.
+    """
+    video = _find_source_video(session_dir, job_id)
+    if video is None:
+        return 0
+    cues = _cue_timestamps(session_dir, job_id)
+    if not cues:
+        log.info("session %s: no transcript cues; skipping frame extraction", job_id)
+        return 0
+    sampled = _even_sample(cues, _MAX_FRAMES)
+    if len(sampled) < len(cues):
+        log.info(
+            "session %s: %d cues exceed the %d-frame cap; sampling evenly",
+            job_id, len(cues), _MAX_FRAMES,
+        )
+
+    frames_dir = session_dir / "attachments"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    written = 0
+    with log_path.open("a", encoding="utf-8") as lf:
+        lf.write(f"\n[frames] extracting {len(sampled)} cue frame(s) from {video.name}\n")
+        lf.flush()
+        for ts in sampled:
+            stamp = _hhmmss(ts)
+            out = frames_dir / f"cue_{stamp.replace(':', '-')}.png"
+            if out.exists():
+                written += 1
+                continue
+            cmd = [
+                "ffmpeg", "-y", "-ss", stamp, "-i", str(video),
+                "-frames:v", "1", "-q:v", "2", str(out),
+            ]
+            proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
+            if proc.returncode == 0 and out.exists() and out.stat().st_size > 0:
+                config.secure_chmod_file(out)
+                written += 1
+            else:
+                out.unlink(missing_ok=True)
+                log.warning(
+                    "session %s: frame extraction failed at %s (rc=%s)",
+                    job_id, stamp, proc.returncode,
+                )
+    log.info("session %s: %d cue frame(s) in %s", job_id, written, frames_dir)
+    return written
+
+
 def process_one(job: dict) -> None:
     """Run the full pipeline for one claimed job."""
     job_id = job["id"]
@@ -616,11 +777,25 @@ def process_one(job: dict) -> None:
                 )
                 return
 
+        # 0b. video upload: extract the audio track into <id>.ogg before
+        # transcribe (millet only resolves .wav/.ogg/.mp3).  The source
+        # video stays at the session root for frame extraction.
+        if job.get("video"):
+            try:
+                _extract_video_audio(sd, job_id, log_path)
+            except Exception as exc:
+                queue.update_status(
+                    job_id, "error",
+                    error=f"video audio extraction failed: {exc}",
+                )
+                return
+
         # 1. transcribe
         requested_preset = job.get("summary_preset")
         rc = meet_runner.transcribe(
             sd, job_id, team_id, log_path,
             summary_preset=requested_preset,
+            summary_template=job.get("summary_template"),
         )
 
         # Distinguish between transcription failures and summary-only
@@ -658,7 +833,17 @@ def process_one(job: dict) -> None:
         # Belt-and-suspenders: if a preset was explicitly requested but no
         # summary file ended up on disk AND we haven't already captured a
         # summary error, record it as a summary_error (not a hard error).
-        if requested_preset and not list(sd.glob("*.summary.md")) and not summary_err_msg:
+        # A summary template writes <base>.<template>.md instead of
+        # <base>.summary.md, so check both (old millet degrades a template
+        # request to the default summary).
+        _summary_globs = ["*.summary.md"]
+        if job.get("summary_template"):
+            _summary_globs.append(f"*.{job['summary_template']}.md")
+        if (
+            requested_preset
+            and not any(list(sd.glob(g)) for g in _summary_globs)
+            and not summary_err_msg
+        ):
             summary_err_msg = _extract_summary_error(log_path) or (
                 f"preset '{requested_preset}' requested but no summary was generated"
             )
@@ -707,6 +892,17 @@ def process_one(job: dict) -> None:
                 "skipping sync", job_id,
             )
             return
+
+        # 3a-frames.  Video sessions: pull one frame per narrated cue into
+        # attachments/frames/ BEFORE sync so the frames ride the same push
+        # as the rest of the artifacts.  Runs inline on the worker thread
+        # (single-writer model); failures degrade to a log warning, never
+        # a failed job — the transcript/summary are the primary artifacts.
+        if job.get("video"):
+            try:
+                _extract_frames(sd, job_id, log_path)
+            except Exception:
+                log.exception("job %s: frame extraction failed; continuing", job_id)
 
         # 3b. unresolved speakers?
         if _has_unresolved_speakers(sd):
@@ -908,6 +1104,7 @@ def retry_summary_for_session(
     *,
     preset_override: str | None = None,
     language_override: str | None = None,
+    template_override: str | None = None,
 ) -> None:
     """Re-run summary generation for a completed session.
 
@@ -924,6 +1121,10 @@ def retry_summary_for_session(
     ``language_override`` (e.g. "de") regenerates the summary in that language
     and saves it as an ADDITIONAL ``*.summary.<lang>.md`` artifact, preserving
     the primary auto-detected summary.
+
+    ``template_override`` (e.g. "iteration-plan", v0.18.0) regenerates with
+    a millet summary template and saves ``*.<template>.md`` — so a session
+    uploaded without a template can get the artifact later.
     """
     sd = _session_dir(session_id)
     log_path = _job_log_path(session_id)
@@ -947,6 +1148,7 @@ def retry_summary_for_session(
             return
 
         requested_preset = preset_override or job.get("summary_preset")
+        requested_template = template_override or job.get("summary_template")
         if preset_override:
             log.info(
                 "retry-summary %s: using override preset '%s' (original: '%s')",
@@ -956,6 +1158,11 @@ def retry_summary_for_session(
             log.info(
                 "retry-summary %s: additional-language summary '%s'",
                 session_id, language_override,
+            )
+        if requested_template:
+            log.info(
+                "retry-summary %s: summary template '%s'",
+                session_id, requested_template,
             )
         queue.update_status(
             session_id, "summarizing",
@@ -974,6 +1181,7 @@ def retry_summary_for_session(
                 regenerate_summary=True,
                 summary_preset=requested_preset,
                 summary_language=language_override,
+                summary_template=requested_template,
             )
             if rc != 0:
                 summary_err = _error_with_tail(
@@ -989,6 +1197,11 @@ def retry_summary_for_session(
                         f".summary.{language_override}.md"
                     )
                     log.warning("retry-summary %s: %s", session_id, summary_err)
+            elif requested_template and not list(sd.glob(f"*.{requested_template}.md")):
+                summary_err = (
+                    f"summary retry produced no .{requested_template}.md"
+                )
+                log.warning("retry-summary %s: %s", session_id, summary_err)
             elif requested_preset and not list(sd.glob("*.summary.md")):
                 summary_err = (
                     f"summary retry produced no .summary.md for preset "

@@ -398,6 +398,7 @@ def build_transcribe_args(
     session_dir: Path,
     *,
     summary_preset: str | None = None,
+    summary_template: str | None = None,
     team_id: str | None = None,
 ) -> list[str]:
     """Build the `millet transcribe` argument list for a session directory."""
@@ -421,6 +422,18 @@ def build_transcribe_args(
         args.extend(["--torch-device", torch_device])
     if summary_preset:
         args.extend(["--summary-preset", summary_preset])
+    if summary_template:
+        # millet-pipeline >= 0.17.0.  Older millet: degrade to the default
+        # meeting summary rather than failing the whole transcription.
+        if config.meet_supports_option("--summary-template"):
+            args.extend(["--summary-template", summary_template])
+        else:
+            log.warning(
+                "job requested summary template %r but the installed millet "
+                "lacks --summary-template (needs millet-pipeline >= 0.17.0); "
+                "falling back to the default summary",
+                summary_template,
+            )
     default_language = _team_default_language(team_id)
     if default_language and config.meet_supports_option("--default-language"):
         args.extend(["--default-language", default_language])
@@ -429,7 +442,8 @@ def build_transcribe_args(
 
 
 def transcribe(session_dir: Path, job_id: str, team_id: str, log_path: Path,
-               *, summary_preset: str | None = None) -> int:
+               *, summary_preset: str | None = None,
+               summary_template: str | None = None) -> int:
     """Run `millet transcribe` on a session directory with --auto labeling.
 
     The session_dir must contain the .wav file produced by `millet record`
@@ -442,7 +456,8 @@ def transcribe(session_dir: Path, job_id: str, team_id: str, log_path: Path,
     # pass the dir to keep the layout compatible with `millet sync` later.
     return run_meet(
         build_transcribe_args(
-            session_dir, summary_preset=summary_preset, team_id=team_id,
+            session_dir, summary_preset=summary_preset,
+            summary_template=summary_template, team_id=team_id,
         ),
         job_id=job_id,
         team_id=team_id,
@@ -461,6 +476,7 @@ def apply_labels_json(
     regenerate_summary: bool = False,
     summary_preset: str | None = None,
     summary_language: str | None = None,
+    summary_template: str | None = None,
 ) -> int:
     """Apply a speaker->name map via `millet label --apply-json` (subprocess).
 
@@ -501,6 +517,8 @@ def apply_labels_json(
         args.extend(["--summary-preset", summary_preset])
     if summary_language:
         args.extend(["--summary-language", summary_language])
+    if summary_template and config.meet_label_supports_option("--summary-template"):
+        args.extend(["--summary-template", summary_template])
     if update_profiles:
         args.append("--update-profiles")
     args.append(str(session_dir))

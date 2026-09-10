@@ -280,6 +280,14 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str) -> None:
         # fell back (MILLET_SUMMARY_PRESET_FALLBACK opt-in).  NULL when the
         # requested preset ran.
         "ALTER TABLE jobs ADD COLUMN summary_fallback TEXT",
+        # v0.18.0: video upload (screenrecording iteration loop).  1 when
+        # the session's source file is video (.mp4/.mov); the worker
+        # extracts the audio track with ffmpeg before transcription.
+        "ALTER TABLE jobs ADD COLUMN video INTEGER NOT NULL DEFAULT 0",
+        # v0.18.0: millet summary template name (e.g. "iteration-plan"),
+        # forwarded as millet's --summary-template.  NULL = default
+        # meeting summary.
+        "ALTER TABLE jobs ADD COLUMN summary_template TEXT",
         # v0.7.4: teams.slug (mutable display name); teams.id is now a
         # stable UUID.  Added here for DBs predating the column; the
         # 0.7.4 data migration backfills slug=id for legacy rows then
@@ -328,10 +336,12 @@ def enqueue(
     *,
     team_id: str,
     summary_preset: str | None = None,
+    summary_template: str | None = None,
     auto_label_enabled: bool = True,
     sync_enabled: bool = True,
     personal: bool = False,
     multi_audio: bool = False,
+    video: bool = False,
     client_agent: str | None = None,
 ) -> None:
     """Add a new job in `queued` state.
@@ -362,6 +372,10 @@ def enqueue(
         # sync folder name / schedule matching, so an unbounded value is
         # both a storage and a display hazard (L-10).
         title = title.strip()[:256] or None
+    if summary_template is not None:
+        # Becomes a millet prompt filename (millet validates the charset
+        # itself); bound length defensively.
+        summary_template = summary_template.strip()[:64] or None
     # v0.7.4: jobs store the team's stable uuid.  In production
     # ``team_id`` arrives as the uuid (from require_team_context); accept
     # a slug too and resolve, so the stored value is always the uuid.
@@ -369,15 +383,17 @@ def enqueue(
     with _conn() as c:
         c.execute(
             "INSERT INTO jobs (id, github, team_id, title, summary_preset, "
-            "auto_label_enabled, sync_enabled, personal, multi_audio, "
-            "client_agent, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            "summary_template, auto_label_enabled, sync_enabled, personal, "
+            "multi_audio, video, client_agent, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
             (
                 job_id, github, team_id, title, summary_preset,
+                summary_template,
                 1 if auto_label_enabled else 0,
                 1 if sync_enabled else 0,
                 1 if personal else 0,
                 1 if multi_audio else 0,
+                1 if video else 0,
                 client_agent,
                 _now(), _now(),
             ),

@@ -86,7 +86,12 @@ RESUMABLE_TTL_SEC = 24 * 60 * 60
 
 # Audio extensions vezir accepts. millet decodes all of these via ffmpeg
 # (whisperx.load_audio is ffmpeg-backed); MP3 is supported end-to-end since 0.8.11.
-ACCEPTED_EXTS = {".wav", ".ogg", ".mp3"}
+ACCEPTED_AUDIO_EXTS = {".wav", ".ogg", ".mp3"}
+# Video extensions accepted since 0.18.0 (screenrecording iteration loop):
+# the worker extracts the audio track with ffmpeg before transcription and
+# keeps the source video at the session root for frame extraction.
+VIDEO_EXTS = {".mp4", ".mov"}
+ACCEPTED_EXTS = ACCEPTED_AUDIO_EXTS | VIDEO_EXTS
 CONTENT_TYPE_EXTS = {
     "audio/wav": ".wav",
     "audio/wave": ".wav",
@@ -96,6 +101,8 @@ CONTENT_TYPE_EXTS = {
     "application/ogg": ".ogg",
     "audio/mpeg": ".mp3",
     "audio/mp3": ".mp3",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
 }
 
 
@@ -112,12 +119,12 @@ def _pick_extension(upload_filename: str | None, content_type: str | None) -> st
     allowed = ", ".join(sorted(ACCEPTED_EXTS))
     raise HTTPException(
         status_code=415,
-        detail=f"unsupported audio type; expected {allowed}",
+        detail=f"unsupported file type; expected {allowed}",
     )
 
 
 def _validate_magic(ext: str, chunk: bytes) -> None:
-    """Reject obvious filename/MIME spoofing for WAV, OGG, and MP3 uploads."""
+    """Reject obvious filename/MIME spoofing for WAV, OGG, MP3, and video uploads."""
     if not chunk:
         return
     ok = False
@@ -131,8 +138,13 @@ def _validate_magic(ext: str, chunk: bytes) -> None:
         ok = chunk.startswith(b"ID3") or (
             len(chunk) >= 2 and chunk[0] == 0xFF and (chunk[1] & 0xE0) == 0xE0
         )
+    elif ext in VIDEO_EXTS:
+        # ISO-BMFF (MP4/MOV): 4-byte box size, then the box type — the first
+        # box of a valid file is always "ftyp".  Covers both the mp4 and the
+        # QuickTime ("qt  ") brands.
+        ok = len(chunk) >= 8 and chunk[4:8] == b"ftyp"
     if not ok:
-        raise HTTPException(status_code=415, detail=f"invalid {ext} audio header")
+        raise HTTPException(status_code=415, detail=f"invalid {ext} file header")
 
 
 def _parse_bool_form(v: str | None, default: bool) -> bool:
@@ -159,6 +171,7 @@ async def upload(
     audio: UploadFile = File(...),
     title: str | None = Form(default=None),
     summary_preset: str | None = Form(default=None),
+    summary_template: str | None = Form(default=None),
     # Per-upload privacy toggles.  Default True preserves pre-opt-out
     # behavior for older clients (vezir < 0.1.11, vezir-android < 0.1.4)
     # that don't send these fields.
@@ -260,9 +273,11 @@ async def upload(
         team_id=team_id,
         title=title,
         summary_preset=summary_preset,
+        summary_template=summary_template,
         auto_label_enabled=auto_label_enabled,
         sync_enabled=sync_enabled,
         personal=is_personal,
+        video=ext in VIDEO_EXTS,
         client_agent=request.headers.get("user-agent"),
     )
     _idempotency_put(github, team_id, key, session_id)
@@ -288,6 +303,7 @@ async def upload_multi(
     audio: list[UploadFile] = File(...),
     title: str | None = Form(default=None),
     summary_preset: str | None = Form(default=None),
+    summary_template: str | None = Form(default=None),
     auto_label: str | None = Form(default=None),
     sync: str | None = Form(default=None),
     personal: str | None = Form(default=None),
@@ -318,14 +334,23 @@ async def upload_multi(
         except ValueError:
             pass
 
+    # All parts must share one extension so the concatenated output has a
+    # single, unambiguous container.  We pick the extension from the first
+    # part and require the rest to agree.  (Validated BEFORE the session
+    # dir is created so a rejected upload leaves nothing behind.)
+    first_ext = _pick_extension(audio[0].filename, audio[0].content_type)
+    if first_ext in VIDEO_EXTS:
+        # Video is strictly single-file: the ffmpeg concat used for audio
+        # parts is not meaningful for screen recordings, and the video
+        # pipeline (audio extraction + cue frames) assumes one source file.
+        raise HTTPException(
+            status_code=415,
+            detail="video uploads are single-file; use /upload for one video",
+        )
+
     session_id = ulid.new().str
     sdir = config.sessions_dir() / session_id
     config.secure_mkdir(sdir)
-
-    # All parts must share one extension so the concatenated output has a
-    # single, unambiguous container.  We pick the extension from the first
-    # part and require the rest to agree.
-    first_ext = _pick_extension(audio[0].filename, audio[0].content_type)
 
     total_written = 0
     try:
@@ -389,6 +414,7 @@ async def upload_multi(
         team_id=team_id,
         title=title,
         summary_preset=summary_preset,
+        summary_template=summary_template,
         auto_label_enabled=auto_label_enabled,
         sync_enabled=sync_enabled,
         personal=is_personal,
@@ -515,6 +541,7 @@ async def create_resumable_upload(
     upload_content_type: str | None = Header(default=None),
     title: str | None = Form(default=None),
     summary_preset: str | None = Form(default=None),
+    summary_template: str | None = Form(default=None),
     auto_label: str | None = Form(default=None),
     sync: str | None = Form(default=None),
     personal: str | None = Form(default=None),
@@ -549,6 +576,7 @@ async def create_resumable_upload(
         "upload_length": upload_length,
         "title": title,
         "summary_preset": summary_preset,
+        "summary_template": summary_template,
         "auto_label": _parse_bool_form(auto_label, default=True),
         "sync": _parse_bool_form(sync, default=True),
         "personal": _parse_bool_form(personal, default=False),
@@ -717,9 +745,11 @@ def _finalize_resumable(upload_id: str, meta: dict) -> str:
         team_id=meta["team_id"],
         title=meta.get("title"),
         summary_preset=meta.get("summary_preset"),
+        summary_template=meta.get("summary_template"),
         auto_label_enabled=meta.get("auto_label", True),
         sync_enabled=meta.get("sync", True),
         personal=meta.get("personal", False),
+        video=ext in VIDEO_EXTS,
         client_agent=meta.get("client_agent"),
     )
     return session_id

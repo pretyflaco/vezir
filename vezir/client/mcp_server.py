@@ -112,6 +112,82 @@ def get_summary(session_id: str) -> str:
     return _fetch_artifact_text(session_id, "summary", ".summary.md")
 
 
+def list_artifacts(session_id: str) -> dict:
+    """List every downloadable file for a session.
+
+    Returns ``{"artifacts": {<type>: <filename>}, "attachments": [...]}``:
+    the artifact dict (transcript/summary/pdf/iteration_plan/… keyed by
+    type) plus the attachments list (cue frames ``cue_HH-MM-SS.png`` and
+    any user-uploaded files).  Use a filename (or an artifact type key)
+    with get_artifact to pull the content.  The source video of a video
+    session (``.mp4``/``.mov``) sits at the session root — it is not in
+    either list but get_artifact can fetch it by name.
+    """
+    api = _client()
+    result = api.get_session(session_id)
+    if not result.is_ok():
+        raise RuntimeError(f"session {session_id}: {result.error_message()}")
+    session = result.ok
+    att = api.list_attachments(session_id)
+    # A server too old for the attachments route 404s — treat as none.
+    attachments = att.ok if att.is_ok() else []
+    return {
+        "session_id": session_id,
+        "artifacts": dict(session.artifacts),
+        "attachments": attachments,
+    }
+
+
+def get_artifact(session_id: str, name: str, save_path: str | None = None) -> str:
+    """Download one file of a session by name (or artifact type key).
+
+    ``name`` may be an artifact type (``txt``, ``summary``,
+    ``iteration_plan``, ``json``, ``srt``, ``pdf``), an exact filename
+    from list_artifacts (e.g. ``cue_00-03-12.png``), or a session-root
+    file (the source video).  Attachments (frames, user files) are
+    resolved automatically.
+
+    Text content is returned decoded.  Binary content (png, pdf, mp4)
+    requires ``save_path``: the file is written there and the path is
+    returned — pass the path to an image/PDF-capable tool next.
+    """
+    from pathlib import Path
+
+    api = _client()
+    result = api.get_session(session_id)
+    if not result.is_ok():
+        raise RuntimeError(f"session {session_id}: {result.error_message()}")
+    session = result.ok
+
+    # Resolve an artifact type key to its filename.
+    filename = session.artifacts.get(name, name)
+
+    # Attachments live on a different route; prefer it when the name is
+    # listed there (frames, user-uploaded files).
+    att = api.list_attachments(session_id)
+    att_names = {a.get("name") for a in att.ok} if att.is_ok() else set()
+    if filename in att_names:
+        data = api.download_attachment(session_id, filename)
+    else:
+        data = api.download_artifact(session_id, filename)
+    if not data.is_ok():
+        raise RuntimeError(f"download failed: {data.error_message()}")
+    raw: bytes = data.ok
+
+    if save_path:
+        dest = Path(save_path).expanduser()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+        return str(dest)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RuntimeError(
+            f"'{filename}' is binary ({len(raw)} bytes) — call get_artifact "
+            "again with save_path set to a local file path"
+        ) from None
+
+
 def get_transcript(session_id: str, max_chars: int = 0) -> str:
     """Return the complete diarized transcript (plain text) for a session.
 
@@ -146,4 +222,6 @@ def serve() -> None:
     server.tool()(search_sessions)
     server.tool()(get_summary)
     server.tool()(get_transcript)
+    server.tool()(list_artifacts)
+    server.tool()(get_artifact)
     server.run()

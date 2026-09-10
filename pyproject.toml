@@ -91,7 +91,11 @@ server = [
     # older millet stores attachments fine but silently never syncs them.
     # (Earlier pins: >=0.12.5 title-aware schedule matching; >=0.12.7 in-room
     # multi-speaker collapse fix; >=0.13.0 label --apply-json.)
-    "millet-pipeline>=0.15.0",
+    # Raised to >= 0.17.0 for --summary-template (vezir 0.18.0): template
+    # summaries (e.g. iteration-plan) and their correct git-sync naming.
+    # meet_runner feature-probes and degrades gracefully on older millet, but
+    # the floor keeps a fresh `pip install vezir[server]` honest.
+    "millet-pipeline>=0.17.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

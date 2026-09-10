@@ -191,7 +191,8 @@ def test_drain_tasks_dispatches_and_releases_dedupe():
     assert ("sync", "01A", "weekly") in calls
     assert (
         "retry", "01B",
-        {"preset_override": "confidential", "language_override": "de"},
+        {"preset_override": "confidential", "language_override": "de",
+         "template_override": None},
     ) in calls
     # After the drain the dedupe key is released: re-enqueue works.
     assert worker.enqueue_task("sync", "01A", meeting_type="weekly") is True

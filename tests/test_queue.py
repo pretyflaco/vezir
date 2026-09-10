@@ -61,6 +61,39 @@ def test_multi_audio_flag_roundtrips(tmp_data):
     assert queue.get("01HZ00000000000000SINGLE01")["multi_audio"] == 0
 
 
+def test_video_and_template_roundtrip(tmp_data):
+    """v0.18.0 columns: jobs.video + jobs.summary_template."""
+    from vezir.server import queue
+    queue.enqueue(
+        "01HZ00000000000000VIDEO001", github="alice", team_id="blink",
+        video=True, summary_template="iteration-plan",
+    )
+    queue.enqueue(
+        "01HZ00000000000000AUDIO001", github="alice", team_id="blink",
+    )
+    row = queue.get("01HZ00000000000000VIDEO001")
+    assert row["video"] == 1
+    assert row["summary_template"] == "iteration-plan"
+    legacy = queue.get("01HZ00000000000000AUDIO001")
+    assert legacy["video"] == 0
+    assert legacy["summary_template"] is None
+
+
+def test_summary_template_trimmed_and_bounded(tmp_data):
+    from vezir.server import queue
+    queue.enqueue(
+        "01HZ00000000000000TMPL0001", github="alice", team_id="blink",
+        summary_template="  " + "t" * 100 + "  ",
+    )
+    stored = queue.get("01HZ00000000000000TMPL0001")["summary_template"]
+    assert stored is not None and len(stored) == 64
+    queue.enqueue(
+        "01HZ00000000000000TMPL0002", github="alice", team_id="blink",
+        summary_template="   ",
+    )
+    assert queue.get("01HZ00000000000000TMPL0002")["summary_template"] is None
+
+
 def test_empty_is_a_valid_status(tmp_data):
     from vezir.server.queue import VALID_STATUSES
     assert "empty" in VALID_STATUSES

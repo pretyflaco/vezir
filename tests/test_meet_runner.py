@@ -99,6 +99,91 @@ def test_transcribe_runs_built_args(monkeypatch, tmp_path):
     assert captured["log_path"] == log_path
 
 
+# ── --summary-template (v0.18.0) ─────────────────────────────────────────────
+
+
+def test_build_transcribe_args_template_when_supported(monkeypatch, tmp_path):
+    _patch_transcribe_config(monkeypatch, device="cpu", compute_type="int8")
+    monkeypatch.setattr(
+        meet_runner.config, "meet_supports_option",
+        lambda option: option == "--summary-template",
+    )
+    args = meet_runner.build_transcribe_args(
+        _session_dir(tmp_path), summary_template="iteration-plan",
+    )
+    i = args.index("--summary-template")
+    assert args[i + 1] == "iteration-plan"
+
+
+def test_build_transcribe_args_template_degrades_on_old_millet(monkeypatch, tmp_path):
+    """millet < 0.17.0 lacks --summary-template: skip the flag (with a log
+    warning) rather than failing the whole transcription."""
+    _patch_transcribe_config(monkeypatch, device="cpu", compute_type="int8")
+    monkeypatch.setattr(
+        meet_runner.config, "meet_supports_option", lambda option: False,
+    )
+    args = meet_runner.build_transcribe_args(
+        _session_dir(tmp_path), summary_template="iteration-plan",
+    )
+    assert "--summary-template" not in args
+
+
+def test_apply_labels_json_forwards_template(monkeypatch, tmp_path):
+    """The retry-summary path must carry the template through label --apply-json."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        meet_runner.config, "meet_label_supports_apply_json", lambda: True,
+    )
+    monkeypatch.setattr(
+        meet_runner.config, "meet_label_supports_option",
+        lambda option: option == "--summary-template",
+    )
+    monkeypatch.setattr(
+        meet_runner.config, "secure_write_text",
+        lambda path, text: Path(path).write_text(text),
+    )
+
+    def fake_run_meet(args, job_id, team_id, log_path=None):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
+
+    session_dir = _session_dir(tmp_path)
+    rc = meet_runner.apply_labels_json(
+        session_dir, "job-1", "blink", tmp_path / "w.log",
+        label_map={}, regenerate_summary=True,
+        summary_template="iteration-plan",
+    )
+    assert rc == 0
+    i = captured["args"].index("--summary-template")
+    assert captured["args"][i + 1] == "iteration-plan"
+
+
+def test_apply_labels_json_template_skipped_on_old_millet(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        meet_runner.config, "meet_label_supports_apply_json", lambda: True,
+    )
+    monkeypatch.setattr(
+        meet_runner.config, "meet_label_supports_option", lambda option: False,
+    )
+    monkeypatch.setattr(
+        meet_runner.config, "secure_write_text",
+        lambda path, text: Path(path).write_text(text),
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        meet_runner, "run_meet",
+        lambda args, job_id, team_id, log_path=None: captured.update(args=args) or 0,
+    )
+    meet_runner.apply_labels_json(
+        _session_dir(tmp_path), "job-1", "blink", tmp_path / "w.log",
+        label_map={}, regenerate_summary=True,
+        summary_template="iteration-plan",
+    )
+    assert "--summary-template" not in captured["args"]
+
+
 def test_build_transcribe_args_uses_linux_defaults(monkeypatch, tmp_path):
     monkeypatch.delenv("VEZIR_MEET_DEVICE", raising=False)
     monkeypatch.delenv("VEZIR_MEET_COMPUTE_TYPE", raising=False)

@@ -768,6 +768,25 @@ def _check_millet_binary(r: _Results) -> None:
         )
 
 
+def _check_ffmpeg(r: _Results) -> None:
+    """S5b: ffmpeg availability (server-side).
+
+    ffmpeg is a de-facto worker requirement: multi-audio merge, video
+    audio extraction, and cue-frame extraction (0.18.0) all shell out to
+    the bare ``ffmpeg`` binary.  Advisory only — audio-only single-file
+    sessions process fine without it.
+    """
+    path = _which("ffmpeg")
+    if path:
+        r.ok(f"ffmpeg: {path}")
+    else:
+        r.warn(
+            "ffmpeg not found on PATH.  Multi-audio merge, video uploads, "
+            "and frame extraction will fail.  Install ffmpeg (e.g. "
+            "apt install ffmpeg / brew install ffmpeg)."
+        )
+
+
 def _check_voiceprint_dbs(r: _Results) -> None:
     """S6: per-team voiceprint DB existence."""
     teams_root = config.teams_dir()
@@ -900,6 +919,7 @@ def run_doctor() -> int:
         _check_server_data_perms(r_server)
         _check_migrations(r_server)
         _check_millet_binary(r_server)
+        _check_ffmpeg(r_server)
         _check_voiceprint_dbs(r_server)
         _check_server_json(r_server)
         _check_stale_jobs(r_server)

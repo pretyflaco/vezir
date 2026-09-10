@@ -159,6 +159,10 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
     help="Summarization quality/privacy preset")
+@click.option("--template", "summary_template", default=None,
+              help="Summary template name (e.g. 'iteration-plan'); writes "
+                   "<base>.<template>.md instead of the default summary. "
+                   "Requires millet-pipeline >= 0.17.0 on the server")
 @click.option("--auto-label/--no-auto-label", "auto_label", default=None,
               help="Auto-label speakers against the central voiceprint DB "
                    "(default: on; persists across launches)")
@@ -177,9 +181,9 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
     "audio_file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_cmd(server_url, token, team, title, compress, preset, auto_label, sync,
-               wait, wait_timeout, personal, audio_file):
-    """Upload an existing WAV/OGG recording to vezir."""
+def upload_cmd(server_url, token, team, title, compress, preset, summary_template,
+               auto_label, sync, wait, wait_timeout, personal, audio_file):
+    """Upload an existing WAV/OGG/MP3 recording or MP4/MOV screen recording to vezir."""
     from .client import uploader
     from .client.config import load_client_prefs, save_client_prefs
 
@@ -281,6 +285,7 @@ def upload_cmd(server_url, token, team, title, compress, preset, auto_label, syn
         upload_kwargs = dict(
             title=title,
             summary_preset=preset,
+            summary_template=summary_template,
             auto_label=auto_label,
             sync=sync,
             personal=personal,
@@ -335,6 +340,10 @@ def upload_cmd(server_url, token, team, title, compress, preset, auto_label, syn
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
     help="Summarization quality/privacy preset")
+@click.option("--template", "summary_template", default=None,
+              help="Summary template name (e.g. 'iteration-plan'); writes "
+                   "<base>.<template>.md instead of the default summary. "
+                   "Requires millet-pipeline >= 0.17.0 on the server")
 @click.option("--auto-label/--no-auto-label", "auto_label", default=None,
               help="Auto-label speakers against the central voiceprint DB "
                    "(default: on; persists across launches)")
@@ -352,7 +361,8 @@ def upload_cmd(server_url, token, team, title, compress, preset, auto_label, syn
     nargs=-1,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def upload_multi_cmd(server_url, token, team, title, from_dir, preset, auto_label,
+def upload_multi_cmd(server_url, token, team, title, from_dir, preset,
+                     summary_template, auto_label,
                      sync, wait, wait_timeout, personal, audio_files):
     """Upload several audio files as ONE meeting.
 
@@ -450,6 +460,7 @@ def upload_multi_cmd(server_url, token, team, title, from_dir, preset, auto_labe
             server_url, token, paths,
             title=title,
             summary_preset=preset,
+            summary_template=summary_template,
             auto_label=auto_label,
             sync=sync,
             personal=personal,

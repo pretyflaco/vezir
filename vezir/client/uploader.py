@@ -11,10 +11,16 @@ import httpx
 log = logging.getLogger("vezir.client.uploader")
 
 ACCEPTED_AUDIO_EXTS = {".wav", ".ogg", ".mp3"}
+# Video uploads (0.18.0): the server extracts the audio track with ffmpeg
+# before transcription and pulls cue frames from the source video.
+VIDEO_EXTS = {".mp4", ".mov"}
+ACCEPTED_EXTS = ACCEPTED_AUDIO_EXTS | VIDEO_EXTS
 CONTENT_TYPES = {
     ".wav": "audio/wav",
     ".ogg": "audio/ogg",
     ".mp3": "audio/mpeg",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
 }
 
 ProgressCallback = Callable[[int, int, float], None]
@@ -32,8 +38,8 @@ def validate_audio_path(audio_path: Path) -> Path:
     if not audio_path.is_file():
         raise ValueError(f"audio path is not a file: {audio_path}")
     ext = audio_path.suffix.lower()
-    if ext not in ACCEPTED_AUDIO_EXTS:
-        allowed = ", ".join(sorted(ACCEPTED_AUDIO_EXTS))
+    if ext not in ACCEPTED_EXTS:
+        allowed = ", ".join(sorted(ACCEPTED_EXTS))
         raise ValueError(f"unsupported audio type {ext or '(none)'}; expected {allowed}")
     return audio_path
 
@@ -133,6 +139,7 @@ def upload(
     audio_path: Path,
     title: str | None = None,
     summary_preset: str | None = None,
+    summary_template: str | None = None,
     auto_label: bool = True,
     sync: bool = True,
     personal: bool = False,
@@ -186,6 +193,8 @@ def upload(
                     data["title"] = title
                 if summary_preset:
                     data["summary_preset"] = summary_preset
+                if summary_template:
+                    data["summary_template"] = summary_template
                 # Privacy toggles sent as strings so FastAPI's Form
                 # parsing is identical across clients.  Always send so
                 # the user's explicit choice is recorded; server treats
@@ -407,6 +416,7 @@ def upload_multi(
     audio_paths: list[Path],
     title: str | None = None,
     summary_preset: str | None = None,
+    summary_template: str | None = None,
     auto_label: bool = True,
     sync: bool = True,
     personal: bool = False,
@@ -461,6 +471,8 @@ def upload_multi(
                 data["title"] = title
             if summary_preset:
                 data["summary_preset"] = summary_preset
+            if summary_template:
+                data["summary_template"] = summary_template
             data["auto_label"] = "true" if auto_label else "false"
             data["sync"] = "true" if sync else "false"
             if personal:
@@ -629,6 +641,7 @@ def upload_resumable(
     audio_path: Path,
     title: str | None = None,
     summary_preset: str | None = None,
+    summary_template: str | None = None,
     auto_label: bool = True,
     sync: bool = True,
     personal: bool = False,
@@ -684,6 +697,8 @@ def upload_resumable(
         data["title"] = title
     if summary_preset:
         data["summary_preset"] = summary_preset
+    if summary_template:
+        data["summary_template"] = summary_template
     data["auto_label"] = "true" if auto_label else "false"
     data["sync"] = "true" if sync else "false"
     if personal:

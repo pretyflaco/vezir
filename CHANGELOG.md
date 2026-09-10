@@ -3,6 +3,74 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.18.0 — video uploads, cue frames, summary templates, MCP artifact tools
+
+Migration: `0.18.0-video-template` (idempotent; adds `jobs.video` +
+`jobs.summary_template`, both also in queue schema bring-up).
+
+The screenrecording-driven iteration loop is now a first-class flow:
+`vezir upload demo.mp4 --template iteration-plan` yields a diarized
+timestamped transcript, a PNG frame at every narrated cue, and an
+iteration plan (timestamped issues / severity / suggested fixes) — with
+the source video kept on the server, fetchable on demand.
+
+### Added
+
+- **Video upload (`.mp4`/`.mov`) — server + CLI.**
+  * Client validation (`vezir/client/uploader.py`) and all three server
+    validation layers (extension/MIME allowlists, first-chunk magic
+    sniffing with a new ISO-BMFF `ftyp` check) accept video on every
+    upload path (one-shot, multi, resumable).
+  * The worker extracts the audio track with ffmpeg (16 kHz mono Opus,
+    modeled on `_merge_multi_audio`) into `<id>.ogg` before transcribe;
+    millet never sees the video file.  The source video stays at the
+    session root — fetchable via the existing `GET /artifact/{id}/{name}`
+    route, deliberately not git-synced (the team repo stays lean).
+  * New `jobs.video` flag; `vezir doctor` gains a server-side ffmpeg
+    presence check.
+- **Cue frames.**  For video sessions the worker pulls one PNG per
+  narrated cue (transcript segment start) with `ffmpeg -ss` into
+  `attachments/` as `cue_HH-MM-SS.png` — stored flat on purpose, so the
+  existing attachments list/download routes, `vezir pull`, and millet's
+  attachments git-sync all carry them with zero new plumbing.  Runs
+  inline before sync so frames ride the first push; capped at 45 frames
+  (even sampling across the timeline beyond that) to share the
+  50-file attachments sync cap fairly with user attachments.
+- **`--template` / summary templates (requires millet-pipeline >= 0.17.0).**
+  * `vezir upload --template iteration-plan` (also `upload-multi`) sets
+    `jobs.summary_template` via a new upload form field; the worker
+    forwards millet's `--summary-template`, feature-gated with
+    `config.meet_supports_option()` so older millet degrades to the
+    default summary with a log warning instead of failing.
+  * Output lands as `<base>.iteration-plan.md` (+ meta/frontmatter
+    sidecars), registered as the `iteration_plan` artifact key with
+    friendly download naming; `POST /api/sessions/{id}/retry-summary`
+    accepts `{"template": ...}` (shape-validated) so a session uploaded
+    without a template can get the plan later.
+  * `[server]` extra floor raised to `millet-pipeline>=0.17.0`.
+- **MCP artifact tools** (`vezir mcp`): `list_artifacts(session_id)`
+  (artifacts dict + attachments incl. frames) and
+  `get_artifact(session_id, name, save_path=None)` — text returned
+  decoded, binary (png/pdf/mp4) written to `save_path` for
+  image-capable tools.  Fetches frames AND the source video by name.
+- **Config:** generic `meet_label_supports_option()` probe (label
+  `--apply-json` check refactored onto it).
+
+### Fixed
+
+- `_find_artifacts` no longer misidentifies a `*.meta.json` sidecar as
+  the transcript JSON (template meta sidecars sort before `<id>.json`
+  alphabetically).
+
+### Tests
+
+- 1110 passing (was ~1060 at 0.17.1).  New: `test_worker_video.py` (16:
+  extraction, frames incl. cap/sampling/idempotency, process_one video
+  pipeline), `test_uploader.py` (7), video magic/flag/template upload
+  tests, meet_runner template gating, MCP artifact tools, queue column
+  roundtrips, retry-summary template endpoint.
+
+
 ## 0.17.1 — reauth QR fits on screen + cancellable login
 
 No migration.
