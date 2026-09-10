@@ -3,6 +3,50 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.19.0 — TUI parity for the screenrecording iteration loop
+
+No migration.
+
+The TUI can now originate the full video loop from 0.18.0 — import a
+screen recording, upload it with the iteration-plan template, and browse
+the resulting cue frames — plus small API/CLI surface completions.
+
+### Added
+
+- **Video import in the TUI record screen.**  The Import picker (ctrl+u)
+  accepts `.mp4`/`.mov` alongside audio: the flat recordings list
+  includes video (marked 🎬), the browse-mode directory tree filters to
+  the full accepted set, and the picker hints/docs name every extension.
+- **Iteration-plan toggle.**  New sticky "Iter. plan" toggle in the
+  record screen's toggles row (default ON, persisted).  Video uploads
+  send `summary_template=iteration-plan`; audio uploads are unaffected
+  (a plan keyed to cue frames makes no sense for a meeting).
+- **`vezir scribe --template`** — `run_scribe` accepts and forwards
+  `summary_template`, mirroring `summary_preset`; every upload path
+  (CLI, scribe, TUI, API) now has template parity.
+- **Retry-summary with template from the TUI.**  The detail screen's
+  preset picker gains a template field (prefilled with the session's own
+  template, or `iteration-plan` for video sessions that lack one);
+  `VezirClient.retry_summary(template=)` sends it (server >= 0.18.0).
+- **Video + template visibility.**  `Session` keeps the server's `video`
+  and `summary_template` fields (new `is_video`): video sessions show a
+  `· 🎬` badge in the sessions list and `🎬 video` / `template:` lines in
+  the detail meta block.
+- **Cue-frame grouping.**  `cue_*.png` attachments (up to 45 on a video
+  session) collapse into a single "N cue frames" row in the artifacts
+  table; Enter opens a frame-list modal, and each frame opens through
+  the existing attachment viewer (OS image viewer).  All other
+  attachments keep their own rows.  Inline image preview stays deferred.
+
+### Tests
+
+- 1121 passing (was 1110 at 0.18.0).  New: video scan/label/picker tests,
+  `_template_for` rules, record-body upload kwargs, preset-picker
+  3-tuple + template roundtrip, retry-summary template body,
+  `Session.from_dict` video/template fields, detail-screen badges +
+  frame grouping incl. the FrameListScreen → ArtifactScreen chain.
+
+
 ## 0.18.0 — video uploads, cue frames, summary templates, MCP artifact tools
 
 Migration: `0.18.0-video-template` (idempotent; adds `jobs.video` +

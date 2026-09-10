@@ -453,6 +453,51 @@ def test_retry_summary_with_language_includes_body(mocked_client):
     assert "de" in seen["body"]
 
 
+def test_retry_summary_with_template_includes_body(mocked_client):
+    """v0.18.0: template override rides the retry-summary body."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"ok": True})
+
+    client = mocked_client(handler)
+    client.retry_summary("01X", template="iteration-plan").unwrap()
+    assert '"template"' in seen["body"]
+    assert "iteration-plan" in seen["body"]
+
+
+def test_retry_summary_template_omitted_when_none(mocked_client):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"ok": True})
+
+    client = mocked_client(handler)
+    client.retry_summary("01X", template=None).unwrap()
+    assert '"template"' not in seen["body"]
+
+
+def test_session_from_dict_keeps_video_and_template():
+    """v0.18.0 columns must survive Session.from_dict (TUI badges depend on it)."""
+    from vezir.client.api import Session
+
+    s = Session.from_dict({
+        "id": "01X", "status": "done",
+        "video": 1, "summary_template": "iteration-plan",
+        "artifacts": {},
+    })
+    assert s.video == 1
+    assert s.is_video
+    assert s.summary_template == "iteration-plan"
+
+    audio = Session.from_dict({"id": "01Y", "status": "done"})
+    assert audio.video is None
+    assert not audio.is_video
+    assert audio.summary_template is None
+
+
 def test_sync_now_without_meeting_type_sends_empty_object(mocked_client):
     seen: dict = {}
 

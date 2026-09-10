@@ -62,6 +62,9 @@ def _decorate(row: dict) -> dict:
     row.setdefault("summary_error", None)
     row.setdefault("sync_error", None)
     row.setdefault("summary_fallback", None)
+    # 0.18.0 columns (video upload + summary template).
+    row.setdefault("video", 0)
+    row.setdefault("summary_template", None)
     return row
 
 

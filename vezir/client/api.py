@@ -258,6 +258,12 @@ class Session:
     # User-Agent of the client that uploaded the session (e.g.
     # "vezir-cli/0.11.1", "okhttp/4.12.0").  None for pre-0.11.1 uploads.
     client_agent: str | None = None
+    # v0.18.0: 1 when the session's source file is video (.mp4/.mov) —
+    # cue frames live in attachments; 0/None for audio sessions.
+    video: int | None = None
+    # v0.18.0: millet summary template requested at upload (e.g.
+    # "iteration-plan"); None for the default meeting summary.
+    summary_template: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -280,10 +286,14 @@ class Session:
             "auto_label_enabled", "sync_enabled", "personal",
             "created_at", "updated_at",
             "error", "summary_error", "sync_error", "summary_fallback",
-            "team_id", "client_agent",
+            "team_id", "client_agent", "video", "summary_template",
         }
         kwargs = {k: d.get(k) for k in known if k in d}
         return cls(artifacts=artifacts, **kwargs)
+
+    @property
+    def is_video(self) -> bool:
+        return bool(self.video)
 
     @property
     def is_personal(self) -> bool:
@@ -666,6 +676,7 @@ class VezirClient:
         *,
         preset: str | None = None,
         language: str | None = None,
+        template: str | None = None,
     ) -> ApiResult:
         body: dict = {}
         if preset:
@@ -674,6 +685,11 @@ class VezirClient:
         # send an explicit override so the server can preserve the primary.
         if language and language != "auto":
             body["language"] = language
+        # v0.18.0+: millet summary template (e.g. "iteration-plan"); the
+        # server regenerates and saves <base>.<template>.md alongside the
+        # primary summary.
+        if template:
+            body["template"] = template
         return self._post(
             f"/api/sessions/{quote(session_id, safe='')}/retry-summary",
             json=body,

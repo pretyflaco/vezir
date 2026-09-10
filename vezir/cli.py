@@ -75,6 +75,9 @@ def serve(host, port, reload):
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
     help="Summarization quality/privacy preset")
+@click.option("--template", "summary_template", default=None,
+              help="Summary template name (e.g. 'iteration-plan'); requires "
+                   "millet-pipeline >= 0.17.0 on the server")
 @click.option("--auto-label/--no-auto-label", "auto_label", default=None,
               help="Auto-label speakers against the central voiceprint DB "
                    "(default: on; persists across launches)")
@@ -91,8 +94,8 @@ def serve(host, port, reload):
                    "skipped when stdin is not a TTY).")
 @click.argument("record_args", nargs=-1, type=click.UNPROCESSED)
 def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
-           open_labeling, preset, auto_label, sync, personal, no_pause,
-           record_args):
+           open_labeling, preset, summary_template, auto_label, sync, personal,
+           no_pause, record_args):
     """Record a meeting locally and upload to vezir.
 
     Any RECORD_ARGS after `--` are forwarded to `millet record`.
@@ -128,6 +131,7 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
             wait_timeout=float(wait_timeout),
             open_labeling=open_labeling,
             summary_preset=preset,
+            summary_template=summary_template,
             auto_label=auto_label,
             sync=sync,
             personal=personal,

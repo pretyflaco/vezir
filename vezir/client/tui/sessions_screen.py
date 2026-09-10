@@ -47,6 +47,8 @@ _STATUS_TAGS = {
 def _status_cell(s: Session) -> str:
     base = _STATUS_TAGS.get(s.status, s.status)
     parts = [base]
+    if s.is_video:
+        parts.append("[cyan]· 🎬[/cyan]")
     if s.summary_error:
         parts.append("[red]· summary err[/red]")
     if s.summary_fallback:

@@ -17,6 +17,7 @@ from vezir.client.tui.record_screen import (
     ImportScreen,
     _recording_label,
     _scan_recordings,
+    _template_for,
 )
 
 
@@ -35,6 +36,14 @@ def _make_recordings(base: Path) -> list[Path]:
         p.write_bytes(b"OggS" + b"\x00" * 32)
         paths.append(p)
     return paths
+
+
+def _make_video_recording(base: Path) -> Path:
+    d = base / "blink" / "meeting-20260618-101530_DEMO"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "vezir-screen-20260618-101530.mp4"
+    p.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
+    return p
 
 
 # ── pure helpers ──
@@ -67,6 +76,51 @@ def test_recording_label_format(tmp_path):
     label = _recording_label(p, tmp_path)
     assert "blink/meeting-20260617-123708_DEVSTANDUP" in label
     assert "2026-06-17 12:37" in label
+
+
+# ── video imports (v0.19.0) ──
+
+def test_scan_includes_video_recordings(tmp_path):
+    _make_recordings(tmp_path)
+    vid = _make_video_recording(tmp_path)
+    recs = _scan_recordings(tmp_path)
+    assert len(recs) == 4
+    # The video (newest meeting timestamp) sorts first.
+    assert recs[0] == vid
+
+
+def test_video_recording_label_has_marker(tmp_path):
+    vid = _make_video_recording(tmp_path)
+    label = _recording_label(vid, tmp_path)
+    assert label.startswith("🎬 ")
+    # Audio recordings are unmarked.
+    audio = _make_recordings(tmp_path)[0]
+    assert not _recording_label(audio, tmp_path).startswith("🎬")
+
+
+def test_template_for_rules(tmp_path):
+    vid = tmp_path / "demo.mp4"
+    ogg = tmp_path / "meeting.ogg"
+    assert _template_for(vid, True) == "iteration-plan"
+    assert _template_for(vid, False) is None
+    assert _template_for(ogg, True) is None  # audio never gets the plan
+    assert _template_for(tmp_path / "clip.mov", True) == "iteration-plan"
+
+
+async def test_picker_lists_video_recordings(tmp_path, monkeypatch):
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path))
+    _make_recordings(tmp_path)
+    _make_video_recording(tmp_path)
+    app = _Harness(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ol = app.screen.query_one("#picker-list", OptionList)
+        assert ol.option_count == 4
+        # Selecting the first (newest = video) dismisses with its path.
+        await pilot.press("enter")
+        await pilot.pause()
+    assert isinstance(app.picked, Path)
+    assert app.picked.suffix == ".mp4"
 
 
 # ── modal behavior (Textual pilot) ──

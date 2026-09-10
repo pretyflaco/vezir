@@ -560,6 +560,7 @@ def run_scribe(
     wait_timeout: float = 600.0,
     open_labeling: bool = False,
     summary_preset: str | None = None,
+    summary_template: str | None = None,
     auto_label: bool = True,
     sync: bool = True,
     personal: bool = False,
@@ -649,6 +650,7 @@ def run_scribe(
         upload_kwargs = dict(
             title=title,
             summary_preset=summary_preset,
+            summary_template=summary_template,
             auto_label=auto_label,
             sync=sync,
             personal=personal,

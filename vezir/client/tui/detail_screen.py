@@ -34,9 +34,11 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    OptionList,
     Select,
     Static,
 )
+from textual.widgets.option_list import Option
 
 from ..api import Session
 
@@ -75,6 +77,67 @@ def _slugify(text: str) -> str:
     return slug[:64].rstrip("-")
 
 
+def _is_cue_frame(name: str) -> bool:
+    """True for server-extracted cue frames (``cue_HH-MM-SS.png``, v0.18.0)."""
+    return name.startswith("cue_") and name.endswith(".png")
+
+
+# Row key for the grouped cue-frames row in the artifacts table.
+_FRAMES_ROW_KEY = "attachment-frames"
+
+
+class FrameListScreen(ModalScreen[str | None]):
+    """Modal: pick one cue frame to open (grouped row in the artifacts table).
+
+    A video session can carry up to 45 ``cue_*.png`` attachments; rather
+    than flooding the artifacts table they collapse into one row that
+    opens this list.  Dismisses with the chosen frame's filename (opened
+    as an attachment), or ``None`` on cancel.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+    CSS = """
+    FrameListScreen { align: center middle; }
+    #frames-box {
+        width: 64;
+        max-width: 90%;
+        height: 70%;
+        border: solid $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    #frames-box OptionList { height: 1fr; margin-top: 1; }
+    """
+
+    def __init__(self, frames: list[str]) -> None:
+        super().__init__()
+        self._frames = frames
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="frames-box"):
+            yield Label(f"[b]{len(self._frames)} cue frames[/b]")
+            ol = OptionList(id="frames-list")
+            for fname in self._frames:
+                ol.add_option(Option(fname, id=fname))
+            yield ol
+
+    def on_mount(self) -> None:
+        try:
+            ol = self.query_one("#frames-list", OptionList)
+            if ol.option_count and ol.highlighted is None:
+                ol.highlighted = 0
+            ol.focus()
+        except Exception:
+            pass
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        if event.option.id:
+            self.dismiss(str(event.option.id))
+
+
 @dataclass
 class DetailLoaded(Message):
     session: Session
@@ -103,13 +166,16 @@ class SessionDeleted(Message):
     warning: str | None = None
 
 
-class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
-    """Modal: pick a summary preset + language for retry-summary, or cancel.
+class PresetPickerScreen(ModalScreen[tuple[str, str, str] | None]):
+    """Modal: pick a summary preset + language (+ optional template), or cancel.
 
-    Dismisses with ``(preset, language)`` on confirm, or ``None`` on cancel.
-    ``language`` is ``"auto"`` (use the transcript's detected language and
-    rewrite the primary summary) or a language code (generate an ADDITIONAL
-    ``*.summary.<lang>.md`` artifact).
+    Dismisses with ``(preset, language, template)`` on confirm, or ``None``
+    on cancel.  ``language`` is ``"auto"`` (use the transcript's detected
+    language and rewrite the primary summary) or a language code (generate
+    an ADDITIONAL ``*.summary.<lang>.md`` artifact).  ``template`` is a
+    millet summary template name (e.g. ``"iteration-plan"``) or ``""`` for
+    none — a template run produces ``<base>.<template>.md`` alongside the
+    primary summary (server >= 0.18.0, millet-pipeline >= 0.17.0).
     """
 
     BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
@@ -127,9 +193,12 @@ class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
     #preset-box Label { margin-top: 1; }
     """
 
-    def __init__(self, current: str | None) -> None:
+    def __init__(
+        self, current: str | None, template_default: str = "",
+    ) -> None:
         super().__init__()
         self._current = current or "high-quality"
+        self._template_default = template_default
 
     def compose(self) -> ComposeResult:
         with Vertical(id="preset-box"):
@@ -147,6 +216,12 @@ class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
                 allow_blank=False,
                 id="language-select",
             )
+            yield Label("Template (optional, e.g. iteration-plan):")
+            yield Input(
+                value=self._template_default,
+                placeholder="(none — default meeting summary)",
+                id="template-input",
+            )
             with Horizontal():
                 yield Button("Cancel", id="cancel-btn")
                 yield Button("Retry", id="confirm-btn", variant="primary")
@@ -160,7 +235,8 @@ class PresetPickerScreen(ModalScreen[tuple[str, str] | None]):
             if preset is None:
                 self.dismiss(None)
                 return
-            self.dismiss((str(preset), str(language or "auto")))
+            template = self.query_one("#template-input", Input).value.strip().lower()
+            self.dismiss((str(preset), str(language or "auto"), template))
 
 
 class SyncAsScreen(ModalScreen[str | None | object]):
@@ -445,6 +521,9 @@ class DetailScreen(Screen):
         # pipeline output: they open through a different endpoint.
         self._attachment_keys: set[str] = set()
         self._attachments: list[dict] = []
+        # Grouped cue frames (video sessions): shown as one row that opens
+        # a FrameListScreen instead of flooding the artifacts table.
+        self._frame_names: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -491,10 +570,20 @@ class DetailScreen(Screen):
         self._open_row(str(event.row_key.value))
 
     def _open_row(self, row_key: str) -> None:
+        if row_key == _FRAMES_ROW_KEY:
+            if self._frame_names:
+                self.app.push_screen(
+                    FrameListScreen(self._frame_names), self._on_frame_picked,
+                )
+            return
         name = self._artifact_index.get(row_key)
         if name is None:
             return
         self._open_artifact(name, is_attachment=row_key in self._attachment_keys)
+
+    def _on_frame_picked(self, fname: str | None) -> None:
+        if fname:
+            self._open_artifact(fname, is_attachment=True)
 
     def _open_artifact(self, name: str, *, is_attachment: bool = False) -> None:
         from .artifact_screen import ArtifactScreen
@@ -518,18 +607,25 @@ class DetailScreen(Screen):
 
     def action_retry_summary(self) -> None:
         current_preset = (self.session.summary_preset if self.session else None)
+        # Prefill the template field: the session's own template, or offer
+        # iteration-plan for video sessions that don't have one yet.
+        template_default = ""
+        if self.session is not None:
+            template_default = self.session.summary_template or (
+                "iteration-plan" if self.session.is_video else ""
+            )
         self.app.push_screen(
-            PresetPickerScreen(current_preset),
+            PresetPickerScreen(current_preset, template_default),
             self._on_preset_picked,
         )
 
-    def _on_preset_picked(self, choice: tuple[str, str] | None) -> None:
+    def _on_preset_picked(self, choice: tuple[str, str, str] | None) -> None:
         if choice is None:
             return
-        preset, language = choice
+        preset, language, template = choice
         self._action_worker(
             "retry summary", "retry_summary",
-            preset=preset, language=language,
+            preset=preset, language=language, template=template or None,
         )
 
     def action_sync_now(self) -> None:
@@ -876,6 +972,10 @@ class DetailScreen(Screen):
             f"  preset: {s.summary_preset or '-'}",
             f"  updated: {s.updated_at or '-'}",
         ]
+        if s.is_video:
+            meta_lines.append("  🎬 video (screen recording)")
+        if s.summary_template:
+            meta_lines.append(f"  template: {s.summary_template}")
         if s.summary_fallback:
             meta_lines.append(
                 f"  summary served by fallback: {s.summary_fallback}"
@@ -907,14 +1007,26 @@ class DetailScreen(Screen):
             self._artifact_index[str(row_key.value)] = fname
         # User attachments after the pipeline's own output, marked in the
         # name column and keyed apart so they open via their own endpoint.
+        # Cue frames (video sessions, up to 45) collapse into ONE grouped
+        # row that opens a frame-list modal — everything else gets a row.
+        self._frame_names = [
+            str(item.get("name") or "")
+            for item in self._attachments
+            if _is_cue_frame(str(item.get("name") or ""))
+        ]
         for item in self._attachments:
             fname = str(item.get("name") or "")
-            if not fname:
+            if not fname or _is_cue_frame(fname):
                 continue
             key = f"attachment:{fname}"
             row_key = self._table.add_row("attachment", fname, key=key)
             self._artifact_index[str(row_key.value)] = fname
             self._attachment_keys.add(str(row_key.value))
+        if self._frame_names:
+            self._table.add_row(
+                "frames", f"{len(self._frame_names)} cue frames (enter to browse)",
+                key=_FRAMES_ROW_KEY,
+            )
 
         # Action availability
         self.query_one("#share-btn", Button).disabled = not s.is_personal

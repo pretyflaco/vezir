@@ -196,6 +196,23 @@ class SessionUploadComplete(Message):
 
 
 _AUDIO_EXTS = {".wav", ".ogg", ".mp3"}
+# v0.19.0: video uploads (screen recordings) — the server extracts the
+# audio track and pulls cue frames; the uploader accepts these natively.
+_VIDEO_EXTS = {".mp4", ".mov"}
+_ACCEPTED_EXTS = _AUDIO_EXTS | _VIDEO_EXTS
+
+
+def _template_for(path: Path, iteration_plan_on: bool) -> str | None:
+    """Summary template for an upload, or None for the default summary.
+
+    The iteration-plan template only makes sense for video uploads (it is
+    keyed to cue frames); audio meetings always get the default summary.
+    """
+    if not iteration_plan_on:
+        return None
+    if path.suffix.lower() in _VIDEO_EXTS:
+        return "iteration-plan"
+    return None
 
 _MEETING_TS_RE = re.compile(r"meeting-(\d{8})-(\d{6})")
 
@@ -258,19 +275,24 @@ def _recording_label(path: Path, base: Path) -> str:
     bits = [descr or path.name, size]
     if when:
         bits.append(when)
-    return "  ·  ".join(bits)
+    label = "  ·  ".join(bits)
+    # Video recordings (screen captures) get a marker so they're not
+    # mistaken for audio meetings in the flat list.
+    if path.suffix.lower() in _VIDEO_EXTS:
+        label = "🎬 " + label
+    return label
 
 
 def _scan_recordings(base: Path) -> list[Path]:
-    """All ``.wav``/``.ogg``/``.mp3`` recordings under *base*, newest-first.
+    """All recordings under *base*, newest-first (audio + video).
 
-    Recurses (teams → session dirs → audio), skips dot-directories, dedupes.
+    Recurses (teams → session dirs → media), skips dot-directories, dedupes.
     Resilient to a missing base (returns []).
     """
     if not base.is_dir():
         return []
     found: set[Path] = set()
-    for ext in _AUDIO_EXTS:
+    for ext in _ACCEPTED_EXTS:
         for p in base.rglob(f"*{ext}"):
             if any(part.startswith(".") for part in p.relative_to(base).parts):
                 continue
@@ -280,13 +302,13 @@ def _scan_recordings(base: Path) -> list[Path]:
 
 
 class _AudioOnlyDirectoryTree(DirectoryTree):
-    """DirectoryTree that hides non-audio non-directory entries.
+    """DirectoryTree that hides non-media non-directory entries.
 
-    Shows directories so the user can navigate; filters files to
-    .wav, .ogg and .mp3 only so the picker is uncluttered.  Hidden files
-    (dot-prefixed) are also hidden, which matches typical OS file
-    pickers and prevents the tree from being dominated by .cache /
-    .config / .git noise.
+    Shows directories so the user can navigate; filters files to the
+    accepted audio (.wav/.ogg/.mp3) and video (.mp4/.mov) extensions so
+    the picker is uncluttered.  Hidden files (dot-prefixed) are also
+    hidden, which matches typical OS file pickers and prevents the tree
+    from being dominated by .cache / .config / .git noise.
     """
 
     def filter_paths(self, paths):  # type: ignore[override]
@@ -301,7 +323,7 @@ class _AudioOnlyDirectoryTree(DirectoryTree):
             if p.is_dir():
                 out.append(p)
                 continue
-            if p.suffix.lower() in _AUDIO_EXTS:
+            if p.suffix.lower() in _ACCEPTED_EXTS:
                 out.append(p)
         return out
 
@@ -399,17 +421,19 @@ class AttachmentPromptScreen(ModalScreen[None]):
 
 
 class ImportScreen(ModalScreen["Path | None"]):
-    """Modal picker for selecting an audio file (.wav/.ogg) to upload.
+    """Modal picker for selecting an audio or video file to upload.
 
     Default view: a flat, scrollable, newest-first list of *every* recording
     under ``~/vezir-meetings/`` (all teams) — so the user can see and pick any
     of their recordings, not just one folder.  A "Browse files…" fallback
     (``b``) opens a directory tree rooted at ``~`` for importing an arbitrary
-    ``.wav``/``.ogg`` from elsewhere.
+    file from elsewhere.
 
-    Dismisses with the selected ``Path`` on confirmation, or ``None`` on
-    cancel.  Only ``.wav`` and ``.ogg`` are accepted; an invalid browse
-    selection keeps the modal open with an inline hint.
+    Accepted: ``.wav``/``.ogg``/``.mp3`` (audio) and ``.mp4``/``.mov``
+    (video, v0.19.0 — screen recordings; the server extracts audio and cue
+    frames).  Dismisses with the selected ``Path`` on confirmation, or
+    ``None`` on cancel.  An invalid browse selection keeps the modal open
+    with an inline hint.
     """
 
     DEFAULT_CSS = """
@@ -472,7 +496,7 @@ class ImportScreen(ModalScreen["Path | None"]):
             else:
                 yield Static(
                     "No recordings found under ~/vezir-meetings/.\n\n"
-                    "Press 'b' to browse the filesystem for a .wav/.ogg file.",
+                    "Press 'b' to browse the filesystem for an audio or video file.",
                     id="picker-empty",
                 )
             yield Static("", id="picker-hint")
@@ -497,7 +521,7 @@ class ImportScreen(ModalScreen["Path | None"]):
             return
         if self._browsing:
             title.update(
-                "Browse for audio (.wav/.ogg)  —  Enter: select  ·  "
+                "Browse for audio/video (.wav/.ogg/.mp3/.mp4/.mov)  —  Enter: select  ·  "
                 "b: back to recordings  ·  Esc: cancel"
             )
         else:
@@ -546,7 +570,7 @@ class ImportScreen(ModalScreen["Path | None"]):
                 box.mount(
                     Static(
                         "No recordings found under ~/vezir-meetings/.\n\n"
-                        "Press 'b' to browse the filesystem for a .wav/.ogg file.",
+                        "Press 'b' to browse the filesystem for an audio or video file.",
                         id="picker-empty",
                     ),
                     after=self.query_one("#picker-title", Static),
@@ -557,12 +581,12 @@ class ImportScreen(ModalScreen["Path | None"]):
         self, event: DirectoryTree.FileSelected
     ) -> None:
         path = Path(event.path)
-        if path.suffix.lower() not in _AUDIO_EXTS:
+        if path.suffix.lower() not in _ACCEPTED_EXTS:
             hint = self.query_one("#picker-hint", Static)
             hint.add_class("error")
             hint.update(
                 f"unsupported file type {path.suffix or '(none)'}; "
-                f"expected .wav, .ogg or .mp3"
+                f"expected .wav, .ogg, .mp3, .mp4 or .mov"
             )
             return
         self.dismiss(path)
@@ -581,7 +605,7 @@ class ImportScreen(ModalScreen["Path | None"]):
             if node is None or node.data is None:
                 return
             path = Path(node.data.path)
-            if path.is_file() and path.suffix.lower() in _AUDIO_EXTS:
+            if path.is_file() and path.suffix.lower() in _ACCEPTED_EXTS:
                 self.dismiss(path)
             # directory: let the tree's own Enter expand it.
             return
@@ -760,6 +784,9 @@ class RecordBody(Vertical):
             yield Button("Auto-label", id="auto-label-btn")
             yield Button("Sync", id="sync-btn")
             yield Button("Personal", id="personal-btn")
+            # Iteration-plan template for video uploads (screen recordings,
+            # v0.19.0).  Audio uploads are unaffected either way.
+            yield Button("Iter. plan", id="iteration-plan-btn")
             yield Select(
                 options=_PRESET_OPTIONS,
                 value=self._prefs.get("preset", "high-quality"),
@@ -829,6 +856,9 @@ class RecordBody(Vertical):
         # Personal always starts off (not persisted).
         pe = self.query_one("#personal-btn", Button)
         self._style_toggle(pe, False, personal=True)
+        # Iteration-plan template toggle (video uploads only; default ON).
+        ip = self.query_one("#iteration-plan-btn", Button)
+        self._style_toggle(ip, bool(self._prefs.get("iteration_plan", True)))
         self._warn_if_session_expiring()
         # The update-check poll (update_check.py) fills
         # app.latest_available_version a few seconds after launch; poll
@@ -957,6 +987,9 @@ class RecordBody(Vertical):
             event.stop()
         elif bid == "personal-btn":
             self.action_toggle_personal()
+            event.stop()
+        elif bid == "iteration-plan-btn":
+            self._toggle_pref_button(event.button, "iteration_plan")
             event.stop()
 
     # ── toggle-button helpers ──
@@ -1237,10 +1270,17 @@ class RecordBody(Vertical):
         if personal:
             sync = False  # match server-side enforcement
 
+        # Iteration-plan template (v0.19.0): only for video uploads — a
+        # plan keyed to cue frames makes no sense for an audio meeting.
+        iteration_on = "toggle-on" in self.query_one("#iteration-plan-btn", Button).classes
+        template = _template_for(audio_path, iteration_on)
+
         self.is_uploading = True
         self.status_text = "compressing" if audio_path.suffix.lower() == ".wav" else "uploading"
         self.error_text = ""
-        self._upload_worker(audio_path, title, preset, auto_label, sync, personal, self._gen)
+        self._upload_worker(
+            audio_path, title, preset, template, auto_label, sync, personal, self._gen,
+        )
 
     @work(thread=True, exclusive=True, group="upload")
     def _upload_worker(
@@ -1248,6 +1288,7 @@ class RecordBody(Vertical):
         audio_path: Path,
         title: str | None,
         preset: str,
+        template: str | None,
         auto_label: bool,
         sync: bool,
         personal: bool,
@@ -1300,6 +1341,7 @@ class RecordBody(Vertical):
         upload_kwargs = dict(
             title=title,
             summary_preset=preset,
+            summary_template=template,
             auto_label=auto_label,
             sync=sync,
             personal=personal,

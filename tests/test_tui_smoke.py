@@ -33,6 +33,8 @@ def mock_server(monkeypatch):
         "labels": {},
         # v0.7.6: /api/me memberships for the Teams tab tests.
         "memberships": [],
+        # v0.19.0: /api/sessions/{id}/attachments payloads per session id.
+        "attachments": {},
     }
 
     # Per-session-id label info, populated by tests that need it.
@@ -62,6 +64,12 @@ def mock_server(monkeypatch):
             })
         if p == "/api/team":
             return httpx.Response(200, json={"team": state["team"]})
+        if p.startswith("/api/sessions/") and p.endswith("/attachments"):
+            sid = p.strip("/").split("/")[-2]
+            return httpx.Response(200, json={
+                "session_id": sid,
+                "attachments": state["attachments"].get(sid, []),
+            })
         if p.startswith("/api/sessions/"):
             sid = p.split("/")[-1]
             for s in state["sessions"]:
@@ -1616,8 +1624,9 @@ async def test_label_screen_play_button_resolves_named_speaker(
 
 
 async def test_preset_picker_returns_preset_and_language(app, mock_server):
-    """PresetPickerScreen confirms with (preset, language); the language
-    Select offers Auto + the 6 localized languages."""
+    """PresetPickerScreen confirms with (preset, language, template); the
+    language Select offers Auto + the 6 localized languages, and the
+    template field defaults to empty (no template)."""
     from textual.widgets import Button, Select
 
     from vezir.client.tui.detail_screen import (
@@ -1641,7 +1650,31 @@ async def test_preset_picker_returns_preset_and_language(app, mock_server):
         await pilot.pause(0.1)
         screen.query_one("#confirm-btn", Button).press()
         await pilot.pause(0.1)
-    assert result["value"] == ("high-quality", "de")
+    assert result["value"] == ("high-quality", "de", "")
+
+
+async def test_preset_picker_template_field_roundtrips(app, mock_server):
+    """The template input is prefilled (video sessions) and returned
+    lowercased/stripped in the dismiss tuple."""
+    from textual.widgets import Button, Input
+
+    from vezir.client.tui.detail_screen import PresetPickerScreen
+
+    result: dict = {}
+    async with app.run_test() as pilot:
+        def _capture(value):
+            result["value"] = value
+        await app.push_screen(
+            PresetPickerScreen("high-quality", "iteration-plan"), _capture,
+        )
+        await pilot.pause(0.1)
+        screen = app.screen
+        assert screen.query_one("#template-input", Input).value == "iteration-plan"
+        screen.query_one("#template-input", Input).value = " Iteration-Plan "
+        await pilot.pause(0.1)
+        screen.query_one("#confirm-btn", Button).press()
+        await pilot.pause(0.1)
+    assert result["value"] == ("high-quality", "auto", "iteration-plan")
 
 
 async def test_preset_picker_cancel_returns_none(app, mock_server):
@@ -1658,6 +1691,108 @@ async def test_preset_picker_cancel_returns_none(app, mock_server):
         app.screen.query_one("#cancel-btn", Button).press()
         await pilot.pause(0.1)
     assert result["value"] is None
+
+
+# ─── video sessions: badges + grouped cue frames (v0.19.0) ────────────────────
+
+
+async def test_detail_screen_video_badges_and_frame_grouping(app, mock_server, monkeypatch):
+    """A video session shows the 🎬/template meta lines, and its cue_*.png
+    attachments collapse into one 'N cue frames' row that opens a
+    FrameListScreen; picking a frame opens it as an attachment."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["sessions"] = [
+        {
+            "id": "01VID",
+            "status": "done",
+            "title": "demo walkthrough",
+            "github": "alice",
+            "summary_preset": "high-quality",
+            "video": 1,
+            "summary_template": "iteration-plan",
+            "artifacts": {
+                "summary": "01VID.summary.md",
+                "iteration_plan": "01VID.iteration-plan.md",
+            },
+        },
+    ]
+    mock_server["attachments"]["01VID"] = [
+        {"name": "cue_00-00-03.png", "size": 100, "content_type": "image/png"},
+        {"name": "cue_00-01-12.png", "size": 100, "content_type": "image/png"},
+        {"name": "cue_00-02-40.png", "size": 100, "content_type": "image/png"},
+        {"name": "mockup.pdf", "size": 100, "content_type": "application/pdf"},
+    ]
+    async with app.run_test() as pilot:
+        from textual.widgets import DataTable, Static
+
+        from vezir.client.tui.detail_screen import DetailScreen
+
+        await app.push_screen(DetailScreen(session_id="01VID"))
+        meta = app.screen.query_one("#meta", Static)
+        for _ in range(20):
+            await pilot.pause(0.1)
+            meta_text = str(getattr(meta, "content", getattr(meta, "renderable", "")))
+            if "demo walkthrough" in meta_text:
+                break
+        else:
+            raise AssertionError("meta block never loaded")
+        assert "🎬 video" in meta_text
+        assert "template: iteration-plan" in meta_text
+
+        # 2 artifacts + 1 regular attachment + 1 grouped frames row.
+        table = app.screen.query_one("#artifacts-table", DataTable)
+        assert table.row_count == 4
+        assert "3 cue frames" in str(table.get_row_at(table.row_count - 1)[1])
+
+        # Opening the grouped row pushes the frame list; picking one opens
+        # it via the artifact screen (attachment path).
+        app.screen._open_row("attachment-frames")
+        await pilot.pause(0.2)
+        assert app.screen.__class__.__name__ == "FrameListScreen"
+        await pilot.press("enter")  # select first frame
+        await pilot.pause(0.2)
+        assert app.screen.__class__.__name__ == "ArtifactScreen"
+
+
+def test_is_cue_frame():
+    from vezir.client.tui.detail_screen import _is_cue_frame
+
+    assert _is_cue_frame("cue_00-01-05.png")
+    assert not _is_cue_frame("mockup.pdf")
+    assert not _is_cue_frame("cue_notes.txt")
+    assert not _is_cue_frame("")
+
+
+async def test_record_body_video_upload_sends_template(app, mock_server, monkeypatch, tmp_path):
+    """_kick_upload on an .mp4 with the iteration toggle ON (default) sends
+    summary_template=iteration-plan through the uploader kwargs."""
+    from vezir.client import uploader
+    from vezir.client.tui.record_screen import RecordBody
+
+    monkeypatch.setattr(
+        uploader, "server_supports_resumable", lambda *a, **k: False,
+    )
+    captured: dict = {}
+
+    def fake_upload(server_url, token, path, **kw):
+        captured.update(kw)
+        return {"session_id": "01UP"}
+
+    monkeypatch.setattr(uploader, "upload", fake_upload)
+
+    vid = tmp_path / "demo.mp4"
+    vid.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16)
+
+    async with app.run_test() as pilot:
+        body = RecordBody()
+        await app.mount(body)
+        await pilot.pause(0.2)
+        body._kick_upload(vid)
+        for _ in range(30):
+            await pilot.pause(0.1)
+            if "summary_template" in captured:
+                break
+        assert captured["summary_template"] == "iteration-plan"
 
 
 # ─── "sync as" folder-override dialog (v0.7.16) ──────────────────────────────
