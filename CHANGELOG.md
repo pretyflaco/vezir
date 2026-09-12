@@ -3,6 +3,64 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.21.0 — screen recordings are summarized from the screen
+
+No migration.  Requires **millet-pipeline >= 0.20.0**.
+
+A narrated screen recording's iteration plan used to be written by a model
+that had never seen the screen.  Cue frames are sampled from transcript
+timestamps, so they cannot exist while `millet transcribe` is running —
+which is precisely when the summary was produced:
+
+```
+transcribe()      <- summary happened here, no frames yet
+extract_frames()  <- frames created here, too late
+```
+
+For these sessions vezir now suppresses the summary during transcription,
+extracts frames, and summarizes once afterwards.  One summarization, not
+two, and the model can see what it is describing.
+
+On a real 31-frame session this surfaced five defects that are not
+derivable from a transcript at any model quality — including a destination
+field accepting a **mainnet** address while the wallet was on **regtest**
+(a funds-loss bug), a button bar overlapping a settings row, and three fee
+tiers all rendering an identical rate.
+
+### Changed
+
+- **Deferred summary for video + `iteration-plan` sessions.**
+  `meet_runner.build_transcribe_args(defer_summary=True)` passes
+  `--no-summarize` and omits the preset/template, then
+  `_run_deferred_summary()` reuses `millet label --apply-json` with an
+  empty label map — which millet documents as "re-run just the summary+PDF
+  step", the same primitive the retry-summary path already uses.  No new
+  millet subcommand, no second git sync.
+  Every other session keeps the single-pass flow and pays nothing.
+- The two summary-failure guards are skipped while deferring, so a
+  deliberately summary-less transcription isn't reported as
+  "preset requested but no summary was generated".
+- A deferred summary that fails is a **summary** failure, not a job
+  failure: the transcript is already on disk, `summary_error` is set, and
+  retry works — the same contract as before the deferral.
+
+### Fixed
+
+- **`millet-pipeline` floor was `>=0.17.0`, two releases stale.**  vezir
+  0.20.0's notes claimed `>= 0.19.0` but the dependency was never raised,
+  so a fresh `pip install "vezir[server]==0.20.0"` could legally resolve
+  millet 0.17.0 — whose `confidential` preset points at the **retired
+  `glm-5-2`**, i.e. an install that 503s on every summary.  Now `>=0.20.0`
+  (also required for frames).  Existing deployments were unaffected:
+  resolvers picked the newest millet anyway.
+
+### Tests
+
+1149 → 1160 (11 new in `tests/test_deferred_summary.py`: which sessions
+defer, argument construction, summary-only invocation shape, failure
+handling, and an end-to-end ordering assertion that frames exist *before*
+the summary runs).
+
 ## 0.20.0 — summary attestation; preset axis retired
 
 **Migration: `0.20.0-summary-provenance`** (adds `jobs.summary_provenance`

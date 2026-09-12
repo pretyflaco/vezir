@@ -400,8 +400,16 @@ def build_transcribe_args(
     summary_preset: str | None = None,
     summary_template: str | None = None,
     team_id: str | None = None,
+    defer_summary: bool = False,
 ) -> list[str]:
-    """Build the `millet transcribe` argument list for a session directory."""
+    """Build the `millet transcribe` argument list for a session directory.
+
+    ``defer_summary`` suppresses the summary step entirely.  Cue frames are
+    sampled from transcript timestamps, so they cannot exist until *after*
+    this run finishes — summarizing here would produce a text-only plan for
+    a session whose whole point is the screen.  The caller extracts frames
+    and then runs the summary separately.
+    """
     device = config.meet_device()
     compute_type = config.meet_compute_type(device)
     torch_device = config.meet_torch_device(device)
@@ -420,9 +428,13 @@ def build_transcribe_args(
         args.extend(["--mlx-model", mlx_model])
     if torch_device:
         args.extend(["--torch-device", torch_device])
-    if summary_preset:
+    if defer_summary:
+        # The summary runs later, once cue frames exist; passing preset or
+        # template here would just do the work twice.
+        args.append("--no-summarize")
+    if summary_preset and not defer_summary:
         args.extend(["--summary-preset", summary_preset])
-    if summary_template:
+    if summary_template and not defer_summary:
         # millet-pipeline >= 0.17.0.  Older millet: degrade to the default
         # meeting summary rather than failing the whole transcription.
         if config.meet_supports_option("--summary-template"):
@@ -443,7 +455,8 @@ def build_transcribe_args(
 
 def transcribe(session_dir: Path, job_id: str, team_id: str, log_path: Path,
                *, summary_preset: str | None = None,
-               summary_template: str | None = None) -> int:
+               summary_template: str | None = None,
+               defer_summary: bool = False) -> int:
     """Run `millet transcribe` on a session directory with --auto labeling.
 
     The session_dir must contain the .wav file produced by `millet record`
@@ -458,6 +471,7 @@ def transcribe(session_dir: Path, job_id: str, team_id: str, log_path: Path,
         build_transcribe_args(
             session_dir, summary_preset=summary_preset,
             summary_template=summary_template, team_id=team_id,
+            defer_summary=defer_summary,
         ),
         job_id=job_id,
         team_id=team_id,

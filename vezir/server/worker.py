@@ -359,6 +359,53 @@ def _summary_provenance(session_dir: Path, lang: str | None = None) -> str | Non
     return None
 
 
+def _should_defer_summary(job: dict) -> bool:
+    """True when this job's summary must wait for cue frames.
+
+    Only narrated screen recordings qualify: frames are sampled from
+    transcript timestamps (so they cannot exist during transcription), and
+    only the ``iteration-plan`` template knows what to do with them.  Every
+    other session keeps the single-pass flow, paying nothing for this.
+    """
+    return bool(job.get("video")) and job.get("summary_template") == "iteration-plan"
+
+
+def _run_deferred_summary(
+    session_dir: Path, job_id: str, team_id: str, log_path: Path, job: dict,
+) -> str | None:
+    """Summarize a session whose summary was postponed until frames existed.
+
+    Reuses ``millet label --apply-json`` with an empty label map, which
+    millet documents as "re-run just the summary+PDF step" — the same
+    primitive the retry-summary path uses.  millet discovers the cue frames
+    next to the session itself.
+
+    Returns an error message on failure, or None.  A failure here is a
+    summary failure, not a job failure: the transcript is already on disk
+    and the user can retry, which is exactly how a failed summary behaved
+    before the summary was deferred.
+    """
+    frames = len(list((session_dir / "attachments").glob("cue_*.png")))
+    log.info(
+        "job %s: running deferred summary with %d cue frame(s)", job_id, frames,
+    )
+    try:
+        rc = meet_runner.apply_labels_json(
+            session_dir, job_id, team_id, log_path, {},
+            regenerate_summary=True,
+            summary_preset=job.get("summary_preset"),
+            summary_template=job.get("summary_template"),
+        )
+    except Exception as exc:
+        log.exception("job %s: deferred summary raised", job_id)
+        return f"summary failed after frame extraction: {exc}"
+    if rc != 0:
+        return _extract_summary_error(log_path) or (
+            f"summary failed after frame extraction (exit {rc})"
+        )
+    return None
+
+
 def _session_dir(session_id: str) -> Path:
     return config.sessions_dir() / session_id
 
@@ -874,10 +921,16 @@ def process_one(job: dict) -> None:
 
         # 1. transcribe
         requested_preset = job.get("summary_preset")
+        # Narrated screen recordings are summarized *after* frame extraction:
+        # cue frames are sampled from transcript timestamps, so they cannot
+        # exist yet, and a summary produced here would be text-only for the
+        # one session type whose whole point is what is on screen.
+        defer_summary = _should_defer_summary(job)
         rc = meet_runner.transcribe(
             sd, job_id, team_id, log_path,
             summary_preset=requested_preset,
             summary_template=job.get("summary_template"),
+            defer_summary=defer_summary,
         )
 
         # Distinguish between transcription failures and summary-only
@@ -893,7 +946,7 @@ def process_one(job: dict) -> None:
 
         if rc != 0:
             has_transcript = bool(list(sd.glob("*.txt"))) and bool(list(sd.glob("*.json")))
-            if requested_preset and has_transcript:
+            if requested_preset and has_transcript and not defer_summary:
                 # Transcription OK, summary failed.  Treat as partial
                 # success: extract the summary error from the log tail,
                 # stash it in summary_error, and continue the pipeline.
@@ -923,6 +976,7 @@ def process_one(job: dict) -> None:
             _summary_globs.append(f"*.{job['summary_template']}.md")
         if (
             requested_preset
+            and not defer_summary  # no summary was asked for yet — step 3a runs it
             and not any(list(sd.glob(g)) for g in _summary_globs)
             and not summary_err_msg
         ):
@@ -991,6 +1045,17 @@ def process_one(job: dict) -> None:
                 _extract_frames(sd, job_id, log_path)
             except Exception:
                 log.exception("job %s: frame extraction failed; continuing", job_id)
+
+        # 3a-bis. Deferred summary.  Frames exist now, so millet can see the
+        # screen at every cue instead of only reading the narration.  Runs
+        # before sync so the summary rides the same push as everything else.
+        if defer_summary:
+            summary_err_msg = _run_deferred_summary(
+                sd, job_id, team_id, log_path, job,
+            ) or summary_err_msg
+            artifacts = _find_artifacts(sd)
+            summary_fallback_msg = _summary_fallback_provenance(sd)
+            summary_prov = _summary_provenance(sd)
 
         # 3b. unresolved speakers?
         if _has_unresolved_speakers(sd):

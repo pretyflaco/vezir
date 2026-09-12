@@ -95,7 +95,14 @@ server = [
     # summaries (e.g. iteration-plan) and their correct git-sync naming.
     # meet_runner feature-probes and degrades gracefully on older millet, but
     # the floor keeps a fresh `pip install vezir[server]` honest.
-    "millet-pipeline>=0.17.0",
+    # Raised to >= 0.19.0 (vezir 0.20.0, belatedly): millet 0.19.0 removed the
+    # cloud backends and moved `confidential` off the retired glm-5-2.  The
+    # floor was left at 0.17.0 by mistake, so a fresh install could resolve a
+    # millet whose confidential preset pointed at a model that 503s.
+    # Raised to >= 0.20.0 (vezir 0.21.0) for cue frames in summaries: vezir
+    # defers a screen recording's summary until frames exist, and only
+    # millet >= 0.20.0 actually sends them to the model.
+    "millet-pipeline>=0.20.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
