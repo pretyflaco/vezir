@@ -102,7 +102,13 @@ server = [
     # Raised to >= 0.20.0 (vezir 0.21.0) for cue frames in summaries: vezir
     # defers a screen recording's summary until frames exist, and only
     # millet >= 0.20.0 actually sends them to the model.
-    "millet-pipeline>=0.20.0",
+    # Raised to >= 0.20.1 (vezir 0.21.1): millet declared the `tinfoil` SDK
+    # only in its optional [tee] extra while the TEE was already the default
+    # backend, so a fresh `pip install vezir[server]` got a millet that could
+    # not summarize on its own default path -- and because vezir sends a
+    # preset, that surfaced as a hard ModuleNotFoundError rather than a
+    # fallback.  0.20.1 moved it into millet's base dependencies.
+    "millet-pipeline>=0.20.1",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

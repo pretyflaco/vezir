@@ -3,6 +3,42 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.21.1 — millet floor raised past a packaging bug; README refresh
+
+No migration. No behaviour change in vezir itself.
+
+### Fixed
+
+- **`millet-pipeline` floor raised to `>=0.20.1`.**  millet declared the
+  `tinfoil` SDK only in its optional `[tee]` extra while the TEE had been
+  the *default* summary backend since millet 0.19.0.  A fresh
+  `pip install "vezir[server]"` therefore installed a millet that could not
+  summarize on its own default path — and because vezir sends a summary
+  preset, millet's "a requested preset never falls back" rule re-raised the
+  failure, so it surfaced as a hard `ModuleNotFoundError` instead of
+  degrading to Ollama.  millet 0.20.1 moved the SDK into its base
+  dependencies; this floor makes a fresh install pick that up.
+
+  Existing deployments were unaffected: saray reaches millet through
+  `VEZIR_MILLET_BIN`, which points at a venv where the SDK was installed by
+  hand.  Notably the millet inside vezir's own pipx venv did *not* have it,
+  so the deployment was one unset environment variable away from the bug.
+
+### Docs
+
+- README refreshed against the current state: version 0.17.0 → 0.21.0,
+  video upload documented (it was still "accepts `.wav`/`.ogg`/`.mp3`"),
+  the MCP tool table corrected from four tools to six (`list_artifacts` and
+  `get_artifact` shipped in 0.18.0 undocumented), a section on how screen
+  recordings are summarized, and cross-links to millet's evaluation and
+  vision case study.
+- The stale "What's new (0.13 → 0.17)" enumeration is replaced by a short
+  highlights list pointing at the CHANGELOG.  It had rotted precisely
+  because it duplicated release notes by hand.
+- Dropped the claim that non-confidential presets may fall back to Claude
+  Max / Kimi K3 — those backends were removed in millet 0.19.0, and the
+  same README already said so 150 lines further down.
+
 ## 0.21.0 — screen recordings are summarized from the screen
 
 No migration.  Requires **millet-pipeline >= 0.20.0**.

@@ -5,6 +5,10 @@
   </picture>
 </p>
 
+[![CI](https://github.com/pretyflaco/vezir/actions/workflows/ci.yml/badge.svg)](https://github.com/pretyflaco/vezir/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/vezir.svg)](https://pypi.org/project/vezir/)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/vezir?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/vezir)
+
 **Self-hosted team intelligence.** Record a meeting on any device; Vezir
 gives you back a diarized transcript, an AI summary, and a PDF — processed
 on your own GPU server and synced into a private team archive you control.
@@ -18,65 +22,38 @@ transcripts and summaries — with speakers resolved to GitHub handles.
 
 ## Status
 
-Alpha (**0.17.0**). Built for small teams that want meeting audio to stay
+Alpha (**0.21.0**). Built for small teams that want meeting audio to stay
 inside their own infrastructure: one GPU server (Linux/CUDA or Apple
-Silicon) reachable over ordinary HTTPS. Full history in
-[`CHANGELOG.md`](CHANGELOG.md).
+Silicon) reachable over ordinary HTTPS.
 
-**What's new (0.13 → 0.17):**
+**Recent highlights** (full history in [`CHANGELOG.md`](CHANGELOG.md)):
 
-- **Session filters + pull robustness (0.17.0).** The TUI Sessions tab gains
-  a filter modal (`/`) — date range, title substring, status, and "who"
-  (github-handle substring, or an npub resolved server-side); `GET
-  /api/sessions` gains matching `until`/`q`/`who`/`status` params. Artifact
-  downloads now **retry transient network errors** with backoff, and a
-  partial pull **self-heals** (missing artifacts top up on the next pull
-  instead of being pinned forever).
-- **Session import + load-more pagination (0.16.0).** `vezir import <dir>` /
-  `POST /api/sessions/import` registers meetings recorded and processed
-  locally by millet before the team existed on the server (new terminal
-  status `imported`; never re-enters the pipeline). Session listings gain an
-  `offset` param and a "▼ load more" row, so large teams reach their full
-  history past the old 50-row cap.
-- **AI harness integration (0.15.0/0.15.1).** `vezir mcp` — a read-only
-  [MCP](https://modelcontextprotocol.io) server (optional `[mcp]` extra)
-  exposing `list_sessions` / `search_sessions` / `get_summary` /
-  `get_transcript` to opencode, Claude Code, and other harnesses — plus
-  `vezir ctx <id-or-title>` for a one-shot context doc on stdout. See
+- **Screen recordings are summarized from the screen (0.21.0).** For a
+  `video` session using the `iteration-plan` template, the summary is
+  deferred until after cue frames are extracted, then generated once with
+  the frames attached — so the plan reports what is visibly wrong, not just
+  what the narrator said. Needs `millet-pipeline >= 0.20.1`.
+- **Summary attestation (0.20.0).** Every job records `<backend>/<model>` in
+  `summary_provenance`; the TUI states it in the session detail and badges
+  only the exception. The preset axis is deprecated.
+- **Video upload + templates (0.18.0/0.19.0).** `vezir upload demo.mp4
+  --template iteration-plan`, TUI video import (`ctrl+u`), and cue frames
+  extracted from the recording.
+- **AI harness integration (0.15.0+).** `vezir mcp` — a read-only
+  [MCP](https://modelcontextprotocol.io) server (optional `[mcp]` extra) —
+  plus `vezir ctx <id-or-title>` for a one-shot context doc on stdout. See
   [AI harness integration (MCP)](#ai-harness-integration-mcp).
-- **Dated artifact filenames + client auto-label (0.14.2/0.14.3).**
-  Downloads land as `YYYYMMDD_<title_slug>.<ext>`; `vezir` / the TUI can
-  re-run voiceprint auto-labeling on a `needs_labeling` session
-  (`POST /api/sessions/{id}/auto-label`, TUI `[a]`).
-- **Summary-fallback provenance (0.14.0).** With an explicit operator
-  opt-in, the **non-confidential** presets may fall back (e.g. Claude Max
-  exhausted → Kimi K3); never silent — the session records
-  `summary_fallback` and the TUI shows a `· fallback` badge. `confidential`
-  always stays fail-loud.
-- **Meeting attachments (0.13.0).** Files dropped in the scribe's watch
-  folder ride along with a recording into the team git archive.
-- **Rotating refresh-token sessions (0.10.0, hardened 0.12.1).** A login
-  mints a short-lived **access JWT** + a rotating **refresh token** (RFC
-  9700 reuse detection); clients refresh transparently on 401. `vezir
-  logout` revokes a session.
 - **Identity sign-in.** Members sign in with **Nostr** (a remote signer like
   [Amber](https://github.com/greenart7c3/Amber) via NIP-46, or the NIP-55
   Android intent flow) or with **Google** (`@workspace-domain` accounts via
   the OAuth device grant). No key or password touches the client. `vzr_`
   bearer tokens are retained for machine/CI use.
-- **Public-access front.** A small VPS terminates nothing — it
-  WireGuard-forwards TLS to the server, which keeps the cert. Clients reach
-  the server over plain outbound HTTPS, so it works from CGNAT / IPv6-only
-  links (e.g. Starlink) with no per-client VPN.
 - **Multi-team by membership (0.7.0).** A token/identity is a *person*, not
-  a team; team scope is supplied per-request via `X-Team-Id` and validated
-  against a memberships table. One identity covers every team you're in;
-  the TUI/Android auto-discover them. Team keys are stable UUIDs with
-  mutable slugs (`vezir team rename`).
-- **Hardening.** NIP-98 replay protection, header-injection-resistant
-  login-URL pinning (`VEZIR_PUBLIC_URL`), exact Google-domain matching.
-- **Resumable uploads** (tus.io subset), **`vezir relabel`**, **`vezir
-  pull`**, **per-team voiceprints + sync**, **`vezir doctor`**.
+  a team; scope is supplied per-request via `X-Team-Id` and validated
+  against a memberships table. The TUI/Android auto-discover your teams.
+- **Public-access front.** A small VPS terminates nothing — it
+  WireGuard-forwards TLS to the server, which keeps the cert. Works from
+  CGNAT / IPv6-only links with no per-client VPN.
 
 > The JSON-only API (no web dashboard since 0.7.0) is consumed by the TUI,
 > the Android app, and the CLI. Speaker labeling happens in the TUI (open
@@ -85,8 +62,8 @@ Silicon) reachable over ordinary HTTPS. Full history in
 Linux and macOS (Apple Silicon) laptop clients and an
 [Android client](https://github.com/pretyflaco/vezir-android) are supported.
 
-Requires **`millet-pipeline >= 0.13.0`** (enforced at runtime; pinned via
-the `[server]` extra).
+Requires **`millet-pipeline >= 0.20.1`** (pinned by the `[server]` extra;
+also probed at runtime).
 
 ## Sign-in & access
 
@@ -150,9 +127,9 @@ voiceprint DBs, team roster/memberships, and auth.
 
 | Client | Best for | Install |
 |---|---|---|
-| **`vezir tui`** | Day-to-day desktop use — record, browse sessions, read transcripts/summaries, label speakers, all in one terminal UI. `ctrl+e` Teams tab, `ctrl+t` cycles teams. | `pip install 'vezir[tui]'` |
+| **`vezir tui`** | Day-to-day desktop use — record, browse sessions, read transcripts/summaries, label speakers, import a video (`ctrl+u`), all in one terminal UI. `ctrl+e` Teams tab, `ctrl+t` cycles teams. | `pip install 'vezir[tui]'` |
 | **`vezir scribe`** | Headless / ssh / scripted recording. Pause-resume with `p`. | `pip install vezir` |
-| **`vezir upload <file>`** | An existing WAV/OGG/MP3 (phone, OBS, etc.); resumable. `vezir upload-multi` stitches several files into one meeting. | `pip install vezir` |
+| **`vezir upload <file>`** | An existing WAV/OGG/MP3, or an MP4/MOV screen recording; resumable. `vezir upload-multi` stitches several files into one meeting. | `pip install vezir` |
 | **`vezir pull`** | Download artifacts for meetings others recorded (team sharing without git). | `pip install vezir` |
 | **[vezir-android](https://github.com/pretyflaco/vezir-android)** | Recording from a phone; signs in with Nostr (Amber) or Google. | Sideload the release APK |
 
@@ -182,7 +159,7 @@ Wire it into opencode (`~/.config/opencode/opencode.json`):
 { "mcp": { "vezir": { "type": "local", "command": ["vezir", "mcp"] } } }
 ```
 
-It exposes four read-only tools:
+It exposes six read-only tools:
 
 | Tool | Returns |
 |---|---|
@@ -190,6 +167,8 @@ It exposes four read-only tools:
 | `search_sessions(query, limit)` | Sessions whose title matches a substring. |
 | `get_summary(session_id)` | The AI summary (markdown). |
 | `get_transcript(session_id, max_chars?)` | The full diarized transcript (pass `max_chars` only for a preview). |
+| `list_artifacts(session_id)` | Every downloadable file: artifacts by type, plus attachments and cue frames. |
+| `get_artifact(session_id, name, save_path?)` | One artifact by type key or filename; binary (PNG/PDF/MP4) needs `save_path`. |
 
 **`vezir ctx <id-or-title>`** — a one-shot alternative for any harness (no
 extra needed; base install). It pulls the session (unless `--no-pull`) and
@@ -208,7 +187,9 @@ Tinfoil TEE, or fully local Ollama.  millet-pipeline 0.19.0 removed the
 cloud backends (Claude Max, OpenRouter, generic OpenAI) after a blind
 evaluation found the TEE model beat Sonnet 4.6 on both precision and
 recall in every language tested, so routing meeting content through a
-provider that can read it bought nothing.
+provider that can read it bought nothing.  Method and numbers:
+[the evaluation](https://github.com/pretyflaco/millet/blob/main/docs/tee-summarization-evaluation.md)
+(10 meetings, blind, two independent in-TEE judges, 80 verdicts).
 
 ### Attestation
 
@@ -226,6 +207,31 @@ session, or a local Ollama fallback).  A positive badge on every row would
 appear everywhere and stop being read.  Sessions with unknown provenance
 (predating the column) are not badged: absence of evidence isn't evidence
 of absence.
+
+### Screen recordings are summarized from the screen
+
+Upload an MP4/MOV with the `iteration-plan` template and Vezir samples one
+cue frame per transcript timestamp, then summarizes **with the frames
+attached** — so the plan can report a misrendered value or a
+mislabeled control, not only what the narrator said aloud.
+
+```bash
+vezir upload ./walkthrough.mp4 --title "glow 1.1 walkthrough" \
+  --template iteration-plan
+```
+
+Ordering matters and is why this is not a single pass: the frames are
+sampled *from* transcript timestamps, so they cannot exist while
+transcription is running — which is when the summary used to be produced.
+For these sessions the worker passes `--no-summarize`, extracts frames,
+then generates the summary once. Every other session keeps the single-pass
+flow.
+
+Only `glm-5-3-flash` is vision-capable in millet's allowlist; a summary
+that falls back to a sibling model degrades to text-only rather than
+failing. See the [case study](https://github.com/pretyflaco/millet/blob/main/docs/vision-summarization-case-study.md)
+for what this does and does not buy — it is an n=1 case study, not an
+evaluation.
 
 ### Presets (deprecated)
 
@@ -317,7 +323,7 @@ vezir doctor                              # diagnose creds / connectivity / cert
 
 After upload, artifacts (summary, transcript, PDF) auto-download into
 `~/vezir-meetings/<team>/meeting-…/`. Standalone uploads accept
-`.wav`/`.ogg`/`.mp3`.
+`.wav`/`.ogg`/`.mp3` and `.mp4`/`.mov`.
 
 ### Meeting attachments (0.13.0)
 
@@ -333,9 +339,8 @@ next meeting.
 files are staged, and prompts with the list when recording stops.
 
 Attachments show up in the TUI detail screen alongside the artifacts, are
-fetched by `vezir pull` into `<meeting>/attachments/`, and — with
-`millet-pipeline >= 0.15.0` — sync into the team's git archive under the
-meeting folder, names intact. They are *not* fed to summarization.
+fetched by `vezir pull` into `<meeting>/attachments/`, and sync into the
+team's git archive under the meeting folder, names intact. They are *not* fed to summarization.
 
 ### macOS (Apple Silicon) scribe
 
