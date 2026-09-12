@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the vezir Tinfoil model watchdog daily
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=24h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

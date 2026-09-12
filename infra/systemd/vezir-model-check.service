@@ -1,0 +1,7 @@
+[Unit]
+Description=vezir Tinfoil model watchdog (warn if a configured TEE model is retired/deprecated)
+After=vezir.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/vezir-model-check.sh

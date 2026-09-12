@@ -3,6 +3,40 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.19.2 — Tinfoil model watchdog
+
+No migration.  Infrastructure only — no Python changes.
+
+Requires **millet-pipeline >= 0.18.1**, which migrates the `confidential`
+preset off the retired `glm-5-2` (see that CHANGELOG).  Deployments
+running older millet will keep failing every `confidential` job until
+millet is updated; vezir itself is unaffected either way.
+
+### Added
+
+- **`infra/systemd/vezir-model-check.{sh,service,timer}`** — a daily
+  watchdog that asks Tinfoil's `/v1/models` whether the TEE models
+  millet depends on are still present and not flagged `deprecated`,
+  logging to the journal (`journalctl --user -t vezir-model-check`) when
+  either is false.
+
+  Motivation: Tinfoil retired `glm-5-2` on ~2026-09-11 **with no
+  deprecation notice** — the model vanished from the catalog and began
+  answering HTTP 503.  Since the `confidential` preset never falls back
+  by design, every confidential job failed, and because vezir-android
+  defaults to that preset, every Android recording lost its summary.  The
+  outage was found by manual probing two days later.  This watchdog
+  reproduces the exact failure signature and would have reported it on
+  day one.
+
+  It reports only — it never restarts vezir and never edits config,
+  because the fix is always a millet release (model names are constants
+  in `millet/summarize.py`, not env vars).  It exits 0 and stays quiet
+  when no API key is configured or the catalog is unreachable: an
+  advisory check must not become its own outage.  Install instructions
+  in `infra/systemd/README.md`; watched list overridable via
+  `VEZIR_TINFOIL_MODELS`.
+
 ## 0.19.1 — cue frames for offset-timeline videos
 
 No migration.

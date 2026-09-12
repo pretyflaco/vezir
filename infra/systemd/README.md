@@ -86,3 +86,33 @@ systemctl --user stop    vezir.service
 systemctl --user disable vezir.service        # stop + remove from autostart
 journalctl --user -u vezir.service -n 100 --no-pager
 ```
+
+## Tinfoil model watchdog (optional, recommended)
+
+Tinfoil retires models out from under deployments.  `deepseek-v4-pro`
+went in 2026-07 with notice; `glm-5-2` went in 2026-09 with **none** — it
+vanished from the catalog and started answering HTTP 503, which killed
+every `confidential` summary (that preset never falls back, by design).
+
+`vezir-model-check` asks Tinfoil's catalog once a day whether the models
+millet depends on are still present and not flagged deprecated, and logs
+to the journal if either is false.  It only reports — the fix is always a
+millet release, since the model names are constants in
+`millet/summarize.py`, not env vars.
+
+```bash
+install -m 0755 infra/systemd/vezir-model-check.sh ~/.local/bin/
+cp infra/systemd/vezir-model-check.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now vezir-model-check.timer
+
+# Run it once now and read the verdict
+systemctl --user start vezir-model-check.service
+journalctl --user -t vezir-model-check -n 20 --no-pager
+```
+
+It reads `TINFOIL_API_KEY` from the environment or from
+`~/.config/environment.d/vezir.conf`, and exits quietly (status 0) when
+no key is configured or the catalog is unreachable — an advisory check
+must never become its own outage.  Override the watched list with
+`VEZIR_TINFOIL_MODELS="model-a model-b"` if you pin non-default models.
