@@ -37,7 +37,7 @@ Environment variables:
                         VEZIR_MEET_ASR_BACKEND.
     VEZIR_MILLET_MLX_MODEL MLX Whisper model path/repo when using mlx
                         ASR.  Legacy alias: VEZIR_MEET_MLX_MODEL.
-    VEZIR_SUMMARY_PRESET    Summary quality preset (high-quality|confidential|alternative)
+    VEZIR_SUMMARY_PRESET    Deprecated; presets no longer select anything
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
     VEZIR_TINY_SPEAKER_MAX_SECONDS  Max total speech (seconds) for an
@@ -84,18 +84,18 @@ module include ``VEZIR_PUBLIC_URL``, ``VEZIR_GOOGLE_CLIENT_ID`` /
 ``VEZIR_SKIP_SYNC``, ``VEZIR_DELETE_AUDIO``, ``VEZIR_CADDY_ROOT_CERT_PATH``,
 and ``VEZIR_TUI_DISABLE_UPDATE_CHECK``.
 
-Summarization fallback (v0.14.0): these are **millet** env vars, not read
-by vezir code — set them on the vezir service (e.g. in
+Summarization (v0.20.0): millet's summary env vars are not read by vezir
+code — set them on the vezir service (e.g. in
 ``~/.config/environment.d/vezir.conf``) and the HOME shim passes them
 verbatim to the millet subprocess (``meet_runner._env_for_meet``).
-``MILLET_SUMMARY_PRESET_FALLBACK=1`` lets a non-``confidential`` preset
-fall back down the chain on failure (``confidential`` never falls back);
-``MILLET_SUMMARY_FALLBACK_ORDER`` overrides the chain (e.g. ``openai``);
-``MILLET_OPENAI_BASE_URL`` / ``MILLET_OPENAI_API_KEY`` /
-``MILLET_OPENAI_MODEL`` configure the generic OpenAI-compatible backend
-(e.g. ``https://api.moonshot.ai/v1`` + ``kimi-k3``).  When a fallback
-served the summary, the worker records ``<backend>/<model>`` in
-``jobs.summary_fallback`` (read from millet's ``.summary.meta.json``).
+Since millet-pipeline 0.19.0 every summary backend is private (a
+hardware-attested TEE, or local Ollama), so ``MILLET_SUMMARY_BACKEND``
+selects between two private options and the cloud-fallback knobs
+(``MILLET_SUMMARY_PRESET_FALLBACK``, ``MILLET_OPENAI_*``,
+``OPENROUTER_API_KEY``) no longer exist.  The worker records
+``<backend>/<model>`` in ``jobs.summary_provenance`` on every job (read
+from millet's ``.summary.meta.json``), plus ``jobs.summary_fallback`` when
+a fallback specifically served the summary.
 """
 from __future__ import annotations
 
@@ -747,11 +747,6 @@ def meet_default_language() -> str | None:
     ``meet_runner.build_transcribe_args``.
     """
     return _read_millet_env("VEZIR_MILLET_DEFAULT_LANGUAGE") or None
-
-
-def summary_preset() -> str | None:
-    """Return the configured summarization preset, or None for the default."""
-    return os.environ.get("VEZIR_SUMMARY_PRESET")
 
 
 def log_level() -> str:

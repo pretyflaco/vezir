@@ -40,16 +40,20 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+from ... import presets
 from ..api import Session
 
 log = logging.getLogger("vezir.client.tui.detail")
 
 
+# The preset axis is retired (0.20.0): every summary backend is private, so
+# there is nothing to choose between.  One entry is kept so the retry dialog
+# still has a valid value to submit; legacy names remain accepted server-side
+# for sessions that already carry them.
 _PRESETS = [
-    ("High Quality (Sonnet 4.6)", "high-quality"),
     ("Confidential (TEE)", "confidential"),
-    ("Alternative (Kimi)", "alternative"),
 ]
+_PRESET_IDS = {pid for _label, pid in _PRESETS}
 
 # Summary languages with localized section headers in millet.  "auto" keeps
 # the transcript's detected language (rewrites the primary summary); any other
@@ -197,12 +201,17 @@ class PresetPickerScreen(ModalScreen[tuple[str, str, str] | None]):
         self, current: str | None, template_default: str = "",
     ) -> None:
         super().__init__()
-        self._current = current or "high-quality"
+        # A stored session may carry a retired preset name ("high-quality",
+        # "alternative").  Those are no longer offered, and Select rejects a
+        # value that isn't in its options, so coerce to the default.
+        self._current = (
+            current if current in _PRESET_IDS else presets.DEFAULT_PRESET
+        )
         self._template_default = template_default
 
     def compose(self) -> ComposeResult:
         with Vertical(id="preset-box"):
-            yield Label("[b]Retry summary with which preset?[/b]")
+            yield Label("[b]Retry summary[/b]")
             yield Select(
                 options=_PRESETS,
                 value=self._current,
@@ -980,6 +989,13 @@ class DetailScreen(Screen):
             meta_lines.append(
                 f"  summary served by fallback: {s.summary_fallback}"
             )
+        # Detail view states provenance in full (the list only badges the
+        # exception).  Unknown provenance says nothing rather than guessing.
+        if s.summary_provenance:
+            suffix = (
+                "hardware-attested TEE" if s.is_attested else "not attested"
+            )
+            meta_lines.append(f"  summary: {s.summary_provenance} ({suffix})")
         if s.client_agent:
             meta_lines.append(f"  client: {s.client_agent}")
         if s.is_personal:

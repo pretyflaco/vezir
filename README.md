@@ -201,38 +201,44 @@ opencode run "$(vezir ctx 01M0TS2SWWD15JT0VQHNDREFKH)"   # inline as prompt
 vezir ctx 01M0TS2SWWD15JT0VQHNDREFKH --path              # just the artifacts dir
 ```
 
-## Summarization presets
+## Summarization: private by default
 
-The client sends a preset id as the `summary_preset` form field; the worker
-passes it to `millet transcribe --summary-preset <id>`.
+Every summary is produced by a private backend — a hardware-attested
+Tinfoil TEE, or fully local Ollama.  millet-pipeline 0.19.0 removed the
+cloud backends (Claude Max, OpenRouter, generic OpenAI) after a blind
+evaluation found the TEE model beat Sonnet 4.6 on both precision and
+recall in every language tested, so routing meeting content through a
+provider that can read it bought nothing.
 
-| Preset | Backend | Model | Use case |
-|---|---|---|---|
-| `high-quality` | claudemax | Claude (Sonnet) | Default on desktop; highest quality (Claude Max on the server). |
-| `confidential` | tinfoil | TEE-hosted model | Hardware-attested enclave — prompts not visible to the provider. Default on Android; PDF gets a CONFIDENTIAL watermark. |
-| `alternative` | openrouter | Kimi | Cheapest cloud option. |
+### Attestation
 
-When a preset is explicitly chosen the server **does not silently fall
-back** to another backend on failure — a silent tinfoil→cloud fallback
-would defeat the Confidential preset. Set via `vezir scribe --preset …` or
-the TUI/Android dropdown.
-
-Since v0.14.0 (with millet-pipeline ≥ 0.16.0) the operator may opt in to
-fallback for the **non-confidential** presets — e.g. Claude Max quota
-exhausted → Kimi K3 — by setting on the vezir service:
+The worker records `<backend>/<model>` on every job in
+`jobs.summary_provenance`, read from millet's `.summary.meta.json`
+sidecar.  The TUI shows it in the session detail:
 
 ```
-MILLET_SUMMARY_PRESET_FALLBACK=1
-MILLET_SUMMARY_FALLBACK_ORDER=openai
-MILLET_OPENAI_BASE_URL=https://api.kimi.com/coding/v1   # sk-kimi… keys
-# (pay-per-token platform keys use https://api.moonshot.ai/v1 instead)
-MILLET_OPENAI_API_KEY=<kimi key>
-MILLET_OPENAI_MODEL=kimi-k3
+  summary: tinfoil/glm-5-3-flash (hardware-attested TEE)
 ```
 
-The `confidential` preset always stays fail-loud.  A fallback is never
-silent: the session records `summary_fallback` (e.g. `openai/kimi-k3`),
-shown as a `· fallback` badge in the TUI.
+The session list badges only the **exception** — a yellow `· unattested`
+when a summary demonstrably did *not* come from a TEE (a pre-0.19.0
+session, or a local Ollama fallback).  A positive badge on every row would
+appear everywhere and stop being read.  Sessions with unknown provenance
+(predating the column) are not badged: absence of evidence isn't evidence
+of absence.
+
+### Presets (deprecated)
+
+Presets used to select between backends with different privacy/quality
+tradeoffs.  With only private backends left there is nothing to choose, so
+`high-quality`, `confidential` and `alternative` are now **aliases for the
+same default** and will be removed in 0.22.0.  They are still accepted —
+stored jobs and shipped Android builds send them.
+
+A requested preset still pins the backend: the server does **not** silently
+fall back, so it either succeeds or fails loudly.  When millet does serve a
+summary from a fallback, the session records `summary_fallback` and the TUI
+shows a `· fallback` badge.
 
 ## Privacy toggles (per upload)
 
@@ -354,7 +360,7 @@ terminal app; verify with `millet check`. The server does the heavy lifting.
 | `VEZIR_GOOGLE_CLIENT_ID` / `…_SECRET[_FILE]` / `…_ALLOWED_DOMAIN` | unset | Enable Google sign-in (server holds the secret). |
 | `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` | unset | Extra internal CA to trust; the client *appends* it to the public store (0.8.0+), so public + internal hosts both validate. |
 | `VEZIR_COOKIE_SECURE` | unset | `1` adds `Secure` to the session cookie (HTTPS). |
-| `VEZIR_SUMMARY_PRESET` | unset | Default preset (`high-quality`\|`confidential`\|`alternative`). |
+| `VEZIR_SUMMARY_PRESET` | unset | Deprecated; presets no longer select anything. |
 | `VEZIR_RECORD_DIR` | `~/vezir-meetings` | Local recordings root. |
 | `VEZIR_ATTACHMENTS_DIR` | `~/vezir-attachments` | Staging folder scribe watches for meeting attachments (0.13.0). |
 | `VEZIR_MILLET_*` | auto | Pass-throughs to `millet transcribe` (device, compute type, ASR backend, MLX model). |

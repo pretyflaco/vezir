@@ -53,6 +53,11 @@ def _status_cell(s: Session) -> str:
         parts.append("[red]· summary err[/red]")
     if s.summary_fallback:
         parts.append("[yellow]· fallback[/yellow]")
+    # Only the exception is badged.  Every summary produced since 0.19.0 is
+    # TEE-attested, so a positive badge would appear on every row and stop
+    # being read; what's worth surfacing is a summary that is *not*.
+    if s.is_unattested:
+        parts.append("[yellow]· unattested[/yellow]")
     if s.sync_error:
         parts.append("[red]· sync err[/red]")
     if s.is_personal:

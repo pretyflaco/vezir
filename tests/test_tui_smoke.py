@@ -1650,7 +1650,9 @@ async def test_preset_picker_returns_preset_and_language(app, mock_server):
         await pilot.pause(0.1)
         screen.query_one("#confirm-btn", Button).press()
         await pilot.pause(0.1)
-    assert result["value"] == ("high-quality", "de", "")
+    # A stored session may carry a retired preset name; the picker coerces
+    # it to the one still offered rather than crashing Select.
+    assert result["value"] == ("confidential", "de", "")
 
 
 async def test_preset_picker_template_field_roundtrips(app, mock_server):
@@ -1674,7 +1676,7 @@ async def test_preset_picker_template_field_roundtrips(app, mock_server):
         await pilot.pause(0.1)
         screen.query_one("#confirm-btn", Button).press()
         await pilot.pause(0.1)
-    assert result["value"] == ("high-quality", "auto", "iteration-plan")
+    assert result["value"] == ("confidential", "auto", "iteration-plan")
 
 
 async def test_preset_picker_cancel_returns_none(app, mock_server):

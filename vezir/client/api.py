@@ -264,6 +264,10 @@ class Session:
     # v0.18.0: millet summary template requested at upload (e.g.
     # "iteration-plan"); None for the default meeting summary.
     summary_template: str | None = None
+    # v0.20.0: "<backend>/<model>" that actually produced the summary,
+    # recorded on every job.  None for sessions predating the column or
+    # with no readable summary sidecar.
+    summary_provenance: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -287,6 +291,7 @@ class Session:
             "created_at", "updated_at",
             "error", "summary_error", "sync_error", "summary_fallback",
             "team_id", "client_agent", "video", "summary_template",
+            "summary_provenance",
         }
         kwargs = {k: d.get(k) for k in known if k in d}
         return cls(artifacts=artifacts, **kwargs)
@@ -294,6 +299,31 @@ class Session:
     @property
     def is_video(self) -> bool:
         return bool(self.video)
+
+    # Backends whose inference runs inside a hardware-attested enclave.
+    _ATTESTED_BACKENDS = ("tinfoil", "tinfoil-tee")
+
+    @property
+    def is_attested(self) -> bool:
+        """True when the summary was produced inside a TEE.
+
+        False for sessions summarized by the pre-0.19.0 cloud backends and
+        for local Ollama runs.  Note this is *not* the inverse of
+        :attr:`is_unattested`: a session with no summary (or predating the
+        column) is neither -- provenance is simply unknown.
+        """
+        prov = self.summary_provenance or ""
+        return prov.split("/", 1)[0] in self._ATTESTED_BACKENDS
+
+    @property
+    def is_unattested(self) -> bool:
+        """True only when we positively know the summary was NOT attested.
+
+        Unknown provenance returns False: absence of evidence isn't
+        evidence of absence, and flagging every pre-0.20.0 session would
+        make the badge meaningless.
+        """
+        return bool(self.summary_provenance) and not self.is_attested
 
     @property
     def is_personal(self) -> bool:

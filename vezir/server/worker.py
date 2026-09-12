@@ -315,6 +315,50 @@ def _summary_fallback_provenance(
     return f"{backend}/{model}"
 
 
+# Sidecar patterns to try, in order, when looking for summary provenance.
+# A templated run (e.g. --summary-template iteration-plan) writes
+# ``<base>.<template>.meta.json`` instead of ``<base>.summary.meta.json``,
+# so a video/iteration session has no ``.summary.`` sidecar at all.
+def _summary_meta_candidates(session_dir: Path, lang: str | None) -> list[Path]:
+    patterns = [f"*.summary.{lang}.meta.json"] if lang else ["*.summary.meta.json"]
+    patterns.append("*.meta.json")
+    seen: list[Path] = []
+    for pat in patterns:
+        for p in sorted(session_dir.glob(pat)):
+            # Exclude the upload staging sidecar (<id>.meta.json), which
+            # carries upload params rather than summary provenance.
+            if p.name == f"{session_dir.name}.meta.json":
+                continue
+            if p not in seen:
+                seen.append(p)
+    return seen
+
+
+def _summary_provenance(session_dir: Path, lang: str | None = None) -> str | None:
+    """Return "<backend>/<model>" that produced the summary, always.
+
+    Unlike :func:`_summary_fallback_provenance` this is not gated on
+    ``fallback_used`` — it records what actually ran on every job, so a
+    client can state whether the summary came from a hardware-attested TEE
+    (``tinfoil/...``) or from something else.  Returns None when no summary
+    sidecar exists or it can't be read: provenance is informational and
+    must never fail a job.
+    """
+    for meta_path in _summary_meta_candidates(session_dir, lang):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        backend = meta.get("backend")
+        if not backend:
+            continue
+        model = meta.get("model") or "unknown"
+        return f"{backend}/{model}"
+    return None
+
+
 def _session_dir(session_id: str) -> Path:
     return config.sessions_dir() / session_id
 
@@ -915,6 +959,11 @@ def process_one(job: dict) -> None:
                 job_id, summary_fallback_msg, requested_preset,
             )
 
+        # Unconditional provenance: which backend/model actually produced
+        # the summary, recorded on every job so clients can say whether it
+        # was hardware-attested.
+        summary_prov = _summary_provenance(sd)
+
         # 3a. empty recording?  A transcript with zero speech segments (an
         # accidental tap, dead mic, or silence) produces empty/stub artifacts.
         # Route to the terminal `empty` status and SKIP SYNC entirely — never
@@ -924,6 +973,7 @@ def process_one(job: dict) -> None:
                 job_id, "empty", artifacts=artifacts,
                 summary_error=summary_err_msg,
                 summary_fallback=summary_fallback_msg,
+                summary_provenance=summary_prov,
             )
             log.info(
                 "job %s: transcript has no speech segments; marking empty, "
@@ -948,6 +998,7 @@ def process_one(job: dict) -> None:
                 job_id, "needs_labeling", artifacts=artifacts,
                 summary_error=summary_err_msg,
                 summary_fallback=summary_fallback_msg,
+                summary_provenance=summary_prov,
             )
             log.info("job %s needs labeling", job_id)
             return
@@ -998,6 +1049,7 @@ def process_one(job: dict) -> None:
             summary_error=summary_err_msg,
             sync_error=sync_err_msg,
             summary_fallback=summary_fallback_msg,
+            summary_provenance=summary_prov,
         )
         parts = []
         if summary_err_msg:
@@ -1304,6 +1356,7 @@ def retry_summary_for_session(
             summary_error=None,
             sync_error=sync_err_msg,
             summary_fallback=_summary_fallback_provenance(sd, language_override),
+            summary_provenance=_summary_provenance(sd, language_override),
         )
         log.info("retry-summary %s succeeded", session_id)
     except Exception as exc:

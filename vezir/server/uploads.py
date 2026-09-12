@@ -30,7 +30,7 @@ from fastapi import (
 )
 from starlette.concurrency import run_in_threadpool
 
-from .. import config
+from .. import config, presets
 from . import auth, queue, ratelimit
 
 log = logging.getLogger("vezir.uploads")
@@ -123,6 +123,22 @@ def _pick_extension(upload_filename: str | None, content_type: str | None) -> st
     )
 
 
+def _validate_preset(summary_preset: str | None) -> None:
+    """Reject an unknown summary preset at the upload boundary.
+
+    Until 0.20.0 only the retry-summary endpoint validated this, so an
+    arbitrary form value was stored on the job and handed to
+    ``millet --summary-preset`` verbatim.  Presets are deprecated but the
+    accepted set is still closed, and failing here beats failing inside a
+    subprocess after the audio has already been transcribed.
+    """
+    if not presets.is_valid(summary_preset):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid summary_preset: {summary_preset}",
+        )
+
+
 def _validate_magic(ext: str, chunk: bytes) -> None:
     """Reject obvious filename/MIME spoofing for WAV, OGG, MP3, and video uploads."""
     if not chunk:
@@ -186,6 +202,7 @@ async def upload(
     # clients never supply it.  This is the cornerstone of the team-
     # isolation invariant — see vezir_plan.md v0.6.0 design notes.
     github, team_id, _admin = auth_triple
+    _validate_preset(summary_preset)
     # Idempotent retry: if this exact upload already committed, return the
     # existing session instead of creating a duplicate (M2).
     key = (idempotency_key or "").strip()[:128]
@@ -317,6 +334,7 @@ async def upload_multi(
     ``.part-NNN`` suffix.  The worker concatenates them before transcribe.
     """
     github, team_id, _admin = auth_triple
+    _validate_preset(summary_preset)
     auto_label_enabled = _parse_bool_form(auto_label, default=True)
     sync_enabled = _parse_bool_form(sync, default=True)
     is_personal = _parse_bool_form(personal, default=False)
@@ -554,6 +572,7 @@ async def create_resumable_upload(
     extension and validate the magic bytes once the first chunk lands).
     """
     github, team_id, _admin = auth_triple
+    _validate_preset(summary_preset)
     if upload_length is None or upload_length <= 0:
         raise HTTPException(status_code=400, detail="missing/invalid Upload-Length")
     max_bytes = config.max_upload_bytes()

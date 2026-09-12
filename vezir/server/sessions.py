@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import config
+from .. import config, presets
 from . import auth, meet_runner, queue, ratelimit, worker
 
 log = logging.getLogger("vezir.sessions")
@@ -37,7 +37,9 @@ class _RetrySummaryBody(BaseModel):
     template: str | None = None
 
 
-_VALID_PRESETS = {"high-quality", "confidential", "alternative"}
+# Preset names live in .presets (single source of truth since 0.20.0).
+# Deprecated: every name resolves to the same private backend.
+_VALID_PRESETS = presets.VALID_PRESETS
 # Languages with localized section headers in millet (millet.languages).
 # "auto" means "use the transcript's detected language".
 _VALID_SUMMARY_LANGUAGES = {"auto", "en", "de", "fr", "es", "tr", "fa"}
@@ -65,6 +67,8 @@ def _decorate(row: dict) -> dict:
     # 0.18.0 columns (video upload + summary template).
     row.setdefault("video", 0)
     row.setdefault("summary_template", None)
+    # 0.20.0: "<backend>/<model>" that actually produced the summary.
+    row.setdefault("summary_provenance", None)
     return row
 
 

@@ -3,6 +3,86 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.20.0 — summary attestation; preset axis retired
+
+**Migration: `0.20.0-summary-provenance`** (adds `jobs.summary_provenance`
+and backfills it).  Requires **millet-pipeline >= 0.19.0**.
+
+Every summary is now produced by a private backend — a hardware-attested
+TEE, or local Ollama — because millet 0.19.0 removed the cloud backends.
+That makes the `confidential` preset meaningless as a *choice* and turns
+confidentiality into a property worth *reporting*, so this release swaps
+one for the other.
+
+### Added
+
+- **`jobs.summary_provenance`** — `"<backend>/<model>"` recorded on every
+  job, read from millet's `.summary.meta.json` sidecar.  The existing
+  `summary_fallback` could not answer "was this attested?": it is only
+  populated when a fallback fired, so on the normal path vezir never knew
+  which backend ran.  The new reader is unconditional and also handles
+  templated sidecars (`<base>.iteration-plan.meta.json`), which video
+  sessions produce *instead of* `.summary.meta.json`.
+- **Attestation in the TUI.**  Session detail states it in full —
+  `summary: tinfoil/glm-5-3-flash (hardware-attested TEE)`.  The session
+  list badges **only the exception**: a yellow `· unattested` when a
+  summary demonstrably did not come from a TEE.  A positive badge would
+  land on every new row and stop being read — the same reasoning that
+  replaced millet's blanket CONFIDENTIAL watermark with a quiet
+  attestation footer.  Sessions with unknown provenance are not badged:
+  absence of evidence isn't evidence of absence.
+- **`Session.is_attested` / `Session.is_unattested`** — deliberately not
+  inverses of each other; unknown provenance is neither.
+- **`vezir/presets.py`** — single source of truth for preset names, now
+  shared by client and server and on the mypy strict allowlist.
+
+### Changed
+
+- **Presets are deprecated.**  `high-quality`, `confidential` and
+  `alternative` all resolve to the same default and will be removed in
+  0.22.0.  They remain accepted: ~580 stored jobs carry them and shipped
+  Android builds send one on every upload.  The TUI pickers now offer only
+  the default and **coerce** a retired name rather than crashing (Textual's
+  `Select` rejects a value absent from its options — a stored
+  `high-quality` session would otherwise have broken the retry dialog).
+- **Backfill of historical rows.**  The migration reads each existing
+  job's sidecar so the 500+ sessions summarized by the old cloud backends
+  report accurate provenance.  Without it the "unattested" signal would
+  only ever fire for new jobs — the rows where it matters least.  Verified
+  against a copy of the production DB: 563 of 584 rows backfilled in
+  0.05 s, the remaining 21 being errored/empty jobs with no summary.
+  This is the first migration in vezir that writes data rather than only
+  DDL, so it is deliberately conservative: NULL-only updates (re-running
+  cannot clobber a live value), per-row exception handling, and any
+  failure is logged and skipped.  A corrupt sidecar must never be able to
+  stop the server from starting.
+- Preset help text on `vezir scribe/upload/upload-multi` marks the flag
+  deprecated.
+- `infra/systemd/vezir-model-check.sh` — the retired-model warning said
+  "confidential summaries will fail"; with the TEE as the only remote
+  backend the blast radius is now every summary.
+
+### Fixed
+
+- **Uploads never validated `summary_preset`.**  Only the retry-summary
+  endpoint checked it, so an arbitrary form value was stored on the job
+  and passed to `millet --summary-preset` verbatim.  All three upload
+  endpoints now reject an unknown preset with 400 — failing at the
+  boundary beats failing inside a subprocess after transcription has
+  already run.
+
+### Removed
+
+- `config.summary_preset()` — dead code with zero callers.
+
+### Tests
+
+1124 → 1149 (25 new in `tests/test_summary_attestation.py`: unconditional
+provenance reads, templated + staging-sidecar handling, queue sentinel
+round-trip, migration idempotency, backfill correctness/non-clobbering/
+corrupt-sidecar survival, attestation semantics, and the badge-only-on-
+exception rule).
+
 ## 0.19.2 — Tinfoil model watchdog
 
 No migration.  Infrastructure only — no Python changes.

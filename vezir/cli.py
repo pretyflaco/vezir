@@ -74,7 +74,8 @@ def serve(host, port, reload):
 @click.option("--preset",
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
-    help="Summarization quality/privacy preset")
+    help="DEPRECATED (removed in 0.22.0): every summary backend is private "
+         "now, so all presets resolve to the same default")
 @click.option("--template", "summary_template", default=None,
               help="Summary template name (e.g. 'iteration-plan'); requires "
                    "millet-pipeline >= 0.17.0 on the server")
@@ -162,7 +163,8 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
 @click.option("--preset",
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
-    help="Summarization quality/privacy preset")
+    help="DEPRECATED (removed in 0.22.0): every summary backend is private "
+         "now, so all presets resolve to the same default")
 @click.option("--template", "summary_template", default=None,
               help="Summary template name (e.g. 'iteration-plan'); writes "
                    "<base>.<template>.md instead of the default summary. "
@@ -343,7 +345,8 @@ def upload_cmd(server_url, token, team, title, compress, preset, summary_templat
 @click.option("--preset",
     type=click.Choice(["high-quality", "confidential", "alternative"], case_sensitive=False),
     default=None,
-    help="Summarization quality/privacy preset")
+    help="DEPRECATED (removed in 0.22.0): every summary backend is private "
+         "now, so all presets resolve to the same default")
 @click.option("--template", "summary_template", default=None,
               help="Summary template name (e.g. 'iteration-plan'); writes "
                    "<base>.<template>.md instead of the default summary. "

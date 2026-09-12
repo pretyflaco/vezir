@@ -57,7 +57,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from ... import config
+from ... import config, presets
 from .. import attachments
 from ..config import load_client_prefs, save_client_prefs
 
@@ -73,11 +73,19 @@ def _vezir_version() -> str:
 log = logging.getLogger("vezir.client.tui.record")
 
 
+# The preset axis is retired (0.20.0): every summary backend is private now,
+# so there is nothing to trade off.  One entry remains so the upload still
+# submits a valid value; a saved pref naming a retired preset is coerced.
 _PRESET_OPTIONS = [
-    ("High Quality", "high-quality"),
     ("Confidential", "confidential"),
-    ("Alternative", "alternative"),
 ]
+_PRESET_IDS = {pid for _label, pid in _PRESET_OPTIONS}
+
+
+def _saved_preset(prefs: dict) -> str:
+    """Saved preference, coerced to a still-offered value."""
+    value = prefs.get("preset")
+    return value if value in _PRESET_IDS else presets.DEFAULT_PRESET
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -789,7 +797,7 @@ class RecordBody(Vertical):
             yield Button("Iter. plan", id="iteration-plan-btn")
             yield Select(
                 options=_PRESET_OPTIONS,
-                value=self._prefs.get("preset", "high-quality"),
+                value=_saved_preset(self._prefs),
                 allow_blank=False,
                 id="preset",
             )

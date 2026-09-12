@@ -911,12 +911,94 @@ def migrate_0_18_0() -> dict:
     return {"version": version, "video_template_columns": "ready"}
 
 
+def migrate_0_20_0() -> dict:
+    """Add ``jobs.summary_provenance`` and backfill it from sidecars.
+
+    Records "<backend>/<model>" for every summary, unconditionally, so a
+    client can state whether a summary came from a hardware-attested TEE.
+    (``summary_fallback`` only records a backend when a *fallback* fired,
+    so it can't answer that question on the normal path.)
+
+    Unlike every earlier migration this one also **reads data**: it walks
+    existing jobs with a NULL provenance and parses millet's
+    ``.summary.meta.json`` sidecar for each.  Without that, the 500+
+    historical sessions summarized by the old cloud backends would show
+    no provenance at all, and the "unattested" signal would only ever fire
+    for new jobs — exactly the rows where it matters least.
+
+    Safety: only NULL rows are touched (so re-running cannot overwrite
+    live values), every row is wrapped individually, and any failure is
+    logged and skipped.  A missing or corrupt sidecar leaves NULL.  The
+    backfill must never be able to stop the server from starting.
+    """
+    version = "0.20.0-summary-provenance"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+
+    backfilled = 0
+    skipped = 0
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        try:
+            c.execute("ALTER TABLE jobs ADD COLUMN summary_provenance TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists (fresh schema bring-up)
+        c.commit()
+
+        # Backfill.  Imported lazily: worker imports config/queue, and this
+        # module runs during app startup before the worker thread exists.
+        from .worker import _session_dir, _summary_provenance
+
+        rows = c.execute(
+            "SELECT id FROM jobs WHERE summary_provenance IS NULL"
+        ).fetchall()
+        for row in rows:
+            job_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+            try:
+                prov = _summary_provenance(_session_dir(job_id))
+            except Exception:
+                log.debug("backfill: unreadable sidecar for %s", job_id, exc_info=True)
+                skipped += 1
+                continue
+            if not prov:
+                skipped += 1
+                continue
+            try:
+                c.execute(
+                    "UPDATE jobs SET summary_provenance = ? "
+                    "WHERE id = ? AND summary_provenance IS NULL",
+                    (prov, job_id),
+                )
+                backfilled += 1
+            except sqlite3.Error:
+                log.debug("backfill: update failed for %s", job_id, exc_info=True)
+                skipped += 1
+        c.commit()
+
+    _mark_applied(version)
+    log.info(
+        "migration %s complete; jobs.summary_provenance ready "
+        "(backfilled %d, skipped %d of %d candidate rows)",
+        version, backfilled, skipped, backfilled + skipped,
+    )
+    return {
+        "version": version,
+        "summary_provenance_column": "ready",
+        "backfilled": backfilled,
+        "skipped": skipped,
+    }
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
 ALL_MIGRATIONS = [
     migrate_0_6_0, migrate_0_6_2, migrate_0_7_0, migrate_0_7_2, migrate_0_7_4,
-    migrate_0_10_0, migrate_0_14_0, migrate_0_18_0,
+    migrate_0_10_0, migrate_0_14_0, migrate_0_18_0, migrate_0_20_0,
 ]
 
 

@@ -6,6 +6,11 @@
 # vanished from /v1/models and started answering 503, which killed every
 # `confidential` job (that preset never falls back, by design).
 #
+# Since 0.20.0 that blast radius is *every* summary, not just one preset:
+# the TEE is the only remote backend left, so a retired model takes down
+# summarization outright (local Ollama aside).  This check matters more
+# now, not less.
+#
 # This check asks the catalog daily whether the models we depend on are
 # (a) still present and (b) not flagged deprecated, and logs to the
 # journal if either is false.  It only reports — it never restarts vezir
@@ -53,7 +58,7 @@ except Exception:
 entry = data.get(model)
 if entry is None:
     print("ERR|%s is NOT in the Tinfoil catalog - it has been retired; "
-          "confidential summaries will fail" % model)
+          "TEE summaries will fail" % model)
 elif entry.get("deprecated"):
     print("WARN|%s is deprecated, removal on %s - migrate before then"
           % (model, entry.get("deprecationDate") or "an unannounced date"))
