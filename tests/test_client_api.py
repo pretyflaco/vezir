@@ -704,41 +704,58 @@ def test_network_error_returned_not_raised(mocked_client):
 
 @pytest.fixture
 def live_server(monkeypatch):
-    """Spin up an actual FastAPI app + TestClient and adapt it to VezirClient."""
+    """Spin up an actual FastAPI app on a real socket and point VezirClient at it.
+
+    This previously lifted the private ``test_client._transport`` out of a
+    FastAPI TestClient and monkeypatched it into a sync ``httpx.Client``.
+    That broke when starlette 1.6.0 restructured the TestClient transport to
+    return an async stream — httpx's sync ``Client`` asserts the response
+    stream is a ``SyncByteStream`` and raised.  A real uvicorn on a loopback
+    port exercises the actual network path and depends on no private
+    internals, so it survives the next starlette major too.
+    """
+    import socket
     import tempfile as _tf
+    import threading
+    import time
 
     tdir = _tf.TemporaryDirectory()
     monkeypatch.setenv("VEZIR_DATA", tdir.name)
 
-    from fastapi.testclient import TestClient
+    import uvicorn
 
     from vezir.server import auth
     from vezir.server.app import create_app
 
     token = auth.issue("alice")
     app = create_app()
-    test_client = TestClient(app)
 
-    # Adapt the FastAPI TestClient into an httpx transport so VezirClient
-    # talks to it without an actual socket.  TestClient is already an
-    # httpx.Client wrapping a WSGI/ASGI transport — we can lift the
-    # transport out.
-    transport = test_client._transport
+    # A free loopback port: bind, get the port, close, hand to uvicorn.
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
 
-    import vezir.client.api as api_mod
-    orig = api_mod.httpx.Client
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
 
-    def factory(*args, **kwargs):
-        kwargs["transport"] = transport
-        return orig(*args, **kwargs)
+    base_url = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 10.0
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("uvicorn test server failed to start")
+        if not thread.is_alive():
+            raise RuntimeError("uvicorn test server thread died on startup")
+        time.sleep(0.05)
 
-    api_mod.httpx.Client = factory
     try:
         # v0.7.0: team_id must be set for team-scoped endpoints to
         # work; conftest's auth.issue shim adds 'alice' to 'blink'.
-        yield VezirClient("http://testserver", token, team_id="blink")
+        yield VezirClient(base_url, token, team_id="blink")
     finally:
-        api_mod.httpx.Client = orig
+        server.should_exit = True
+        thread.join(timeout=5.0)
         tdir.cleanup()
 
 

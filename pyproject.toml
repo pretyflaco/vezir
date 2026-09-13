@@ -75,7 +75,15 @@ version = {attr = "vezir.__version__"}
 # Server side: full FastAPI app + worker that shells out to millet
 # (transcribe, label, sync).  Install on the GPU box that runs `vezir serve`.
 server = [
-    "fastapi>=0.110",
+    # Upper bounds added 0.21.2 after starlette 1.6.0 (a major) restructured
+    # the TestClient transport to hand back an async stream, breaking any
+    # code that adapted it into a sync httpx.Client. CI floats on `pip
+    # install -e .` so an unpinned range resolved starlette 1.6.0 and failed
+    # four tests that passed on every older, pinned local venv. fastapi 0.x
+    # itself declares starlette<1.0.0; pinning here makes the supported
+    # reality explicit rather than relying on fastapi's bound being honored.
+    "fastapi>=0.110,<1.0",
+    "starlette>=0.40,<1.0",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
     # v0.7.0: jinja2 dropped along with the HTML dashboard.

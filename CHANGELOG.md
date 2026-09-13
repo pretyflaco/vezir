@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.21.2 — pin fastapi/starlette; fix a test that depended on a private API
+
+No migration. Dependency-bound tightening plus a test-harness fix. CI went
+red on 0.21.1 with no application-code change — this restores it.
+
+### Fixed
+
+- **Pinned `fastapi` and `starlette` to `<1.0`.**  Both were declared with
+  lower bounds only, so CI (`pip install -e .`) floated to whatever was
+  newest. starlette 1.6.0 (a major) restructured its `TestClient`
+  transport to return an **async** stream, breaking any code that adapted
+  that transport into a sync `httpx.Client`. Four `test_client_api.py`
+  end-to-end tests failed with
+  `assert isinstance(response.stream, SyncByteStream)` while every pinned
+  local venv (starlette 0.52.x) passed.  fastapi 0.x itself declares
+  `starlette<1.0.0`; pinning here makes the supported surface explicit
+  instead of relying on that bound being honored across the full resolve.
+- **Replaced the `live_server` fixture's private-API hack.**  It lifted
+  `test_client._transport` (a private attribute) into a monkeypatched
+  `httpx.Client` factory — the exact mechanism that broke.  It now starts
+  a real uvicorn on a free loopback port and points `VezirClient` at it
+  over HTTP.  Slightly heavier, but it exercises the actual network path
+  and depends on no internals, so it survives the next starlette major too.
+
+1160 tests; the four previously failing end-to-end tests pass against the
+real socket.
+
 ## 0.21.1 — millet floor raised past a packaging bug; README refresh
 
 No migration. No behaviour change in vezir itself.
