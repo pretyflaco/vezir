@@ -68,9 +68,15 @@ Environment variables:
                         window (v0.12.1 hijack hardening).  0 = strict (any
                         reuse revokes).
     VEZIR_MILLET_TIMEOUT  Hard timeout (seconds) for each millet subprocess
-                        step (default 14400 = 4 h).  A wedged transcription
-                        no longer blocks the single worker forever; the job
-                        is marked error on expiry.
+                         step (default 14400 = 4 h).  A wedged transcription
+                         no longer blocks the single worker forever; the job
+                         is marked error on expiry.
+    VEZIR_MILLET_WATCHDOG_SECONDS  No-progress watchdog (seconds) for each
+                         millet subprocess step (default 900 = 15 min; 0
+                         disables).  Kills the process group when a step
+                         shows no log growth, no artifact change, and <~2%
+                         process-group CPU for this long — a stalled step
+                         dies in minutes instead of at the 4 h wall.
 
 Legacy ``VEZIR_MEET_*`` aliases are still honored (with a one-time
 ``DeprecationWarning`` on read) but are deprecated and slated for removal
@@ -603,6 +609,34 @@ def millet_timeout_seconds() -> int | None:
     """
     raw = os.environ.get("VEZIR_MILLET_TIMEOUT")
     default = 4 * 60 * 60
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else None
+
+
+def millet_watchdog_seconds() -> int | None:
+    """No-progress watchdog for each millet subprocess step, or None to disable.
+
+    From ``$VEZIR_MILLET_WATCHDOG_SECONDS`` (seconds; default 900 = 15 min;
+    0 or a negative value disables).  Where ``millet_timeout_seconds`` is a
+    hard wall-clock budget, the watchdog kills the process group when a step
+    has made *no observable progress* for this long: no growth of the step's
+    log file, no change to the session dir's artifacts, and less than ~2% CPU
+    across the whole process group.  A genuinely computing or
+    retry-with-backoff step (e.g. millet 0.21.1's Tinfoil attempt ladder,
+    quiet for up to ~12 min by design) is left alone.
+
+    Incident 2026-09-15: a stalled TEE summary pinned a job in
+    ``transcribing`` for 30+ minutes with the GPU idle; the 4 h budget would
+    eventually have reaped it, but 4 h of a blocked single-worker queue is
+    its own outage.
+    """
+    raw = os.environ.get("VEZIR_MILLET_WATCHDOG_SECONDS")
+    default = 15 * 60
     if raw is None or not raw.strip():
         return default
     try:

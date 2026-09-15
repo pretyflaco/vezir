@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from .. import config
@@ -300,34 +301,241 @@ def _env_for_meet(home: Path, team_id: str) -> dict:
 
 
 # Exit code reported when a millet step exceeds VEZIR_MILLET_TIMEOUT
-# (mirrors GNU timeout(1)'s convention).
+# (mirrors GNU timeout(1)'s convention).  Also returned when the no-progress
+# watchdog reaps the step — both are "budget exhausted" outcomes and the
+# session log banner states which.
 TIMEOUT_EXIT_CODE = 124
 
+# How long to wait after SIGTERM before SIGKILLing the process group.
+_KILL_GRACE_SECONDS = 15.0
 
-def _wait_with_timeout(proc: subprocess.Popen, cmd: list[str]) -> int:
-    """Wait for a millet subprocess, killing its process group on timeout.
+# Upper bound on the watchdog's poll interval.  Polls run more often when
+# the configured budgets are small (tests), so short thresholds still fire
+# promptly: interval = min(30s, watchdog/3, budget/10).
+_MAX_POLL_SECONDS = 30.0
 
-    A wedged transcription (GPU hang, stalled network inside millet)
-    previously blocked the single worker forever — the queue stopped
-    draining until a service restart.  ``start_new_session=True`` at
-    spawn puts millet and its children (ffmpeg, etc.) in their own
-    process group so the kill reaps all of them.
+
+def _process_group_cpu_seconds(pgid: int) -> float | None:
+    """Total CPU time (user+sys) across every process in ``pgid``.
+
+    Reads /proc (Linux).  Returns None when /proc is unavailable (non-Linux
+    dev box) or the group has no live members — the watchdog then relies on
+    log/artifact progress alone.
+
+    start_new_session=True at spawn makes the millet PID the process-group
+    leader, so this covers millet AND its children (ffmpeg, model loaders),
+    not just the main process — a step whose parent waits on a busy child is
+    still progress.
     """
-    timeout = config.millet_timeout_seconds()
     try:
-        return proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        log.error(
-            "millet step timed out after %ss; killing process group: %s",
-            timeout, " ".join(cmd[:3]),
-        )
-        import signal as _signal
+        clk = os.sysconf("SC_CLK_TCK")
+        total = 0.0
+        found = False
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat", "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            # stat: "pid (comm) state ppid pgrp session ... utime stime ..."
+            tail = data.rsplit(b")", 1)
+            if len(tail) != 2:
+                continue
+            fields = tail[1].split()
+            try:
+                if int(fields[2]) != pgid:
+                    continue
+                total += (int(fields[11]) + int(fields[12])) / clk
+                found = True
+            except (IndexError, ValueError):
+                continue
+        return total if found else None
+    except (OSError, ValueError):
+        return None
+
+
+def _artifacts_signature(session_dir: Path | None) -> tuple | None:
+    """Cheap change-detector over a session dir's top-level artifacts.
+
+    millet writes its transcript/summary/PDF artifacts top-level; a tuple of
+    (name, size, mtime_ns) per entry catches new files, growth, and in-place
+    rewrites.  Returns None when the dir can't be read (progress then falls
+    back to log growth + CPU).
+    """
+    if session_dir is None:
+        return None
+    try:
+        sig = []
+        for p in sorted(session_dir.iterdir()):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            sig.append((p.name, st.st_size, st.st_mtime_ns))
+        return tuple(sig)
+    except OSError:
+        return None
+
+
+def _kill_process_group(proc: subprocess.Popen, grace: float = _KILL_GRACE_SECONDS) -> None:
+    """SIGTERM the process group, then SIGKILL if it ignores the term."""
+    import signal as _signal
+
+    for sig in (_signal.SIGTERM, _signal.SIGKILL):
         try:
-            os.killpg(proc.pid, _signal.SIGKILL)
+            os.killpg(proc.pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
-        proc.wait()
-        return TIMEOUT_EXIT_CODE
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    proc.wait()
+
+
+def _append_log_banner(log_path: Path | None, text: str) -> None:
+    """Append a marker line to the session log so ``_error_with_tail``
+    surfaces the reason in the stored job error."""
+    if not log_path:
+        return
+    try:
+        with log_path.open("ab") as f:
+            f.write(f"\n--- {text} ---\n".encode())
+    except OSError:
+        pass
+
+
+def _wait_with_timeout(
+    proc: subprocess.Popen,
+    cmd: list[str],
+    log_path: Path | None = None,
+    session_dir: Path | None = None,
+) -> int:
+    """Wait for a millet subprocess, enforcing two budgets.
+
+    1. Hard wall clock: ``VEZIR_MILLET_TIMEOUT`` (default 4 h) — the step may
+       simply be that long; kill the process group on expiry.
+    2. No-progress watchdog: ``VEZIR_MILLET_WATCHDOG_SECONDS`` (default
+       15 min) — the step has produced NO observable progress (no log-file
+       growth, no artifact change in the session dir, <~2% process-group
+       CPU) for this long; kill the process group.  This is what turns an
+       incident like 2026-09-15 (a stalled TEE summary pinned a job in
+       ``transcribing`` for 30+ min, GPU idle) into a minutes-scale failure
+       with a clear cause in the job error — while leaving legitimately
+       quiet-but-working steps (model downloads that stream progress bars,
+       the millet 0.21.1 Tinfoil retry ladder quiet for up to ~12 min per
+       attempt, long GPU inference that burns CPU) untouched.
+
+    ``start_new_session=True`` at spawn puts millet and its children (ffmpeg,
+    etc.) in their own process group so the kill reaps all of them.
+    """
+    budget = config.millet_timeout_seconds()
+    watchdog = config.millet_watchdog_seconds()
+    if not budget and not watchdog:
+        return proc.wait()
+
+    def _poll_interval(now: float) -> float:
+        interval = _MAX_POLL_SECONDS
+        if watchdog:
+            interval = min(
+                interval, max(0.05, (last_progress_at + watchdog - now) / 3)
+            )
+        if budget:
+            interval = min(interval, max(0.05, (budget_deadline - now) / 3))
+        return max(0.05, interval)
+
+    budget_deadline = (time.monotonic() + budget) if budget else None
+    last_progress_at = time.monotonic()
+    last_log_size = _log_size_or_none(log_path)
+    last_arts = _artifacts_signature(session_dir)
+    last_cpu = _process_group_cpu_seconds(proc.pid)
+    # CPU accounting starts one cycle in: the first reading is the baseline.
+    cpu_epsilon = max(1.0, (watchdog or 60) * 0.02)
+
+    while True:
+        now = time.monotonic()
+        try:
+            proc.wait(timeout=_poll_interval(now))
+            return proc.returncode
+        except subprocess.TimeoutExpired:
+            pass
+
+        if proc.poll() is not None:
+            return proc.returncode
+
+        now = time.monotonic()
+
+        # Budget expiry: hard kill regardless of progress.
+        if budget_deadline is not None and now >= budget_deadline:
+            log.error(
+                "millet step timed out after %ss; killing process group: %s",
+                budget, " ".join(cmd[:3]),
+            )
+            _kill_process_group(proc)
+            _append_log_banner(
+                log_path,
+                f"TIMED OUT after {budget}s (VEZIR_MILLET_TIMEOUT); "
+                "process group killed",
+            )
+            return TIMEOUT_EXIT_CODE
+
+        # Watchdog: no observable progress for `watchdog` seconds?
+        if watchdog and now - last_progress_at >= watchdog:
+            cur_log_size = _log_size_or_none(log_path)
+            cur_arts = _artifacts_signature(session_dir)
+            cur_cpu = _process_group_cpu_seconds(proc.pid)
+            progressed = (
+                cur_log_size != last_log_size
+                or cur_arts != last_arts
+                or (
+                    last_cpu is not None
+                    and cur_cpu is not None
+                    and (cur_cpu - last_cpu) >= cpu_epsilon
+                )
+            )
+            if progressed:
+                last_progress_at = now
+                last_log_size = cur_log_size
+                last_arts = cur_arts
+                last_cpu = cur_cpu
+            else:
+                cpu_note = (
+                    f", process-group CPU +{cur_cpu - last_cpu:.1f}s"
+                    if last_cpu is not None and cur_cpu is not None
+                    else ""
+                )
+                log.error(
+                    "millet step made no progress for %ss (log %s bytes,"
+                    " artifacts unchanged%s); killing process group: %s",
+                    watchdog,
+                    cur_log_size if cur_log_size is not None else "?",
+                    cpu_note,
+                    " ".join(cmd[:3]),
+                )
+                _kill_process_group(proc)
+                _append_log_banner(
+                    log_path,
+                    f"WATCHDOG: no progress for {watchdog}s (log "
+                    f"{cur_log_size if cur_log_size is not None else '?'} bytes"
+                    f" unchanged, no artifact change{cpu_note}); "
+                    "process group killed",
+                )
+                return TIMEOUT_EXIT_CODE
+
+
+def _log_size_or_none(log_path: Path | None) -> int | None:
+    if not log_path:
+        return None
+    try:
+        return log_path.stat().st_size
+    except OSError:
+        return None
 
 
 def run_meet(
@@ -351,6 +559,16 @@ def run_meet(
     cmd = [config.meet_binary(), *args]
     log.info("running: HOME=%s %s", home, " ".join(cmd))
 
+    # Every millet subcommand takes the session dir as its last positional
+    # arg; when it is one, the watchdog can watch its artifacts for progress.
+    session_dir: Path | None = None
+    try:
+        candidate = Path(args[-1]) if args else None
+        if candidate is not None and candidate.is_dir():
+            session_dir = candidate
+    except OSError:
+        session_dir = None
+
     if log_path:
         config.secure_mkdir(log_path.parent)
         with log_path.open("ab") as f:
@@ -360,15 +578,11 @@ def run_meet(
             proc = subprocess.Popen(
                 cmd, env=env, stdout=f, stderr=f, start_new_session=True,
             )
-            rc = _wait_with_timeout(proc, cmd)
-            if rc == TIMEOUT_EXIT_CODE:
-                f.write(
-                    f"\n--- TIMED OUT after {config.millet_timeout_seconds()}s "
-                    "(VEZIR_MILLET_TIMEOUT); process group killed ---\n".encode()
-                )
+            rc = _wait_with_timeout(proc, cmd, log_path=log_path,
+                                    session_dir=session_dir)
     else:
         proc = subprocess.Popen(cmd, env=env, start_new_session=True)
-        rc = _wait_with_timeout(proc, cmd)
+        rc = _wait_with_timeout(proc, cmd, session_dir=session_dir)
     log.info("meet exited: %s", rc)
     return rc
 

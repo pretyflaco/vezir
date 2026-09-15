@@ -3,6 +3,42 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.22.1 — no-progress watchdog for millet subprocesses
+
+No migration. Works with any millet version; complements millet 0.21.1's
+per-attempt Tinfoil deadline (not required by it).
+
+Incident 2026-09-15: a stalled TEE summary pinned a vezir job in
+`transcribing` for 30+ minutes with the GPU idle, blocking the single
+worker. The existing `VEZIR_MILLET_TIMEOUT` hard budget (4 h) would
+eventually have reaped the process — but 4 hours of a blocked queue is its
+own outage, and the budget can't distinguish "wedged" from "legitimately
+slow" (a 3-hour meeting transcribes for a long time).
+
+`run_meet` now also enforces a **no-progress watchdog**
+(`VEZIR_MILLET_WATCHDOG_SECONDS`, default 900 = 15 min, 0 disables): when a
+millet step shows *no observable progress* for that long — no growth of the
+step's session log, no change to the session dir's artifacts, and less than
+~2% CPU across the whole process group (millet and its children) — the
+process group is SIGTERM'd (SIGKILL after a 15 s grace), the step returns
+exit 124, and a `WATCHDOG: no progress for Ns ...` banner lands in the
+session log so the stored job error names the cause.
+
+What counts as progress is deliberately generous, so legitimately quiet
+steps are left alone: CPU-burn (GPU inference is kernel-launch bound, not
+log bound), log-streaming (model downloads emit progress), artifact writes,
+and millet 0.21.1's Tinfoil retry ladder (quiet for up to ~12 min per
+attempt by design) all reset the stall clock.
+
+- New env var documented in `vezir/config.py`:
+  `VEZIR_MILLET_WATCHDOG_SECONDS` (default 900; 0 disables).
+- `run_meet`'s timeout banner moved from the caller into
+  `_wait_with_timeout` — both budgets write their own banner now.
+- 10 new tests (`tests/test_meet_runner_watchdog.py`; suite 1162 → 1172):
+  stall kills fast, SIGTERM-ignorers get SIGKILL'd, busy-CPU / log-growing /
+  artifact-growing steps are spared, group CPU counts children, budget
+  behavior unchanged.
+
 ## 0.22.0 — attested TEE fallbacks (Venice, NEAR); Tinfoil is no longer a SPOF
 
 No migration. Requires **millet-pipeline >= 0.21.0** (floor raised).
