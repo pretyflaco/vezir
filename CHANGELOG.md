@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.22.0 — attested TEE fallbacks (Venice, NEAR); Tinfoil is no longer a SPOF
+
+No migration. Requires **millet-pipeline >= 0.21.0** (floor raised).
+
+millet 0.21.0 adds two decorrelated attested TEE providers between Tinfoil
+and local Ollama, so a Tinfoil-side outage no longer forces summarization
+off attested hardware. The chain is `tinfoil → venice → near → ollama`;
+millet verifies each enclave's NVIDIA NRAS evidence + a freshness nonce
+itself before recording provenance.
+
+- **Provenance badging.** `venice` and `near` join `_ATTESTED_BACKENDS`
+  (`client/api.py`), so a session summarized on either shows as attested in
+  the TUI (no `· unattested` badge), same contract as Tinfoil. Sound only
+  because millet 0.21.0 does the attestation verification — hence the floor
+  raise. `Session.is_attested` splits provenance on the first `/`, so
+  NEAR's slash-bearing model ids (`near/z-ai/glm-5.3-flash`) resolve
+  correctly.
+- **Vision-gating** lives in millet: a screen-recording (frames) job never
+  falls back to a text-only tier (NEAR, Ollama); it stays on a vision tier
+  (Tinfoil, or Venice) or fails loud.
+- **Local floor (Nemotron).** millet documents pointing the Ollama tier at
+  NVIDIA's Jetson-optimized Nemotron for a faster zero-network fallback;
+  text-only, so frames never route there.
+
+Operators set `VENICE_API_KEY` / `NEAR_AI_API_KEY` (or a 0600 key file) in
+the server env to enable the fallbacks; unset, the chain simply skips them.
+
 ## 0.21.2 — pin fastapi/starlette; fix a test that depended on a private API
 
 No migration. Dependency-bound tightening plus a test-harness fix. CI went

@@ -185,7 +185,12 @@ def test_migration_registered_last(tmp_data):
 # ── client-side attestation semantics ──
 
 
-@pytest.mark.parametrize("prov", ["tinfoil/glm-5-3-flash", "tinfoil-tee/x"])
+@pytest.mark.parametrize("prov", [
+    "tinfoil/glm-5-3-flash",
+    "tinfoil-tee/x",
+    "venice/glm-5.3-flash (TEE)",  # millet 0.21.0 attested fallback
+    "near/z-ai/glm-5.3-flash (TEE)",  # note: model id itself contains a slash
+])
 def test_session_is_attested_for_tee_backends(prov):
     s = Session(id="x", status="done", summary_provenance=prov)
     assert s.is_attested is True

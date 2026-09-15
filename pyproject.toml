@@ -116,7 +116,12 @@ server = [
     # not summarize on its own default path -- and because vezir sends a
     # preset, that surfaced as a hard ModuleNotFoundError rather than a
     # fallback.  0.20.1 moved it into millet's base dependencies.
-    "millet-pipeline>=0.20.1",
+    # Raised to >= 0.21.0 (vezir 0.22.0): millet 0.21.0 adds the attested TEE
+    # fallbacks (venice, near) so Tinfoil is no longer a summarization SPOF.
+    # vezir badges their provenance as attested (client/api.py:_ATTESTED_BACKENDS),
+    # which is only sound once millet is doing the NVIDIA-NRAS + nonce
+    # attestation verification that 0.21.0 introduced.
+    "millet-pipeline>=0.21.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

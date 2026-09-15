@@ -301,7 +301,11 @@ class Session:
         return bool(self.video)
 
     # Backends whose inference runs inside a hardware-attested enclave.
-    _ATTESTED_BACKENDS = ("tinfoil", "tinfoil-tee")
+    # venice/near are the millet 0.21.0 TEE fallbacks (Intel TDX + NVIDIA CC);
+    # millet verifies each enclave's NVIDIA NRAS evidence + a freshness nonce
+    # itself before recording the provenance, so a summary tagged with one of
+    # these was produced on attested hardware, same contract as tinfoil.
+    _ATTESTED_BACKENDS = ("tinfoil", "tinfoil-tee", "venice", "near")
 
     @property
     def is_attested(self) -> bool:
