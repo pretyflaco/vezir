@@ -3,6 +3,28 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.22.2 — raise millet floor to 0.21.3 (10-image request cap)
+
+No migration. No code changes — this release only raises the
+`millet-pipeline` install floor so a fresh `pip install vezir[server]`
+cannot resolve a millet that fails every long screen recording's summary.
+
+Incident 2026-09-17 (session `01M2P6FTRG4WAKKE5T7TV6HNFM`): the first
+screen recording narrating more than ten cues (18 cue frames,
+`iteration-plan` template) failed its summary on every backend. millet
+attached all frames to a single vision request; the attested endpoints
+answer 400 `At most 10 image(s) may be provided in one request` — a
+request-shape validation, so no retry budget could save it and the vision
+gate (correctly) refused to drop the frames onto a text-only tier.
+`millet label --apply-json` exited 1; vezir recorded `summary_error`.
+
+millet 0.21.3 caps frames at the endpoint limit with even sampling
+(first + last kept); frames on disk are untouched, so they remain full
+artifacts for the TUI, Android, and git sync. Deployed hosts running
+millet as an editable checkout just `git pull`; this floor protects fresh
+installs. Existing failed sessions recover with a plain summary retry
+(`e` in the TUI).
+
 ## 0.22.1 — no-progress watchdog for millet subprocesses
 
 No migration. Works with any millet version; complements millet 0.21.1's

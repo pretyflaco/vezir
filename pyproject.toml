@@ -121,7 +121,14 @@ server = [
     # vezir badges their provenance as attested (client/api.py:_ATTESTED_BACKENDS),
     # which is only sound once millet is doing the NVIDIA-NRAS + nonce
     # attestation verification that 0.21.0 introduced.
-    "millet-pipeline>=0.21.0",
+    # Raised to >= 0.21.3 (vezir 0.22.2): millet capped summary frames at the
+    # vision endpoints' hard 10-image request limit.  Older millet attaches
+    # every cue frame to one request, so any screen recording narrating more
+    # than ten cues fails its summary on every backend (verified live
+    # 2026-09-17: venice 400 "At most 10 image(s) may be provided in one
+    # request") -- and vezir's 45-frame extraction cap means a fresh install
+    # was guaranteed to hit it on the first long demo.
+    "millet-pipeline>=0.21.3",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
