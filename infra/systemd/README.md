@@ -87,6 +87,39 @@ systemctl --user disable vezir.service        # stop + remove from autostart
 journalctl --user -u vezir.service -n 100 --no-pager
 ```
 
+## Health watchdog (optional, recommended)
+
+`vezir-health` probes two very different things every 90 seconds and
+responds in two very different ways:
+
+| Probe | Failure response |
+|---|---|
+| `http://127.0.0.1:8000/health` (loopback) | restart vezir — a hung/crashed process is what a restart fixes |
+| `https://vezir.twentyone.ist/health` (public) | **alert only** — journal entries under the `vezir-healthcheck` tag, never a restart |
+
+The public path is VPS nftables DNAT → WireGuard tunnel → caddy →
+uvicorn, and restarting vezir cannot repair any of that.  Incident
+2026-09-17: a modem reboot killed the WG tunnel for ~30 minutes while
+the loopback probe read green the whole time, so both clients saw
+"transient server connection error" with nothing in the watchdog's
+journal.  The public probe exists to make that class of outage visible:
+it logs DOWN (with a runbook pointer to `infra/vps/README.md`), a
+heartbeat every ~20 checks, and RECOVERED with the outage length.
+Consecutive-failure state lives in `~/.local/state/`.
+
+```bash
+install -m 0755 infra/systemd/vezir-healthcheck.sh ~/.local/bin/
+cp infra/systemd/vezir-health.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now vezir-health.timer
+
+# Force one run and read the verdict
+systemctl --user start vezir-health.service
+journalctl --user -t vezir-healthcheck -n 20 --no-pager
+```
+
+Edit `PUBLIC_URL` in the script if the public hostname differs.
+
 ## Tinfoil model watchdog (optional, recommended)
 
 Tinfoil retires models out from under deployments.  `deepseek-v4-pro`

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the vezir health watchdog every 90 seconds
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=90s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

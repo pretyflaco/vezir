@@ -1,0 +1,7 @@
+[Unit]
+Description=vezir health watchdog (restart on loopback failure, alert on public-path failure)
+After=vezir.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/vezir-healthcheck.sh
