@@ -3,6 +3,57 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.22.3 — language retries on template sessions validate the artifact millet actually writes
+
+No migration. Server-side only; works with any millet >= the 0.21.3 floor.
+
+Incident 2026-09-17, part two (session `01M2P6FTRG4WAKKE5T7TV6HNFM`): after
+millet 0.21.3 fixed the 10-image request cap, a Retry-summary-with-English
+on the iteration-plan session *succeeded in millet* — "Additional 'en'
+summary generated in 252.6s" — but vezir reported
+`summary retry produced no .summary.en.md` anyway. millet names the
+artifact by run shape: a template session writes
+`<base>.<template>[.<lang>].md` (here `.iteration-plan.en.md`), never
+`.summary.<lang>.md`. The worker's belt-and-suspenders check globbed only
+the default-summary name, so the false failure also skipped the git sync
+(the new summary/PDF/meta never got pushed) and left the artifact map
+without the summary.
+
+Three naming blindspots fixed in `vezir/server/worker.py`:
+
+- **Retry existence checks**: new `_summary_artifact_globs(template, lang)`
+  names the expected artifact per run shape (template+lang →
+  `<t>.<lang>.md` primary, tolerating millet's degraded forms — old millet
+  may drop the template to the default summary, mirroring the finalize
+  path's tolerance). The old three-way if/elif is one check now; the
+  failure message names the shape actually expected.
+- **`_find_artifacts`**: template summaries are discovered generically —
+  any top-level `<base>.<name>[.<lang>].md` that is neither a
+  `.summary.` nor a `.translation.` artifact — instead of the hardcoded
+  `*.iteration-plan.md` glob. Language-qualified template files land in
+  the artifact map (e.g. key `iteration_plan_en`), so the TUI artifacts
+  table and `vezir pull` see them; the map renders generically, no client
+  change needed.
+- **Provenance sidecar discovery**: `_summary_meta_candidates` now matches
+  the sidecar's language exactly (`<base>.summary[.<lang>].meta.json` /
+  `<base>.<template>[.<lang>].meta.json`) instead of a glob-prefix +
+  catch-all that could read an additional-language sidecar as the
+  primary's. `_summary_fallback_provenance` shares the candidates (with
+  the `fallback_used` gate), so a fallback on a templated run is badged
+  instead of silently missed.
+
+millet needs no change — its naming is `lang_suffix = summary_language or
+None` (explicit flag only; vezir maps "auto" away), so a plain run is
+always unqualified and exact language matching is sound.
+
+- 13 new tests (suite 1172 → 1185): the incident end-to-end through
+  `retry_summary_for_session` (validates the template+lang artifact,
+  clears `summary_error`, lists it, records provenance from the template
+  sidecar), template-only / degraded / missing-artifact variants, glob
+  shapes, artifact-map naming, and lang-exact sidecar precedence.
+- Recovery: after deploying, retry the summary once more — it re-runs the
+  summary AND performs the sync the false failure skipped.
+
 ## 0.22.2 — raise millet floor to 0.21.3 (10-image request cap)
 
 No migration. No code changes — this release only raises the

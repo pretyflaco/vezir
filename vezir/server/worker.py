@@ -293,45 +293,92 @@ def _summary_fallback_provenance(
 ) -> str | None:
     """Return "<backend>/<model>" when the summary came from a fallback.
 
-    Reads millet's ``.summary[.<lang>].meta.json`` sidecar, which records
-    ``fallback_used: true`` when the requested preset's backend failed and
-    millet fell back down the chain (millet-pipeline >= 0.16.0, opt-in via
-    MILLET_SUMMARY_PRESET_FALLBACK).  Older millet versions don't write the
-    field — treated as "no fallback".  Returns None on any read/parse
-    problem: provenance is informational, never worth failing a job over.
+    Reads millet's summary meta sidecar — ``.summary[.<lang>].meta.json``
+    for a default run, ``<base>.<template>[.<lang>].meta.json`` for a
+    templated one (same candidates as :func:`_summary_provenance`) — which
+    records ``fallback_used: true`` when the requested preset's backend
+    failed and millet fell back down the chain (millet-pipeline >= 0.16.0,
+    opt-in via MILLET_SUMMARY_PRESET_FALLBACK).  Older millet versions
+    don't write the field — treated as "no fallback".  Returns None on any
+    read/parse problem: provenance is informational, never worth failing a
+    job over.
     """
-    pattern = f"*.summary.{lang}.meta.json" if lang else "*.summary.meta.json"
-    metas = sorted(session_dir.glob(pattern))
-    if not metas:
-        return None
-    try:
-        meta = json.loads(metas[0].read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(meta, dict) or not meta.get("fallback_used"):
-        return None
-    backend = meta.get("backend") or "unknown"
-    model = meta.get("model") or "unknown"
-    return f"{backend}/{model}"
+    for meta_path in _summary_meta_candidates(session_dir, lang):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict) and meta.get("fallback_used"):
+            backend = meta.get("backend") or "unknown"
+            model = meta.get("model") or "unknown"
+            return f"{backend}/{model}"
+    return None
 
 
-# Sidecar patterns to try, in order, when looking for summary provenance.
-# A templated run (e.g. --summary-template iteration-plan) writes
-# ``<base>.<template>.meta.json`` instead of ``<base>.summary.meta.json``,
-# so a video/iteration session has no ``.summary.`` sidecar at all.
+# Sidecar candidates for summary provenance.  A sidecar's language lives in
+# its name: ``<base>.summary.meta.json`` and ``<base>.<template>.meta.json``
+# are primary (no-language) artifacts; ``<base>.summary.<lang>.meta.json``
+# and ``<base>.<template>.<lang>.meta.json`` are additional-language ones
+# (millet writes the suffix only for an explicit ``--summary-language``,
+# which vezir maps "auto" away, so a plain run is always unqualified).  A
+# request for the primary (lang=None) must therefore never read an
+# additional-language sidecar, and vice versa.
 def _summary_meta_candidates(session_dir: Path, lang: str | None) -> list[Path]:
-    patterns = [f"*.summary.{lang}.meta.json"] if lang else ["*.summary.meta.json"]
-    patterns.append("*.meta.json")
-    seen: list[Path] = []
-    for pat in patterns:
-        for p in sorted(session_dir.glob(pat)):
-            # Exclude the upload staging sidecar (<id>.meta.json), which
-            # carries upload params rather than summary provenance.
-            if p.name == f"{session_dir.name}.meta.json":
-                continue
-            if p not in seen:
-                seen.append(p)
-    return seen
+    primary: list[Path] = []
+    templated: list[Path] = []
+    for p in sorted(session_dir.glob("*.meta.json")):
+        # Exclude the upload staging sidecar (<id>.meta.json), which
+        # carries upload params rather than summary provenance.
+        if p.name == f"{session_dir.name}.meta.json":
+            continue
+        tail = p.name[len(session_dir.name) + 1 : -len(".meta.json")]
+        if not tail:
+            continue
+        parts = tail.split(".")  # summary[.<lang>] / <template>[.<lang>]
+        meta_lang = parts[1] if len(parts) > 1 else None
+        if meta_lang != lang:
+            continue
+        if parts[0] == "summary":
+            primary.append(p)
+        else:
+            templated.append(p)
+    # Default-summary family first: the primary artifact wins when both a
+    # summary and a template artifact exist for the same language.
+    return primary + templated
+
+
+def _summary_artifact_globs(template: str | None, lang: str | None) -> list[str]:
+    """Globs that satisfy "the expected summary artifact exists" for a run.
+
+    millet names the summary by run shape (``<base>`` is the session id):
+
+    ============ ==================== =============================
+    template     language             artifact
+    ============ ==================== =============================
+    none         none / "auto"        ``<base>.summary.md``
+    none         ``<lang>``           ``<base>.summary.<lang>.md``
+    ``<t>``      none / "auto"        ``<base>.<t>.md``
+    ``<t>``      ``<lang>``           ``<base>.<t>.<lang>.md``
+    ============ ==================== =============================
+
+    The first glob is the primary expectation; the rest tolerate millet's
+    degraded forms (an older millet may drop the template to the default
+    summary), mirroring the finalize path's tolerance (``_summary_globs``
+    in ``_run_job``).
+    """
+    if template:
+        globs: list[str] = []
+        if lang:
+            globs.append(f"*.{template}.{lang}.md")
+            globs.append(f"*.{template}.md")
+            globs.append(f"*.summary.{lang}.md")
+        else:
+            globs.append(f"*.{template}.md")
+        globs.append("*.summary.md")
+        return globs
+    if lang:
+        return [f"*.summary.{lang}.md"]
+    return ["*.summary.md"]
 
 
 def _summary_provenance(session_dir: Path, lang: str | None = None) -> str | None:
@@ -439,11 +486,29 @@ def _find_artifacts(session_dir: Path) -> dict:
         lang = stem.rsplit(".summary.", 1)[-1]  # <lang>
         if lang and "." not in lang:
             out[f"summary_{lang}"] = p.name
-    # Template summary (v0.18.0, e.g. millet --summary-template iteration-plan):
-    # <base>.<template>.md.  Exposed as artifact key "iteration_plan".
-    for p in sorted(session_dir.glob("*.iteration-plan.md")):
-        out["iteration_plan"] = p.name
-        break
+    # Template summaries (v0.18.0, e.g. millet --summary-template
+    # iteration-plan): <base>.<template>.md, and with a language override
+    # <base>.<template>.<lang>.md (incident 2026-09-17: the language-qualified
+    # name was invisible to the artifact map, so the summary existed on disk
+    # but the TUI/pull never listed it).  Template names are shape-validated,
+    # not membership-checked, so discover generically: any top-level .md that
+    # is neither the default summary (handled above) nor a translation.
+    # Key: template with "-" -> "_", plus "_<lang>" when language-qualified
+    # ("iteration_plan", "iteration_plan_en").
+    for p in sorted(session_dir.glob("*.md")):
+        if any(marker in p.name for marker in (".summary.", ".translation.")):
+            continue
+        stem = p.name[: -len(".md")]           # <base>.<template>[.<lang>]
+        parts = stem.split(".", 1)
+        if len(parts) < 2 or not parts[1]:
+            continue                            # bare <base>.md — not millet's
+        template, *lang_rest = parts[1].split(".")
+        if not template:
+            continue
+        key = template.replace("-", "_")
+        if lang_rest:
+            key = f"{key}_{lang_rest[0]}"
+        out.setdefault(key, p.name)
     for p in sorted(session_dir.glob("*.pdf")):
         out["pdf"] = p.name
         break
@@ -1344,25 +1409,20 @@ def retry_summary_for_session(
                     log_path,
                 )
                 log.warning("retry-summary %s failed: %s", session_id, summary_err)
-            # Belt-and-suspenders: verify the expected summary file appeared.
-            elif language_override:
-                if not list(sd.glob(f"*.summary.{language_override}.md")):
+            # Belt-and-suspenders: verify the expected summary artifact
+            # appeared.  millet names it by run shape — a template session
+            # writes <base>.<template>[.<lang>].md, never .summary.*.md —
+            # so the template picks the family and the language only
+            # qualifies it.  (Incident 2026-09-17: an 'en' retry on an
+            # iteration-plan session false-failed globbing for
+            # .summary.en.md while millet had actually succeeded.)
+            elif language_override or requested_template or requested_preset:
+                globs = _summary_artifact_globs(requested_template, language_override)
+                if not any(list(sd.glob(g)) for g in globs):
                     summary_err = (
-                        f"summary retry produced no "
-                        f".summary.{language_override}.md"
+                        f"summary retry produced no {globs[0].lstrip('*')}"
                     )
                     log.warning("retry-summary %s: %s", session_id, summary_err)
-            elif requested_template and not list(sd.glob(f"*.{requested_template}.md")):
-                summary_err = (
-                    f"summary retry produced no .{requested_template}.md"
-                )
-                log.warning("retry-summary %s: %s", session_id, summary_err)
-            elif requested_preset and not list(sd.glob("*.summary.md")):
-                summary_err = (
-                    f"summary retry produced no .summary.md for preset "
-                    f"'{requested_preset}'"
-                )
-                log.warning("retry-summary %s: %s", session_id, summary_err)
         except Exception as exc:
             summary_err = f"summary retry failed: {exc}"
             log.warning("retry-summary %s failed: %s", session_id, summary_err)
