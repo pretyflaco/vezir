@@ -25,13 +25,15 @@ STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/vezir-healthcheck-public.state
 
 # ── Probe 1: loopback — restart on failure ─────────────────────────────────
 
-code="$(curl -sS -o /dev/null -m 8 -w "%{http_code}" "$URL" 2>/dev/null || echo 000)"
+code="$(curl -sS -o /dev/null -m 8 -w "%{http_code}" "$URL" 2>/dev/null)"
+[ -n "$code" ] || code=000
 if [ "$code" != "200" ]; then
   echo "vezir health check failed (HTTP $code); restarting vezir" \
     | systemd-cat -t "$LOG_TAG" -p warning
   systemctl --user restart vezir
   sleep 5
-  code2="$(curl -sS -o /dev/null -m 8 -w "%{http_code}" "$URL" 2>/dev/null || echo 000)"
+  code2="$(curl -sS -o /dev/null -m 8 -w "%{http_code}" "$URL" 2>/dev/null)"
+  [ -n "$code2" ] || code2=000
   if [ "$code2" != "200" ]; then
     echo "vezir still unhealthy after restart (HTTP $code2)" \
       | systemd-cat -t "$LOG_TAG" -p err
@@ -43,7 +45,10 @@ fi
 # ── Probe 2: public path — alert only ───────────────────────────────────────
 
 mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
-pcode="$(curl -sS -o /dev/null -m 10 -w "%{http_code}" "$PUBLIC_URL" 2>/dev/null || echo 000)"
+# On total connect failure curl prints 000 via -w AND exits nonzero, so
+# the fallback echo must not append a second one (was "HTTP 000000").
+pcode="$(curl -sS -o /dev/null -m 10 -w "%{http_code}" "$PUBLIC_URL" 2>/dev/null)"
+[ -n "$pcode" ] || pcode=000
 
 _count() {
   n="$(cat "$STATE_FILE" 2>/dev/null || true)"
