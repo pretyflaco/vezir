@@ -600,6 +600,9 @@ def test_run_doctor_all_clean_no_server(monkeypatch, tmp_data, capsys):
         "vezir.doctor._check_macos_recorder",
         lambda r: None,
     )
+    # The recordings-health check (0.23.0) scans the real recordings dir —
+    # point it at an empty one so host leftovers don't break all-clean.
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_data / "recordings"))
     code = run_doctor()
     captured = capsys.readouterr().out
     assert code == 0
@@ -663,3 +666,95 @@ def test_macos_recorder_gatekeeper_hint_on_killed(monkeypatch):
     _check_macos_recorder(r)
     assert any(sev == "WARN" and "reported issues" in msg for sev, msg in r.rows)
     assert any("quarantine" in msg for sev, msg in r.rows)
+
+
+# ── recordings health (0.23.0) ────────────────────────────────────────────────
+
+
+def test_recordings_health_clean(monkeypatch, tmp_path):
+    from vezir.doctor import _check_recordings_health, _Results
+
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "recordings"))
+    (tmp_path / "recordings" / "startups").mkdir(parents=True)
+    r = _Results()
+    _check_recordings_health(r)
+    assert any(
+        sev == "OK" and "no interrupted" in msg for sev, msg in r.rows
+    )
+    assert not any(sev == "WARN" for sev, _msg in r.rows)
+
+
+def test_recordings_health_warns_on_interrupted(monkeypatch, tmp_path):
+    from vezir.doctor import _check_recordings_health, _Results
+
+    root = tmp_path / "recordings" / "startups"
+    d = root / "meeting-20260928-135948"
+    d.mkdir(parents=True)
+    (d / "meeting-20260928-135948.chunk-000.wav").write_bytes(b"\x00" * 128)
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "recordings"))
+
+    r = _Results()
+    _check_recordings_health(r)
+    assert any(
+        sev == "WARN" and "interrupted session" in msg and "135948" in msg
+        for sev, msg in r.rows
+    )
+
+
+def test_recordings_health_warns_on_orphan_and_pending(monkeypatch, tmp_path):
+    from vezir.client import recovery
+    from vezir.doctor import _check_recordings_health, _Results
+
+    root = tmp_path / "recordings" / "startups"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "recordings"))
+
+    fake = [
+        recovery.RecoverableSession(
+            session_dir=root / "meeting-orphan", team_id="startups",
+            kind="orphaned", started_at=None, total_bytes=1000,
+            recorder_pid=424242, audio_path=None, title_hint=None,
+            detail="recorder still running (pid 424242)",
+        ),
+        recovery.RecoverableSession(
+            session_dir=root / "meeting-pending", team_id="startups",
+            kind="pending_upload", started_at=None, total_bytes=1000,
+            recorder_pid=None, audio_path=None, title_hint="x",
+            detail="upload never finished (failed): boom",
+        ),
+    ]
+    monkeypatch.setattr(recovery, "scan_interrupted", lambda: fake)
+    monkeypatch.setattr(recovery, "recordings_roots", lambda: [("startups", root)])
+
+    r = _Results()
+    _check_recordings_health(r)
+    assert any(
+        sev == "WARN" and "ORPHANED" in msg and "424242" in msg
+        for sev, msg in r.rows
+    )
+    assert any(
+        sev == "WARN" and "upload never finished" in msg
+        for sev, msg in r.rows
+    )
+
+
+def test_recordings_health_warns_on_low_disk(monkeypatch, tmp_path):
+    from collections import namedtuple
+
+    from vezir.doctor import _check_recordings_health, _Results
+
+    root = tmp_path / "recordings" / "startups"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "recordings"))
+
+    usage = namedtuple("usage", "total used free")
+    # shutil is imported function-locally in doctor.py — patch the module.
+    monkeypatch.setattr(
+        "shutil.disk_usage",
+        lambda _p: usage(total=10 ** 12, used=10 ** 12, free=2 * 1024 ** 3),
+    )
+    r = _Results()
+    _check_recordings_health(r)
+    assert any(
+        sev == "WARN" and "GiB free" in msg for sev, msg in r.rows
+    )

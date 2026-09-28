@@ -45,7 +45,12 @@ dependencies = [
     "click>=8.0",
     "httpx>=0.27",
     "ulid-py>=1.1",
-    "millet-record>=0.4.4",
+    # Raised to >= 0.6.0 (vezir 0.23.0): the startup recovery scan and
+    # RecordingInProgressError surfacing build on millet-record 0.6.0's
+    # recording lock, .recorder.json markers, and
+    # find_interrupted_sessions()/recover_session().  Older millet-record
+    # would leave crashed recordings invisible again (2026-09-28 incident).
+    "millet-record>=0.6.0",
 ]
 
 [project.scripts]

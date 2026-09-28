@@ -3,6 +3,63 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.23.0 — crash resilience: startup recovery scan, upload journal, TUI crash log
+
+Incident 2026-09-28: the TUI crashed mid-recording.  The recorder —
+deliberately detached so the meeting survives a UI crash — kept writing
+as an orphan for 12 more minutes, capturing two *subsequent* meetings
+into the dead session's file.  Meanwhile the 87-minute meeting appeared
+lost: the Sessions tab is server-side only and vezir kept zero local
+state about recordings that never uploaded.  The audio was fully intact
+(chunk WAVs + millet's header repair already worked); what was missing
+was discovery, ownership classification, and a salvage path.  The crash
+itself also left no traceback anywhere.
+
+Pairs with millet-record 0.6.0 (recording lock, `.recorder.json`
+markers, `find_interrupted_sessions`/`recover_session`), which is the
+new dependency floor.  No migration.  Suite grows to 1222 (34 new).
+
+### Added
+
+- **Startup recovery scan + dialog** (`vezir tui`).  On launch, all
+  recordings roots (`~/vezir-meetings/*/`) are scanned in a worker
+  thread for sessions that never reached the server; if any exist, a
+  "Recovered recordings" modal offers per-session *Salvage & upload*
+  (stop orphaned recorder → stitch chunks → compress → upload with a
+  title prompt), *Open folder*, or dismiss.  Three states are
+  distinguished: **interrupted** (recorder dead, chunks on disk),
+  **orphaned** (recorder alive, owner dead — SIGINT finalizes the WAV
+  before salvage), and **pending upload** (journal-marked, see below).
+  Recordings whose owner process is alive are left alone.  For pre-0.6.0
+  dirs without a recorder marker, a live ffmpeg is detected via a
+  `/proc` cmdline scan and ownership inferred from its ppid
+  (reparented-to-init = orphaned) — so a recording by an old-version
+  client is never mislabeled as orphaned.  Env kill switch for tests:
+  `VEZIR_TUI_DISABLE_RECOVERY_SCAN=1`.
+- **Upload journal** (`<session_dir>/.upload.json`).  Record/stop →
+  `pending`, upload start → `uploading`, success → `done`, failure →
+  `failed` (+error).  A crash anywhere in the compress/upload window is
+  now picked up by the startup scan as a resumable pending upload.
+  Wired into the TUI record/import flow and `vezir scribe`.  Only
+  sessions that entered the upload flow get a marker, so historical and
+  deliberately-local recordings are never nagged about.
+- **`vezir doctor` recordings health**: warns on interrupted sessions,
+  orphaned recorders (with pid), unfinished uploads, and low disk space
+  on the recordings filesystem.
+- **TUI crash log**: rotating log at `~/.local/state/vezir/tui.log`
+  (XDG_STATE_HOME respected) while the TUI runs, with unhandled
+  exceptions logged before the terminal state is lost — the next crash
+  will be debuggable.
+- **Recording-lock contention is surfaced cleanly**: millet-record
+  0.6.0's `RecordingInProgressError` (raised when a second recording
+  starts while one is active) shows holder pid/start time in the TUI
+  and exits `vezir scribe` with a readable message instead of a
+  traceback.
+
+### Changed
+
+- `millet-record` dependency floor raised 0.4.4 → **0.6.0**.
+
 ## 0.22.3 — language retries on template sessions validate the artifact millet actually writes
 
 No migration. Server-side only; works with any millet >= the 0.21.3 floor.

@@ -271,7 +271,16 @@ def _record_via_library(
         flush=True,
     )
 
-    session.start()
+    try:
+        session.start()
+    except RuntimeError as exc:
+        # millet-record 0.6.0 recording lock: another recording is active
+        # (or orphaned by a crash).  The message carries holder pid/start
+        # and the stale-lock remedy — print it, don't trace back.
+        if exc.__class__.__name__ == "RecordingInProgressError":
+            print(f"vezir: {exc}", file=sys.stderr, flush=True)
+            raise SystemExit(2) from None
+        raise
 
     stop_pause_thread = threading.Event()
     pause_thread = threading.Thread(
@@ -626,6 +635,16 @@ def run_scribe(
         flush=True,
     )
 
+    # Crash journal (0.23.0): record intent to upload before compressing,
+    # so a crash in the compress/upload window is recoverable on the next
+    # TUI launch (startup recovery scan picks up pending markers).
+    try:
+        from . import upload_journal
+
+        upload_journal.mark_pending(session_dir, title=title, team_id=team_id)
+    except Exception:
+        pass  # journaling is best-effort; never block an upload
+
     if compress and audio.suffix.lower() == ".wav":
         before = audio.stat().st_size
         print("vezir: compressing WAV to OGG/Opus before upload ...", flush=True)
@@ -658,6 +677,12 @@ def run_scribe(
             on_retry=_retry_line,
             team_id=team_id,
         )
+        try:
+            from . import upload_journal
+
+            upload_journal.mark_uploading(session_dir)
+        except Exception:
+            pass
         if uploader.server_supports_resumable(
             server_url, token, team_id=team_id
         ):
@@ -669,6 +694,12 @@ def run_scribe(
                 server_url, token, audio, **upload_kwargs
             )
     except Exception as exc:
+        try:
+            from . import upload_journal
+
+            upload_journal.mark_failed(session_dir, f"upload failed: {exc}")
+        except Exception:
+            pass
         print(flush=True)
         print(
             f"vezir: upload failed after retries: {exc}",
@@ -690,6 +721,12 @@ def run_scribe(
         raise
     print(flush=True)
     print(f"vezir: uploaded as session {result['session_id']}", flush=True)
+    try:
+        from . import upload_journal
+
+        upload_journal.mark_done(session_dir, result["session_id"])
+    except Exception:
+        pass
     # Bridge the local recording dir to the server session immediately so a
     # later `vezir pull` / "open folder" reuses THIS folder rather than
     # creating a differently-timestamped duplicate.

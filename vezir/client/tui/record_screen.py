@@ -1175,7 +1175,13 @@ class RecordBody(Vertical):
         try:
             session.start()
         except Exception as exc:
-            self.post_message(RecorderFailed(reason=str(exc), gen=gen))
+            reason = str(exc)
+            # millet-record 0.6.0 recording lock: a second recording while
+            # one is active (or orphaned by a crash).  The message already
+            # carries holder pid/start; add the way out.
+            if exc.__class__.__name__ == "RecordingInProgressError":
+                reason = f"{reason}  — or salvage it via the recovery dialog on next launch."
+            self.post_message(RecorderFailed(reason=reason, gen=gen))
             return
         # Notify the UI to flip into recording mode.
         self.post_message(ServerStatus(status="recording", gen=gen))
@@ -1286,6 +1292,18 @@ class RecordBody(Vertical):
         self.is_uploading = True
         self.status_text = "compressing" if audio_path.suffix.lower() == ".wav" else "uploading"
         self.error_text = ""
+        # Crash journal (0.23.0): record intent to upload BEFORE starting,
+        # so a crash during compress/upload is recoverable on next launch.
+        try:
+            from .. import upload_journal
+
+            upload_journal.mark_pending(
+                audio_path.parent,
+                title=title,
+                team_id=getattr(self.app, "active_team_id", None),
+            )
+        except Exception:
+            pass  # journaling is best-effort; never block an upload
         self._upload_worker(
             audio_path, title, preset, template, auto_label, sync, personal, self._gen,
         )
@@ -1302,7 +1320,9 @@ class RecordBody(Vertical):
         personal: bool,
         gen: int,
     ) -> None:
-        from .. import uploader
+        from .. import upload_journal, uploader
+
+        session_dir = audio_path.parent  # survives the wav→ogg path swap
 
         try:
             if audio_path.suffix.lower() == ".wav":
@@ -1313,6 +1333,7 @@ class RecordBody(Vertical):
                     audio_path, keep_wav=False,
                 )
         except Exception as exc:
+            upload_journal.mark_failed(session_dir, f"compression failed: {exc}")
             self.post_message(UploadFailed(
                 error=f"compression failed: {exc}",
                 audio_path=audio_path,
@@ -1360,6 +1381,7 @@ class RecordBody(Vertical):
         )
         try:
             # Prefer resumable; fall back to one-shot on older servers.
+            upload_journal.mark_uploading(session_dir)
             if uploader.server_supports_resumable(
                 server_url, token, team_id=team_id
             ):
@@ -1371,6 +1393,7 @@ class RecordBody(Vertical):
                     server_url, token, audio_path, **upload_kwargs
                 )
         except Exception as exc:
+            upload_journal.mark_failed(session_dir, f"upload failed: {exc}")
             self.post_message(UploadFailed(
                 error=f"upload failed: {exc}",
                 audio_path=audio_path,
@@ -1380,6 +1403,7 @@ class RecordBody(Vertical):
             return
 
         session_id = result.get("session_id", "")
+        upload_journal.mark_done(session_dir, session_id)
         # Bridge the local recording dir to the server session immediately:
         # write a minimal session.json so a later "open folder" (which calls
         # find_local_session_dir) reuses THIS folder instead of pulling the

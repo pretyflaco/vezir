@@ -408,6 +408,72 @@ def _check_client_file_perms(r: _Results) -> None:
     _check_file_perms(r, client_config.client_config_path(), "client.json")
 
 
+def _check_recordings_health(r: _Results) -> None:
+    """0.23.0: local recordings that never reached the server.
+
+    Surfaces the three recoverable states from the 2026-09-28 incident:
+    interrupted recordings (chunk WAVs, recorder dead), orphaned
+    recorders (recorder alive, controlling process dead — it keeps
+    capturing subsequent meetings into the dead session's file), and
+    journal-marked uploads that never finished.  Also warns when the
+    recordings filesystem is nearly full (a recorder orphaned long
+    enough will fill it).
+    """
+    import shutil
+
+    try:
+        from .client.recovery import recordings_roots, scan_interrupted
+    except ImportError:
+        return
+
+    roots = recordings_roots()
+    try:
+        sessions = scan_interrupted()
+    except Exception as exc:
+        r.warn(f"recordings: recovery scan failed: {exc}")
+        sessions = []
+
+    orphaned = [s for s in sessions if s.kind == "orphaned"]
+    interrupted = [s for s in sessions if s.kind == "interrupted"]
+    pending = [s for s in sessions if s.kind == "pending_upload"]
+
+    if not sessions:
+        if roots:
+            r.ok("recordings: no interrupted/orphaned/unfinished sessions")
+    else:
+        for s in orphaned:
+            r.warn(
+                f"recordings: ORPHANED recorder pid {s.recorder_pid} still "
+                f"writing to {s.session_dir} — its controlling process is "
+                "gone. Salvage via `vezir tui` recovery dialog."
+            )
+        for s in interrupted:
+            r.warn(
+                f"recordings: interrupted session {s.session_dir} "
+                "(never uploaded). Salvage via `vezir tui` recovery dialog."
+            )
+        for s in pending:
+            r.warn(
+                f"recordings: upload never finished for {s.session_dir} "
+                f"({s.detail}). Resume via `vezir tui` recovery dialog."
+            )
+
+    for _team, root in roots:
+        try:
+            usage = shutil.disk_usage(root)
+        except OSError:
+            continue
+        free_gib = usage.free / (1024 ** 3)
+        if free_gib < 5:
+            r.warn(
+                f"recordings: only {free_gib:.1f} GiB free on {root} — "
+                "a 2 h stereo WAV needs ~0.5 GiB; an orphaned recorder "
+                "will fill the disk."
+            )
+        else:
+            r.ok(f"recordings: {free_gib:.0f} GiB free on {root}")
+
+
 def _is_private_ip(host: str) -> bool:
     """True if *host* looks like a private/tunnel IP (10.x, 100.x, 192.168.x)."""
     return (
@@ -905,6 +971,7 @@ def run_doctor() -> int:
     _check_macos_recorder(r)
     _check_client_file_perms(r)
     _check_deprecated_env_vars(r)
+    _check_recordings_health(r)
     _check_nvpn(r)
     _check_tunnel_reachability(r, url)
     _check_server_connectivity(r, url, token, team_id)

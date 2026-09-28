@@ -128,6 +128,17 @@ class MainScreen(Screen):
             except Exception as exc:
                 log.warning("update-check poll setup failed: %s", exc)
 
+        # One-shot crash-recovery scan (0.23.0): offer to salvage local
+        # recordings that never reached the server (interrupted chunks,
+        # orphaned recorders, unfinished uploads).  Separate env guard so
+        # tests can disable it independently.
+        if os.environ.get("VEZIR_TUI_DISABLE_RECOVERY_SCAN") != "1":
+            try:
+                from .recovery_screen import install_recovery_scan
+                install_recovery_scan(self)
+            except Exception as exc:
+                log.warning("recovery scan setup failed: %s", exc)
+
     def action_show_tab(self, tab_id: str) -> None:
         tabs = self.query_one(TabbedContent)
         tabs.active = tab_id
