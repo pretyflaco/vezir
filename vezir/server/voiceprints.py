@@ -99,3 +99,77 @@ def seed_from(source: Path, team_id: str, *, merge: bool = False) -> dict:
         json.dumps(existing, indent=2, ensure_ascii=False),
     )
     return stats
+
+
+# ── Surgery on a team DB: remove / merge (v0.23.2) ──────────────────────────
+#
+# A profile is a running average with no record of what went into it, so a
+# polluted one can't be cleaned — only removed (the person is re-learned the
+# next time they're labeled) or, for one person enrolled under two names,
+# merged.  Both back up the DB first; the backup path is returned.
+
+
+def _load_team_db(team_id: str) -> tuple[Path, dict]:
+    if not team_id:
+        raise ValueError("team_id is required")
+    p = config.team_speaker_profiles_path(team_id)
+    if not p.exists():
+        raise FileNotFoundError(f"team {team_id!r} has no voiceprint DB at {p}")
+    return p, json.loads(p.read_text(encoding="utf-8") or "{}")
+
+
+def backup_db(team_id: str, reason: str) -> Path:
+    """Copy the team DB to ``speaker_profiles.json.bak-<ts>-<reason>`` (0600)."""
+    import time
+
+    p, data = _load_team_db(team_id)
+    slug = "".join(c if c.isalnum() else "-" for c in reason).strip("-") or "backup"
+    bak = p.with_name(f"{p.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}-{slug}")
+    config.secure_write_text(bak, json.dumps(data, indent=2, ensure_ascii=False))
+    return bak
+
+
+def remove_profile(team_id: str, name: str) -> Path:
+    """Delete profile ``name`` from the team DB.  Returns the backup path."""
+    p, data = _load_team_db(team_id)
+    if name not in data:
+        raise KeyError(f"no profile named {name!r} (known: {', '.join(sorted(data))})")
+    bak = backup_db(team_id, f"remove-{name}")
+    del data[name]
+    config.secure_write_text(p, json.dumps(data, indent=2, ensure_ascii=False))
+    return bak
+
+
+def merge_profiles(team_id: str, source: str, target: str) -> tuple[Path, int]:
+    """Fold profile ``source`` into ``target`` (same person, two names).
+
+    The embeddings are averaged weighted by ``n_sessions`` and re-normalized
+    — exactly what millet would have produced had every session been
+    enrolled under ``target`` — and ``source`` is removed.  Returns
+    ``(backup_path, merged_n_sessions)``.
+    """
+    import math
+
+    p, data = _load_team_db(team_id)
+    for n in (source, target):
+        if n not in data:
+            raise KeyError(f"no profile named {n!r} (known: {', '.join(sorted(data))})")
+    if source == target:
+        raise ValueError("source and target are the same profile")
+    src, dst = data[source], data[target]
+    ns, nt = int(src.get("n_sessions", 1)), int(dst.get("n_sessions", 1))
+    es, et = src["embedding"], dst["embedding"]
+    if len(es) != len(et):
+        raise ValueError("embedding sizes differ; not the same model")
+
+    def unit(v: list) -> list:
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        return [x / norm for x in v]
+
+    es, et = unit(es), unit(et)
+    merged = unit([(a * nt + b * ns) / (nt + ns) for a, b in zip(et, es, strict=True)])
+    bak = backup_db(team_id, f"merge-{source}-into-{target}")
+    data[target] = {**dst, "embedding": merged, "n_sessions": nt + ns}
+    del data[source]
+    config.secure_write_text(p, json.dumps(data, indent=2, ensure_ascii=False))
+    return bak, nt + ns

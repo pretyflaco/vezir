@@ -307,3 +307,74 @@ def test_cli_voiceprints_seed_rejects_unknown_team(tmp_data, tmp_path):
     )
     assert result.exit_code == 2
     assert "not found" in result.output
+
+
+# ── remove / merge (v0.23.2) ────────────────────────────────────────────────
+# The "Pattern" incident: a profile built from filler + the scribe's echo had
+# to be deleted, and one person enrolled under two names merged — by hand in
+# JSON.  These commands do it with an automatic backup.
+
+
+def _team_with(profiles: dict) -> str:
+    from vezir import config
+    from vezir.server import queue, voiceprints
+    uuid = queue.create_team("blink", "Blink")
+    voiceprints.ensure_db_exists(uuid)
+    config.team_speaker_profiles_path(uuid).write_text(json.dumps(profiles))
+    return uuid
+
+
+def _db(uuid: str) -> dict:
+    from vezir import config
+    return json.loads(config.team_speaker_profiles_path(uuid).read_text())
+
+
+def test_cli_voiceprints_remove_backs_up_and_deletes(tmp_data):
+    uuid = _team_with({
+        "Pattern": {"embedding": [1.0, 0.0], "n_sessions": 5},
+        "Gustavo": {"embedding": [0.0, 1.0], "n_sessions": 40},
+    })
+    from vezir.cli import main
+    result = CliRunner().invoke(main, ["voiceprints", "remove", "Pattern"])
+    assert result.exit_code == 0, result.output
+    assert set(_db(uuid)) == {"Gustavo"}
+    bak = Path(result.output.split("Backup: ")[1].strip())
+    assert set(json.loads(bak.read_text())) == {"Pattern", "Gustavo"}
+    assert oct(bak.stat().st_mode & 0o777) == "0o600"
+
+
+def test_cli_voiceprints_remove_unknown_name_fails_cleanly(tmp_data):
+    uuid = _team_with({"Gustavo": {"embedding": [0.0, 1.0], "n_sessions": 40}})
+    from vezir.cli import main
+    result = CliRunner().invoke(main, ["voiceprints", "remove", "Nobody"])
+    assert result.exit_code == 2
+    assert "no profile named 'Nobody'" in result.output
+    assert set(_db(uuid)) == {"Gustavo"}
+
+
+def test_cli_voiceprints_merge_weights_by_sessions(tmp_data):
+    uuid = _team_with({
+        "Patrick": {"embedding": [1.0, 0.0], "n_sessions": 3},
+        "Patrick van der Meijde": {"embedding": [0.0, 1.0], "n_sessions": 1},
+    })
+    from vezir.cli import main
+    result = CliRunner().invoke(
+        main, ["voiceprints", "merge", "Patrick van der Meijde", "Patrick"],
+    )
+    assert result.exit_code == 0, result.output
+    db = _db(uuid)
+    assert set(db) == {"Patrick"}
+    assert db["Patrick"]["n_sessions"] == 4
+    x, y = db["Patrick"]["embedding"]
+    # (3*[1,0] + 1*[0,1]) / 4, re-normalized → direction (3, 1)
+    assert abs(x / y - 3.0) < 1e-9
+    assert abs(x * x + y * y - 1.0) < 1e-9
+    assert "Backup:" in result.output
+
+
+def test_cli_voiceprints_merge_rejects_same_or_missing(tmp_data):
+    _team_with({"Patrick": {"embedding": [1.0, 0.0], "n_sessions": 3}})
+    from vezir.cli import main
+    runner = CliRunner()
+    assert runner.invoke(main, ["voiceprints", "merge", "Patrick", "Patrick"]).exit_code == 2
+    assert runner.invoke(main, ["voiceprints", "merge", "Nobody", "Patrick"]).exit_code == 2

@@ -2363,6 +2363,48 @@ def voiceprints_list(team_id):
         click.echo(f"  {n}")
 
 
+@voiceprints.command("remove")
+@click.argument("name")
+@click.option("--team", "team_id", default=None,
+              help="Team slug/uuid.  Required when more than one team exists.")
+def voiceprints_remove(name, team_id):
+    """Delete a polluted voiceprint (backs up the DB first).
+
+    A profile is a running average with no record of what went into it, so
+    it can't be cleaned — remove it and the person is re-learned the next
+    time they are labeled.  Restart not needed; millet reads the DB per job.
+    """
+    from .server import voiceprints as vp_mod
+    team_id = _resolve_team_arg(team_id)
+    try:
+        bak = vp_mod.remove_profile(team_id, name)
+    except (KeyError, FileNotFoundError) as exc:
+        click.echo(f"error: {exc.args[0]}", err=True)
+        sys.exit(2)
+    click.echo(f"Removed {name!r}.  Backup: {bak}")
+
+
+@voiceprints.command("merge")
+@click.argument("source")
+@click.argument("target")
+@click.option("--team", "team_id", default=None,
+              help="Team slug/uuid.  Required when more than one team exists.")
+def voiceprints_merge(source, target, team_id):
+    """Fold SOURCE into TARGET: one person enrolled under two names.
+
+    Embeddings are averaged by session count; SOURCE is removed.  Backs up
+    the DB first.
+    """
+    from .server import voiceprints as vp_mod
+    team_id = _resolve_team_arg(team_id)
+    try:
+        bak, n = vp_mod.merge_profiles(team_id, source, target)
+    except (KeyError, FileNotFoundError, ValueError) as exc:
+        click.echo(f"error: {exc.args[0]}", err=True)
+        sys.exit(2)
+    click.echo(f"Merged {source!r} into {target!r} (now {n} session(s)).  Backup: {bak}")
+
+
 # ── relabel ───────────────────────────────────────────────────────────────────
 
 @main.command()

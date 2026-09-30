@@ -138,7 +138,11 @@ server = [
     # what stops ~half of all meetings landing in needs_labeling; it also
     # keeps CROSSTALK out of the voiceprint DB on the --update-profiles path
     # vezir's finalize_labels drives.
-    "millet-pipeline>=0.21.4",
+    # Raised to >= 0.21.5 (vezir 0.23.2): voiceprints learn only from dense
+    # real speech (a filler/echo cluster can't create or update a profile, which
+    # is how the polluted "Pattern" profile was built), and a ghost REMOTE
+    # bucket becomes CROSSTALK even when a voiceprint matches it.
+    "millet-pipeline>=0.21.5",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

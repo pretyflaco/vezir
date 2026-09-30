@@ -3,6 +3,46 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.23.2 — voiceprint hygiene: `voiceprints remove/merge`; millet 0.21.5 floor
+
+Incident 2026-09-30: a blink profile named "Pattern" (Gustavo's handle is
+`patternn`) turned up in standups, sales calls and interviews, always on
+filler ("Okay. | Yeah. | Bye.") and once on Destiny's self-introduction.
+Measured on the live DB it was **0.10** from Gustavo's voice and **0.86**
+from the scribe's own voice echoing back through the call — built from
+filler Whisper had stretched over silence, then reinforced on every label
+submit that confirmed its pre-filled match (5 merges).  It matched filler
+buckets at ~0.9, which also kept them from becoming CROSSTALK.  Gustavo's
+real profile ("Gustavo", 40 sessions) was healthy throughout (0.90 to a
+fresh embedding of his speech).
+
+Fixed on saray by hand (backups kept): "Pattern" and its noise twin
+"Janusz" (0.75 to it) deleted; "Patrick van der Meijde" merged into
+"Patrick" (0.93 — one person, two names) in blink and the four team DBs
+seeded from it.  Afterwards the echo cluster in the incident session
+matches nothing, so it falls to CROSSTALK.  No migration.  Suite grows to
+1232 (4 new).
+
+### Added
+
+- **`vezir voiceprints remove NAME [--team]`** — delete a polluted profile.
+  A profile is a running average with no record of what went into it, so
+  it can't be cleaned; the person is re-learned the next time they're
+  labeled.
+- **`vezir voiceprints merge SOURCE TARGET [--team]`** — one person
+  enrolled under two names: embeddings averaged by session count, SOURCE
+  removed.
+- Both write a timestamped 0600 backup next to the DB first and print its
+  path.
+
+### Changed
+
+- Dependency floor `millet-pipeline>=0.21.5`: profiles learn only from
+  dense real speech (≥ 6 words at ≥ 1.5 words/s, ≥ 4 s in total), so a
+  filler/echo cluster can no longer create or update one however often its
+  name is confirmed; and a ghost REMOTE bucket becomes CROSSTALK even when
+  a voiceprint matches it.
+
 ## 0.23.1 — CROSSTALK: filler-only REMOTE no longer blocks `done`; `vezir mcp` survives aborted bursts
 
 About half of all team meetings landed in `needs_labeling` for one reason:
