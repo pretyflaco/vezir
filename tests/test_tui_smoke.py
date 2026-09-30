@@ -1568,6 +1568,40 @@ async def test_label_screen_named_speaker_with_space_mounts(
         assert screen._inputs["SPEAKER_08"].value == ""
 
 
+async def test_label_screen_crosstalk_row_is_prefilled_and_explained(
+    app, mock_server, monkeypatch
+):
+    """CROSSTALK (millet >= 0.21.4) renders as a de-emphasized, prefilled row
+    that explains itself; the real unknown next to it starts empty."""
+    monkeypatch.setenv("VEZIR_TUI_CRASH_ON_ERROR", "1")
+    mock_server["label_info"]["01XTALK"] = {
+        "session_id": "01XTALK",
+        "status": "needs_labeling",
+        "speakers": [
+            {"id": "CROSSTALK", "channel": "system", "sample_text": "Bye."},
+            {"id": "SPEAKER_03", "channel": "system", "sample_text": "hello all"},
+        ],
+        "team": ["alice"],
+        "audio_available": True,
+    }
+    async with app.run_test(size=(140, 40)) as pilot:
+        from textual.widgets import Input, Label
+
+        from vezir.client.tui.label_screen import CROSSTALK_NOTE, LabelScreen
+        await app.push_screen(LabelScreen(session_id="01XTALK"))
+        for _ in range(20):
+            await pilot.pause(0.1)
+            if len(list(app.screen.query(Input))) == 2:
+                break
+        screen = app.screen
+        assert screen._inputs["CROSSTALK"].value == "CROSSTALK"
+        assert screen._inputs["SPEAKER_03"].value == ""
+        rows = list(screen.query(".crosstalk-row"))
+        assert len(rows) == 1
+        texts = [str(lbl.render()) for lbl in rows[0].query(Label)]
+        assert any(CROSSTALK_NOTE in t for t in texts)
+
+
 async def test_label_screen_play_button_resolves_named_speaker(
     app, mock_server, monkeypatch
 ):

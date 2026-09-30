@@ -30,15 +30,14 @@ from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
+from ...speakers import UNRESOLVED_RE, is_crosstalk
 from ..api import LabelInfo
 from ..audio import AudioPlayer, FfplayNotFound, ffplay_available
 
 log = logging.getLogger("vezir.client.tui.label")
 
-# Speaker IDs matching this regex are unresolved placeholders from the
-# transcription engine.  Anything else has been resolved by auto-labeling
-# and should be prefilled in the input widget.
-_UNRESOLVED_RE = re.compile(r"^(YOU|REMOTE(_\d+)?|SPEAKER_\d+)$")
+# Shown on the CROSSTALK row: why these words have no speaker.
+CROSSTALK_NOTE = "mixed / overlapping voices — can't be assigned to a speaker"
 
 
 def _safe_clip_filename(speaker_id: str) -> str:
@@ -203,6 +202,9 @@ class LabelScreen(Screen):
         height: 100%;
         content-align: left middle;
     }
+    /* CROSSTALK: resolved, not a person — de-emphasized, no action needed. */
+    .crosstalk-row .speaker-id { color: $text-muted; text-style: none; }
+    .crosstalk-row .sample { text-style: italic; }
     .play-btn { min-width: 10; margin: 0 1; }
     .more-btn { min-width: 10; margin: 0 0 0 1; }
     .name-input { width: 32; }
@@ -452,12 +454,19 @@ class LabelScreen(Screen):
             sample = (sp.get("sample_text") or "")[:80]
             suggested = sp.get("suggested_name")
             confidence = sp.get("confidence")
-            row = Horizontal(classes="speaker-row")
+            crosstalk = is_crosstalk(sid)
+            row = Horizontal(
+                classes="speaker-row crosstalk-row" if crosstalk else "speaker-row",
+            )
             container.mount(row)
             # Speaker id, annotated with auto-id confidence when available.
             id_label = sid
             if suggested and confidence is not None:
                 id_label = f"{sid} [dim]({round(confidence * 100)}%)[/dim]"
+            if crosstalk:
+                # Unattributable fillers: nothing to do.  The name stays
+                # editable in case it really was one person.
+                sample = f"{CROSSTALK_NOTE} · {sample}"
             row.mount(Label(id_label, classes="speaker-id"))
             row.mount(Label(sample, classes="sample"))
             # "More" opens a modal with ALL of the speaker's segments —
@@ -489,7 +498,7 @@ class LabelScreen(Screen):
             #      pre-fill recognized names even when the transcript id is
             #      still a raw placeholder.
             # Unresolved speakers with no suggestion start empty.
-            resolved = not _UNRESOLVED_RE.match(sid)
+            resolved = not UNRESOLVED_RE.match(sid)
             if resolved:
                 prefill = sid
             elif suggested:

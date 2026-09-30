@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..speakers import UNRESOLVED_RE, is_crosstalk
 from . import meet_runner, queue
 
 log = logging.getLogger("vezir.worker")
@@ -526,9 +527,6 @@ def _find_artifacts(session_dir: Path) -> dict:
     return out
 
 
-_UNRESOLVED_RE = re.compile(r"^(YOU|REMOTE(?:_\d+)?|SPEAKER_\d+)$")
-
-
 def _is_tiny_speaker(sid: str, stats: dict[str, tuple[int, float]]) -> bool:
     """True if speaker ``sid`` is a spurious tiny noise cluster.
 
@@ -552,6 +550,9 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
     :func:`_tiny_speaker_thresholds` limits — is ignored, so a single
     unmatchable noise cluster no longer forces the whole session into
     ``needs_labeling``.  A substantial unlabeled participant still does.
+
+    ``CROSSTALK`` (millet >= 0.21.4: a ghost REMOTE bucket of unattributable
+    fillers) is not a placeholder, so it never forces ``needs_labeling``.
 
     Fix for #6: previously glob'd for ``*.json`` and skipped known
     non-transcript suffixes, but ``.frontmatter.json`` (and any future
@@ -577,7 +578,7 @@ def _has_unresolved_speakers(session_dir: Path) -> bool:
         label = sp.get("label") or ""
         # If no label set, fall back to id which will likely be a placeholder.
         effective = label if label else sid
-        if not _UNRESOLVED_RE.match(effective):
+        if not UNRESOLVED_RE.match(effective):
             continue
         # Ignore spurious tiny noise clusters; only a substantial unlabeled
         # speaker forces needs_labeling.
@@ -642,11 +643,12 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
         sid = sp.get("id") or ""
         label = sp.get("label") or ""
         effective = label if label else sid
-        if _UNRESOLVED_RE.match(effective):
+        if UNRESOLVED_RE.match(effective):
             if _is_tiny_speaker(sid, stats):
                 continue
             unresolved.append(effective)
-        elif effective:
+        elif effective and not is_crosstalk(effective):
+            # CROSSTALK is resolved but is not a person: not "matched".
             matched.append(effective)
     return matched, unresolved
 

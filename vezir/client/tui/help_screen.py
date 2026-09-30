@@ -85,6 +85,8 @@ _HELP_TEXT = """\
   [b]enter[/b]   Submit all labels (from any handle input)
   [b]click ▤[/b] Show all of the speaker's transcript segments
   [b]click ▶[/b] Play / stop the speaker's audio clip
+  [dim]CROSSTALK = filler words ("Bye", "Yeah") from overlapping voices that
+  can't be assigned to a speaker.  Nothing to do; it never blocks "done".[/dim]
   [b]escape[/b]  Cancel
 
 [b cyan]Updates[/b cyan]

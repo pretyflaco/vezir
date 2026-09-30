@@ -133,7 +133,12 @@ server = [
     # 2026-09-17: venice 400 "At most 10 image(s) may be provided in one
     # request") -- and vezir's 45-frame extraction cap means a fresh install
     # was guaranteed to hit it on the first long demo.
-    "millet-pipeline>=0.21.3",
+    # Raised to >= 0.21.4 (vezir 0.23.1): millet labels a ghost REMOTE bucket
+    # of unattributable fillers CROSSTALK instead of leaving it raw, which is
+    # what stops ~half of all meetings landing in needs_labeling; it also
+    # keeps CROSSTALK out of the voiceprint DB on the --update-profiles path
+    # vezir's finalize_labels drives.
+    "millet-pipeline>=0.21.4",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
@@ -221,6 +226,7 @@ module = [
     "vezir.server.enroll",
     "vezir.server.sessions_auth",
     "vezir.presets",
+    "vezir.speakers",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true

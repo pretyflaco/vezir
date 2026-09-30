@@ -202,3 +202,51 @@ def test_missing_or_bad_transcript_treated_resolved(tmp_path, missing):
     if missing == "badjson":
         (sd / f"{sd.name}.json").write_text("{not json", encoding="utf-8")
     assert worker._has_unresolved_speakers(sd) is False
+
+
+# ── CROSSTALK (millet >= 0.21.4) ──
+# millet labels a ghost REMOTE bucket of unattributable fillers CROSSTALK.
+# It is resolved (never blocks done) but it is not a person.
+
+def test_crosstalk_does_not_block_done(tmp_path):
+    """01M3RS442M3XX4D2AGK80641A7: every participant matched + a 10-segment
+    filler bucket.  Pre-0.21.4 the raw REMOTE forced needs_labeling."""
+    sd = _write_session(
+        tmp_path,
+        "01M3RS442M3XX4D2AGK80641A7",
+        speakers=[
+            {"id": "Kemal", "label": "Kemal"},
+            {"id": "CROSSTALK", "label": "CROSSTALK"},
+            {"id": "Lukas", "label": "Lukas"},
+        ],
+        segments=(
+            [_seg(0.0, 400.0, "Kemal", "long"), _seg(400.0, 900.0, "Lukas", "long")]
+            + [_seg(1000.0 + i * 60, 1000.3 + i * 60, "CROSSTALK", "Bye.")
+               for i in range(10)]
+        ),
+    )
+    assert worker._has_unresolved_speakers(sd) is False
+    matched, unresolved = worker._speaker_resolution(sd)
+    assert unresolved == []
+    # Resolved, but not reported as a matched person.
+    assert sorted(matched) == ["Kemal", "Lukas"]
+
+
+def test_crosstalk_with_real_unknown_still_needs_labeling(tmp_path):
+    sd = _write_session(
+        tmp_path,
+        "01KVCROSSTALKANDUNKNOWN000",
+        speakers=[
+            {"id": "Kemal", "label": "Kemal"},
+            {"id": "CROSSTALK", "label": "CROSSTALK"},
+            {"id": "SPEAKER_03", "label": None},
+        ],
+        segments=[
+            _seg(0.0, 400.0, "Kemal", "long"),
+            _seg(410.0, 470.0, "SPEAKER_03", "a real guest talking"),
+            _seg(500.0, 500.3, "CROSSTALK", "Yeah."),
+        ],
+    )
+    assert worker._has_unresolved_speakers(sd) is True
+    _, unresolved = worker._speaker_resolution(sd)
+    assert unresolved == ["SPEAKER_03"]

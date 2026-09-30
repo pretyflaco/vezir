@@ -3,6 +3,44 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.23.1 — CROSSTALK: filler-only REMOTE no longer blocks `done`
+
+About half of all team meetings landed in `needs_labeling` for one reason:
+a leftover `REMOTE` bucket of sub-second fillers ("Bye.", "Yeah.", "Hmm.")
+that no voiceprint can match, next to fully identified participants.  The
+scribe opened the session, saw every real person already named, and left
+the bucket alone — a round trip that decided nothing.  Session
+`01M3RS442M3XX4D2AGK80641A7`: 10 segments, 3.2 s, 17 words in a 66-minute
+standup.
+
+millet-pipeline 0.21.4 (the new floor) now labels such a bucket
+**`CROSSTALK`** — the honest technical reason, readable by a human: heard,
+but cannot be assigned to a speaker.  No owner is guessed.  Replayed over
+257 real transcripts: 49 of 55 buckets humans had left unnamed become
+`CROSSTALK`; 1 of 120 buckets humans had named a real person would have
+(two greetings, 1.9 s).  It also fixes the reason this never worked before:
+millet's 0.12.12 REMOTE rescue had been a silent no-op in production.
+
+No migration.  Only new meetings are affected — existing transcripts keep
+their `REMOTE` label.  Suite grows to 1225 (3 new).
+
+### Changed
+
+- **`CROSSTALK` never forces `needs_labeling`** and is not reported as a
+  matched person (`vezir relabel` output).  A real unknown speaker next to
+  it still routes to `needs_labeling` as before.
+- **TUI label screen**: the `CROSSTALK` row is de-emphasized, prefilled,
+  and explains itself ("mixed / overlapping voices — can't be assigned to
+  a speaker").  The name stays editable in case it really was one person.
+  Help screen (`?`) gains a line.
+- The unresolved-placeholder regex (`YOU`/`REMOTE_N`/`SPEAKER_N`) was
+  defined twice (worker + label screen); both now import it from the new
+  `vezir/speakers.py`, which joins the mypy strict allowlist.
+- Dependency floor: `millet-pipeline>=0.21.4`.  Besides `CROSSTALK`, it
+  stops `label --auto` from feeding derived labels (tiny-noise folds) into
+  the voiceprint DB, and stops the tiny-noise fold from overwriting a
+  short-but-confident voiceprint match.
+
 ## 0.23.0 — crash resilience: startup recovery scan, upload journal, TUI crash log
 
 Incident 2026-09-28: the TUI crashed mid-recording.  The recorder —
