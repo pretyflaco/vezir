@@ -16,6 +16,7 @@ the existing session/artifact HTTP API.
 """
 from __future__ import annotations
 
+import functools
 import logging
 
 log = logging.getLogger("vezir.client.mcp")
@@ -163,9 +164,12 @@ def get_artifact(session_id: str, name: str, save_path: str | None = None) -> st
     filename = session.artifacts.get(name, name)
 
     # Attachments live on a different route; prefer it when the name is
-    # listed there (frames, user-uploaded files).
-    att = api.list_attachments(session_id)
-    att_names = {a.get("name") for a in att.ok} if att.is_ok() else set()
+    # listed there (frames, user-uploaded files).  A known artifact never
+    # is, so skip that round trip for the common case.
+    att_names: set = set()
+    if filename not in session.artifacts.values():
+        att = api.list_attachments(session_id)
+        att_names = {a.get("name") for a in att.ok} if att.is_ok() else set()
     if filename in att_names:
         data = api.download_attachment(session_id, filename)
     else:
@@ -208,20 +212,68 @@ def get_transcript(session_id: str, max_chars: int = 0) -> str:
     return text
 
 
+# Tools doing blocking HTTP at once.  Bounded so a harness fanning out
+# hundreds of calls queues them here instead of tripping the server's
+# per-client rate limiter.
+MAX_CONCURRENT_CALLS = 4
+
+TOOLS = (
+    list_sessions, search_sessions, get_summary, get_transcript,
+    list_artifacts, get_artifact,
+)
+
+
+def offloaded(fn, limiter_holder: dict):
+    """Wrap a blocking tool as an ``async`` tool that runs in a worker thread.
+
+    FastMCP runs a plain ``def`` tool inline on its event loop, which
+    (a) serializes every concurrent call behind one blocking HTTP request,
+    and (b) makes cancelling a burst fatal.  Inline, the loop only regains
+    control *between* blocking calls — i.e. while a finished call's response
+    is being written.  When a harness aborts and sends
+    ``notifications/cancelled`` for that same request, the SDK (mcp 1.25)
+    cancels the request's scope mid-send; the ``CancelledError`` escapes the
+    request handler and takes down the whole session.  The harness then sees
+    "Connection closed" and "MCP server is not connected" for the rest of
+    its session (reproduced ~1 in 3 bursts; see tests/test_mcp_ctx.py).
+
+    Awaiting a thread instead means a cancel lands on that ``await``, which
+    the SDK handles cleanly ("duplicate response suppressed"), and calls
+    overlap.  ``abandon_on_cancel`` returns immediately; the orphaned thread
+    finishes in the background and its result is dropped.
+    """
+    import anyio
+
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        if "limiter" not in limiter_holder:  # created inside the event loop
+            limiter_holder["limiter"] = anyio.CapacityLimiter(MAX_CONCURRENT_CALLS)
+        return await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs),
+            abandon_on_cancel=True,
+            limiter=limiter_holder["limiter"],
+        )
+
+    return run
+
+
+def build_server():
+    """The FastMCP server with every tool registered (offloaded)."""
+    from mcp.server.fastmcp import FastMCP
+
+    server = FastMCP("vezir")
+    limiter_holder: dict = {}
+    for fn in TOOLS:
+        server.tool()(offloaded(fn, limiter_holder))
+    return server
+
+
 def serve() -> None:
     """Run the stdio MCP server (blocks).  Requires ``vezir[mcp]``."""
     try:
-        from mcp.server.fastmcp import FastMCP
+        import mcp.server.fastmcp  # noqa: F401
     except ImportError as exc:  # pragma: no cover - install-time guard
         raise SystemExit(
             "vezir mcp requires the 'mcp' extra:  pip install 'vezir[mcp]'"
         ) from exc
-
-    server = FastMCP("vezir")
-    server.tool()(list_sessions)
-    server.tool()(search_sessions)
-    server.tool()(get_summary)
-    server.tool()(get_transcript)
-    server.tool()(list_artifacts)
-    server.tool()(get_artifact)
-    server.run()
+    build_server().run()

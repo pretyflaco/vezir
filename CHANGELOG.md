@@ -3,7 +3,7 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 0.23.1 — CROSSTALK: filler-only REMOTE no longer blocks `done`
+## 0.23.1 — CROSSTALK: filler-only REMOTE no longer blocks `done`; `vezir mcp` survives aborted bursts
 
 About half of all team meetings landed in `needs_labeling` for one reason:
 a leftover `REMOTE` bucket of sub-second fillers ("Bye.", "Yeah.", "Hmm.")
@@ -22,7 +22,29 @@ but cannot be assigned to a speaker.  No owner is guessed.  Replayed over
 millet's 0.12.12 REMOTE rescue had been a silent no-op in production.
 
 No migration.  Only new meetings are affected — existing transcripts keep
-their `REMOTE` label.  Suite grows to 1225 (3 new).
+their `REMOTE` label.  Also fixes `vezir mcp` dying under a burst of tool
+calls (below).  Suite grows to 1228 (6 new).
+
+### Fixed
+
+- **`vezir mcp` could die when a harness aborted a burst of calls, and ran
+  every call serially.**  FastMCP runs a plain `def` tool inline on its
+  event loop, so concurrent calls queued behind one blocking HTTP request
+  (20 × `get_artifact` took 90 s), and the loop only regained control while
+  a finished call's response was being written.  An aborting harness
+  (opencode's code mode) then sends `notifications/cancelled`; a cancel
+  landing mid-send let a `CancelledError` escape the SDK's request handler
+  and tear the session down (reproduced ~1 in 3 bursts on mcp 1.25).  The
+  harness saw "Connection closed", then "MCP server is not connected" for
+  the rest of its session.  Tools now run in worker threads
+  (`anyio.to_thread.run_sync(..., abandon_on_cancel=True)`), so a cancel
+  lands on an `await` and is suppressed cleanly; at most 4 run at once so
+  a fan-out doesn't trip the server's rate limiter.  Same burst: 23 s, and
+  the server survives cancellation.  `get_artifact` also skips the
+  attachments lookup for a known artifact (one HTTP round trip fewer).
+- The `[mcp]` extra now pins what was verified: `mcp>=1.25,<2` (was
+  `>=1.0`, which predates FastMCP).  CI installs it, so the MCP tests —
+  including a real stdio subprocess that cancels a burst — run there.
 
 ### Changed
 

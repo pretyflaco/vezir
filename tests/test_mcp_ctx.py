@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -318,3 +319,144 @@ def test_ctx_path_flag_prints_dir(monkeypatch, tmp_path):
     result = runner.invoke(cli.main, ["ctx", "01AAA", "--path"])
     assert result.exit_code == 0, result.output
     assert result.output.strip() == str(sess_dir)
+
+
+# ── server wiring: concurrency + cancellation (v0.23.1) ──────────────────────
+#
+# FastMCP ran the blocking ``def`` tools inline on its event loop: concurrent
+# calls serialized, and aborting a burst could kill the server (a cancel
+# landing while a finished call's response was being sent → CancelledError
+# escapes the handler → harness sees "Connection closed").  Tools are now
+# offloaded to worker threads.  Driven end to end through the real SDK.
+
+
+def _server_with(*tools):
+    from mcp.server.fastmcp import FastMCP
+
+    from vezir.client.mcp_server import offloaded
+
+    server = FastMCP("test")
+    holder: dict = {}
+    for fn in tools:
+        server.tool()(offloaded(fn, holder))
+    return server
+
+
+_STDIO_SERVER = """
+import sys, time
+from mcp.server.fastmcp import FastMCP
+from vezir.client.mcp_server import offloaded
+
+def slow(x: int) -> str:
+    time.sleep(1.5)
+    return "late"
+
+def fast(x: int) -> str:
+    return f"ok {x}"
+
+server = FastMCP("test")
+holder = {}
+for fn in (slow, fast):
+    server.tool()(offloaded(fn, holder) if sys.argv[1] == "offloaded" else fn)
+server.run()
+"""
+
+
+async def _cancel_then_call(tmp_path, mode: str) -> str:
+    """Real stdio subprocess (a separate process, like opencode's): cancel a
+    burst of in-flight blocking calls, then call again on the same connection."""
+    import asyncio
+    import os
+    import sys
+
+    from mcp import ClientSession, StdioServerParameters, types
+    from mcp.client.stdio import stdio_client
+
+    import vezir
+
+    script = tmp_path / "server.py"
+    script.write_text(_STDIO_SERVER)
+    repo = str(Path(vezir.__file__).resolve().parents[1])
+    params = StdioServerParameters(
+        command=sys.executable, args=[str(script), mode],
+        env={**os.environ, "PYTHONPATH": repo},
+    )
+    with open(tmp_path / "stderr.log", "w") as errlog:
+        async with stdio_client(params, errlog=errlog) as (r, w):
+            async with ClientSession(r, w) as client:
+                await client.initialize()
+                # A burst, as a harness fans out, then an abort.  Inline, the
+                # loop only runs between blocking calls — while a finished
+                # call's response is being sent — so the cancel for it lands
+                # mid-send and the escaping CancelledError kills the session
+                # (~1 in 3 runs; offloaded: never, see _STDIO_SERVER modes).
+                first = client._request_id
+                pending = [
+                    asyncio.create_task(client.call_tool("slow", {"x": i}))
+                    for i in range(4)
+                ]
+                await asyncio.sleep(0.5)
+                for rid in range(first, first + len(pending)):
+                    await client.send_notification(types.ClientNotification(
+                        types.CancelledNotification(
+                            method="notifications/cancelled",
+                            params=types.CancelledNotificationParams(requestId=rid),
+                        )
+                    ))
+                await asyncio.sleep(2.0)  # the blocking calls return meanwhile
+                for t in pending:
+                    t.cancel()
+                try:
+                    res = await asyncio.wait_for(client.call_tool("fast", {"x": 2}), 15)
+                except Exception as exc:  # McpError("Connection closed")
+                    return f"dead: {exc}"
+                return res.content[0].text
+
+
+async def test_mcp_cancelled_call_does_not_kill_server(tmp_path):
+    pytest.importorskip("mcp")
+    assert await _cancel_then_call(tmp_path, "offloaded") == "ok 2"
+
+
+async def test_mcp_calls_run_concurrently():
+    pytest.importorskip("mcp")
+    import asyncio
+    import threading
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    # Both calls must be inside the tool at once to pass the barrier; inline
+    # (serialized) execution would break it after the timeout.
+    barrier = threading.Barrier(2, timeout=5)
+
+    def meet(x: int) -> str:
+        barrier.wait()
+        return f"met {x}"
+
+    async with create_connected_server_and_client_session(
+        _server_with(meet)
+    ) as client:
+        results = await asyncio.gather(
+            client.call_tool("meet", {"x": 1}), client.call_tool("meet", {"x": 2}),
+        )
+    assert [r.content[0].text for r in results] == ["met 1", "met 2"]
+
+
+async def test_mcp_build_server_keeps_tool_contract():
+    pytest.importorskip("mcp")
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from vezir.client.mcp_server import build_server
+
+    async with create_connected_server_and_client_session(build_server()) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    assert set(tools) == {
+        "list_sessions", "search_sessions", "get_summary", "get_transcript",
+        "list_artifacts", "get_artifact",
+    }
+    # Offloading must not hide the real signature or docs from the harness.
+    assert set(tools["get_artifact"].inputSchema["properties"]) == {
+        "session_id", "name", "save_path",
+    }
+    assert tools["get_artifact"].inputSchema["required"] == ["session_id", "name"]
+    assert "Download one file" in (tools["get_artifact"].description or "")

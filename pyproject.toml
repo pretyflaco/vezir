@@ -179,7 +179,10 @@ tui = ["textual>=0.80", "vezir[nostr]"]
 # MCP server (`vezir mcp`): exposes sessions/summaries/transcripts as
 # read-only tools to opencode and other MCP-capable harnesses.
 # See vezir/client/mcp_server.py.
-mcp = ["mcp>=1.0"]
+# >= 1.25,<2 (vezir 0.23.1): the version the offloaded-tool fix
+# (concurrency + surviving a cancelled burst) was verified against; 1.0 had
+# no FastMCP at all.
+mcp = ["mcp>=1.25,<2"]
 dev = ["ruff", "pytest", "pytest-asyncio", "pytest-timeout", "mypy"]
 
 [tool.ruff]
