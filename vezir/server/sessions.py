@@ -3,6 +3,7 @@
 GET    /api/sessions           → JSON list (for clients)
 GET    /api/sessions/<id>      → JSON session detail
 DELETE /api/sessions/<id>      → remove a session (admin or original uploader)
+POST   /api/sessions/<id>/move → move to another team (admin or uploader; 0.26.0)
 GET    /artifact/<id>/<name>   → download a generated artifact
 POST   /session/<id>/sync      → retroactive sync of a local-only session
 """
@@ -638,6 +639,108 @@ def delete_session(
             "repo manually if needed."
         )
     return {"ok": True, "session_id": session_id, "warning": warning}
+
+
+# ── POST /api/sessions/{id}/move (v0.26.0) ───────────────────────────────────
+
+
+class _MoveBody(BaseModel):
+    to_team: str
+    # Also push the session to the destination team's repo right away.
+    sync: bool = False
+
+
+@router.post(
+    "/api/sessions/{session_id}/move",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
+def move_session(
+    session_id: str,
+    body: _MoveBody,
+    auth_triple: tuple = Depends(auth.require_team_context),
+):
+    """Move a session to another team the caller belongs to.
+
+    Incident 2026-10-02: a meeting recorded under the wrong team could only
+    be moved by the server admin (`vezir session move`, a DB-level CLI).
+    Now its uploader can.  Authorization mirrors delete/retitle — admin OR
+    original uploader (cross-team / someone else's personal → 404, other
+    member → 403) — plus membership of the destination (admins exempt).
+
+    Refused with 409 while the worker is processing the session (it reads
+    the team once, at claim time) or a follow-up task is pending/running.
+
+    Deliberately NOT handled (decision 2026-10-02): a copy already pushed
+    to the source team's git repo stays there — the response's ``warning``
+    says so, and removing it is manual.  Voiceprints already learned from
+    this session stay in the source team's DB.  With ``sync: true`` the
+    session is queued for a sync into the destination team's repo.
+    """
+    github, team_id, is_admin = auth_triple
+    row = queue.get(session_id)
+    if not row:
+        raise HTTPException(404, "session not found")
+    enforce_team_visibility(row, team_id, github, is_admin)
+    if not is_admin and row.get("github") != github:
+        raise HTTPException(
+            403, "only an admin or the original uploader can move this session",
+        )
+    dest = queue.get_team(body.to_team)
+    if dest is None:
+        raise HTTPException(404, f"team {body.to_team!r} not found")
+    src = queue.get_team(row["team_id"]) or {"id": row["team_id"], "slug": row["team_id"]}
+    if dest["id"] == src["id"]:
+        return {
+            "ok": True, "session_id": session_id, "from_team": src["slug"],
+            "to_team": dest["slug"], "moved": False, "was_synced": False,
+            "sync_queued": False, "warning": None,
+        }
+    if not is_admin and not queue.is_member(github, dest["id"]):
+        raise HTTPException(403, f"you are not a member of team {dest['slug']!r}")
+    if worker.has_active_task(session_id):
+        raise HTTPException(409, "a follow-up task is running for this session; try again shortly")
+    if not queue.move_job_team(session_id, src["id"], dest["id"]):
+        status = (queue.get(session_id) or row).get("status")
+        raise HTTPException(
+            409, f"session is being processed ({status}); try again when it is done",
+        )
+
+    log.warning(
+        "session=%s moved %s -> %s by %s (admin=%s)",
+        session_id, src["slug"], dest["slug"], github, is_admin,
+    )
+
+    was_synced = queue.was_synced(row)
+    warnings = []
+    if was_synced:
+        warnings.append(
+            f"this session was already synced to {src['slug']}'s git repo; that "
+            "copy stays there — remove it from the repo manually."
+        )
+    sync_queued = False
+    if body.sync:
+        if row.get("personal"):
+            warnings.append("personal sessions are never synced.")
+        elif row.get("status") not in ("done", "sync_failed", "imported"):
+            warnings.append(
+                f"not synced now (status {row.get('status')}); it syncs to "
+                f"{dest['slug']} when processing finishes, if sync is on."
+            )
+        elif not meet_runner.team_has_sync_target(dest["id"]):
+            warnings.append(f"team {dest['slug']} has no git sync remote configured.")
+        else:
+            queue.set_sync_enabled(session_id, True)
+            sync_queued = worker.enqueue_task("sync", session_id)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "from_team": src["slug"],
+        "to_team": dest["slug"],
+        "moved": True,
+        "was_synced": was_synced,
+        "sync_queued": sync_queued,
+        "warning": " ".join(warnings) or None,
+    }
 
 
 # ── /api/me (v0.6.1) ────────────────────────────────────────────────────────

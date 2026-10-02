@@ -713,6 +713,19 @@ class VezirClient:
             f"/api/sessions/{quote(session_id, safe='')}",
         )
 
+    def move_session(self, session_id: str, to_team: str, *, sync: bool = False) -> ApiResult:
+        """Move a session to another team (admin or original uploader; 0.26.0).
+
+        Must be called with this client scoped (``team_id``) to the
+        session's CURRENT team.  ``.ok`` carries ``from_team``/``to_team``,
+        ``was_synced``, ``sync_queued`` and an optional ``warning`` — a copy
+        already pushed to the old team's repo stays there (manual cleanup).
+        """
+        return self._post(
+            f"/api/sessions/{quote(session_id, safe='')}/move",
+            json={"to_team": to_team, "sync": sync},
+        )
+
     def retry_summary(
         self,
         session_id: str,

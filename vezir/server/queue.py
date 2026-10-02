@@ -1042,6 +1042,31 @@ def set_job_team(
         )
 
 
+# Statuses during which the worker holds the job's team in memory (read once
+# at claim time, worker.py) — a move then would label against the old
+# team's voiceprints and sync to the old team's repo.
+BUSY_STATUSES = ("transcribing", "summarizing", "syncing")
+
+
+def move_job_team(job_id: str, from_uuid: str, to_uuid: str) -> bool:
+    """Member-initiated move (0.26.0): reassign *job_id* from one team to
+    another, atomically refusing while the worker is processing it.
+
+    One conditional UPDATE, so the worker can't claim the job between a
+    status check and the write.  Returns False when the job is busy or no
+    longer in *from_uuid* (the caller answers 409).  ``queued`` is safe:
+    the worker reads the row only when it claims the job.
+    """
+    placeholders = ",".join("?" * len(BUSY_STATUSES))
+    with _conn() as c:
+        cur = c.execute(
+            f"UPDATE jobs SET team_id = ?, updated_at = ? "
+            f"WHERE id = ? AND team_id = ? AND status NOT IN ({placeholders})",
+            (to_uuid, _now(), job_id, from_uuid, *BUSY_STATUSES),
+        )
+        return cur.rowcount == 1
+
+
 # ── v0.6.2: team rename (display name only) + team delete ────────────────────
 
 

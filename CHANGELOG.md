@@ -3,6 +3,42 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.26.0 — move your own session to another team
+
+Last piece of the 2026-10-02 fix.  0.24/0.25 covered recordings that hadn't
+reached the server yet; a session already uploaded to the wrong team could
+only be moved by the server admin (`vezir session move`, a DB-level CLI run
+on the server).  Now its uploader can, from the CLI or the TUI.  **Server
+change — deploy 0.26.0 on the server first**; older clients are unaffected.
+No migration.  Suite grows to 1303 (22 new).
+
+### Added
+
+- **`POST /api/sessions/{id}/move`** `{"to_team", "sync": false}`, sent in the
+  session's current team scope.  Admin OR original uploader (other member →
+  403; another team's or someone else's personal session → 404), and the
+  caller must be a member of the destination (admins exempt).  Refused with
+  409 while the worker processes the session (it reads the team once, at
+  claim time) or a follow-up task is pending/running — the status check and
+  the write are one conditional UPDATE (`queue.move_job_team`).  `queued`
+  jobs may move.  Personal sessions stay personal.  `sync: true` queues a
+  sync into the destination team's repo (when the session is done, not
+  personal, and that team has a remote).  Every move is logged.
+- **`vezir move <session-id> --to-team X [--sync] [-y]`** — finds the
+  session's current team among your teams, states what happens, confirms,
+  moves, and moves the local folder(s) along.  Explains when the server is
+  too old.
+- **TUI session detail `m`** — Move to team…: team picker → confirmation
+  (Cancel focused) with **Move** / **Move & sync to <team>** → the local
+  copy follows, the detail screen closes, the Sessions list refreshes.
+
+### Not handled (deliberately)
+
+- A copy already **synced to the old team's git repo stays there**; the
+  confirmation, CLI and API response all say so.  Remove it from that repo
+  by hand.  Voiceprints already learned from the session stay in the old
+  team's DB (same as the admin command).
+
 ## 0.25.0 — the destination is part of the recording; Keep local; Outbox tab
 
 The TUI half of the 2026-10-02 fix (0.24.0 was the CLI half).  A recording

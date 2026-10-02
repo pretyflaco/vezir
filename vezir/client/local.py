@@ -268,6 +268,33 @@ def move(rec: LocalRecording, team: str) -> Path:
     return Path(recovery.move_session_dir(rec.session_dir, team))
 
 
+def rehome_uploaded(session_id: str, team: str) -> list[Path]:
+    """After a server-side move (0.26.0), follow with the local copies.
+
+    Every local folder linked to *session_id* (the recording folder and/or a
+    pulled copy) moves under *team*'s root and its ``session.json`` stub is
+    re-pointed.  Best effort: a folder that can't move is left in place
+    (lookups fall back to scanning every team root).
+    """
+    moved: list[Path] = []
+    for rec in scan(include_all=True):
+        if rec.session_id != session_id:
+            continue
+        try:
+            new_dir = Path(recovery.move_session_dir(rec.session_dir, team))
+        except OSError:
+            continue
+        stub = new_dir / "session.json"
+        try:
+            meta = json.loads(stub.read_text())
+            meta["team_id"] = team
+            stub.write_text(json.dumps(meta, indent=2))
+        except (OSError, ValueError):
+            pass
+        moved.append(new_dir)
+    return moved
+
+
 def trash_dir() -> Path:
     from .. import config as _config
 

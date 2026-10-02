@@ -76,6 +76,12 @@ def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
     return True
 
 
+def has_active_task(session_id: str) -> bool:
+    """True while any follow-up task for *session_id* is pending or running."""
+    with _TASKS_LOCK:
+        return any(sid == session_id for _kind, sid in _ACTIVE_TASKS)
+
+
 def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
     try:
         # All three follow-up kinds invoke millet under the per-session

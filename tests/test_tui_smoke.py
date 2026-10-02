@@ -1909,3 +1909,67 @@ async def test_sync_as_cancel_returns_none(app, mock_server):
         app.screen.query_one("#cancel-btn", Button).press()
         await pilot.pause(0.1)
     assert result["value"] is None
+
+
+# ─── move a session to another team (0.26.0) ────────────────────────────────
+
+
+async def test_detail_move_session_flow(app, mock_server, monkeypatch, tmp_path):
+    """m → pick team → confirm (Cancel focused) → Move & sync → API call
+    with sync, local copy follows, detail screen closes."""
+    import json as _json
+
+    from vezir.client import api
+
+    monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "rec"))
+    local_dir = tmp_path / "rec" / "blink" / "meeting-1"
+    local_dir.mkdir(parents=True)
+    (local_dir / "session.json").write_text(_json.dumps({"session_id": "01MV"}))
+    (tmp_path / "rec" / "twentyone").mkdir()
+    mock_server["memberships"] = [
+        {"team_id": "u1", "slug": "blink", "role": "member"},
+        {"team_id": "u2", "slug": "twentyone", "role": "member"},
+    ]
+    mock_server["sessions"] = [{
+        "id": "01MV", "status": "done", "title": "wrong team", "github": "tester",
+        "team_id": "u1", "sync_enabled": 1, "personal": 0, "artifacts": {},
+    }]
+    calls: list = []
+
+    def fake_move(self, sid, to_team, *, sync=False):
+        calls.append((self.team_id, sid, to_team, sync))
+        return api.ApiResult.success({
+            "ok": True, "from_team": "blink", "to_team": to_team, "moved": True,
+            "was_synced": True, "sync_queued": sync, "warning": "copy stays",
+        })
+
+    monkeypatch.setattr(api.VezirClient, "move_session", fake_move)
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.active_team_id = "blink"
+        app.api.team_id = "blink"
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if app.memberships:
+                break
+        from vezir.client.tui.detail_screen import DetailScreen
+        await app.push_screen(DetailScreen(session_id="01MV"))
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.screen.session is not None:
+                break
+        app.screen.action_move_session()
+        await pilot.pause(0.1)
+        assert app.screen.__class__.__name__ == "TeamPickScreen"
+        await pilot.press("enter")  # only choice: twentyone
+        await pilot.pause(0.1)
+        assert app.screen.__class__.__name__ == "MoveConfirmScreen"
+        assert app.screen.focused.id == "move-cancel"
+        app.screen.query_one("#move-sync").press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.screen.__class__.__name__ == "MainScreen":
+                break
+        assert app.screen.__class__.__name__ == "MainScreen"
+    assert calls == [("blink", "01MV", "twentyone", True)]
+    assert (tmp_path / "rec" / "twentyone" / "meeting-1").is_dir()
+    assert not local_dir.exists()

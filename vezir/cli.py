@@ -732,6 +732,93 @@ def local_discard(ref, purge, assume_yes):
     click.echo("deleted" if dest is None else f"moved to {dest}")
 
 
+# ── move: a server session to another team (0.26.0) ──────────────────────────
+
+
+@main.command("move")
+@click.argument("session_id")
+@click.option("--to-team", "to_team", required=True, help="Destination team slug.")
+@click.option("--from-team", "from_team", default=None,
+              help="The session's current team (default: found automatically "
+                   "among your teams).")
+@click.option("--sync", "sync_now", is_flag=True, default=False,
+              help="Also sync it into the destination team's repo now.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the confirmation.")
+def move_cmd(session_id, to_team, from_team, sync_now, assume_yes):
+    """Move one of your uploaded sessions to another of your teams.
+
+    For the session's uploader (or an admin).  Refused while the server is
+    still processing it.  A copy already synced to the old team's git repo
+    STAYS there — remove it from that repo by hand.  The local folder
+    follows the session.  (`vezir session move` is the server-side admin
+    variant.)
+    """
+    from .client import local as _local
+    from .client.api import VezirClient
+
+    server_url, token, home_team = _resolve_upload_target(None, None, from_team)
+
+    def client_for(team: str) -> VezirClient:
+        return VezirClient(server_url, token, team_id=team)
+
+    candidates = [home_team]
+    if not from_team:
+        me = client_for(home_team).get_me()
+        if me.is_ok():
+            for m in (me.ok or {}).get("memberships") or []:
+                slug = m.get("slug") or m.get("team_id")
+                if slug and slug not in candidates:
+                    candidates.append(slug)
+    session = None
+    src = None
+    for team in candidates:
+        r = client_for(team).get_session(session_id)
+        if r.is_ok():
+            session, src = r.ok, team
+            break
+    if session is None:
+        where = from_team or ", ".join(candidates)
+        click.echo(f"vezir: error: session {session_id} not found in {where}", err=True)
+        sys.exit(2)
+    if src == to_team:
+        click.echo(f"session {session_id} is already in {to_team}; nothing to do")
+        return
+
+    click.echo(f"{session_id}  {session.title or '(untitled)'}  [{session.status}]")
+    click.echo(f"  moves {src} → {to_team}")
+    if session.status == "done" and session.sync_enabled:
+        click.echo(
+            f"  ⚠ it was synced to {src}'s git repo — that copy STAYS there; "
+            "remove it from the repo by hand"
+        )
+    if sync_now:
+        click.echo(f"  then syncs it into {to_team}'s repo")
+    if not assume_yes:
+        click.confirm("Proceed?", abort=True)
+
+    r = client_for(src).move_session(session_id, to_team, sync=sync_now)
+    if not r.is_ok():
+        code, msg = r.http_error or (0, str(r.network_error))
+        if code in (404, 405) and "Not Found" in msg and "session" not in msg:
+            click.echo(
+                "vezir: error: the server is older than 0.26.0 and can't move "
+                "sessions; ask an admin to run `vezir session move "
+                f"{session_id} --to-team {to_team}` on the server",
+                err=True,
+            )
+        else:
+            click.echo(f"vezir: error: {r.error_message()}", err=True)
+        sys.exit(1)
+    body = r.ok or {}
+    click.echo(f"moved {session_id}: {body.get('from_team')} → {body.get('to_team')}")
+    if body.get("sync_queued"):
+        click.echo(f"sync to {body.get('to_team')} queued")
+    if body.get("warning"):
+        click.echo(f"⚠ {body['warning']}")
+    for d in _local.rehome_uploaded(session_id, body.get("to_team") or to_team):
+        click.echo(f"local copy moved to {d}")
+
+
 # ── tui ───────────────────────────────────────────────────────────────────────
 
 @main.command()
@@ -2273,7 +2360,10 @@ def _clock_unsynced_warning() -> str | None:
     help="Skip the interactive confirmation prompt.",
 )
 def session_move(session_id, to_team, confirm):
-    """Reassign a session to a different team (v0.6.2+).
+    """Reassign a session to a different team (v0.6.2+; admin, on the server).
+
+    Members moving their own sessions use `vezir move` (0.26.0), which goes
+    through the API instead of the database.
 
     Pure DB-row update: session artifacts on disk are team-agnostic
     (``~/vezir-data/sessions/<id>/`` is keyed by session_id only) so

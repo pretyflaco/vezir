@@ -74,6 +74,11 @@ selector on the Record tab — it works while recording or paused — or pick
 the team in the *Ready to upload* review after Stop.  Not sure yet?
 *Keep local* (or Escape) and decide later from the Outbox.
 
+Already uploaded to the wrong team?  Since 0.26.0 the uploader can move
+it: `m` on the session detail screen, or
+`vezir move <session-id> --to-team <right-team>`.  A copy already synced to
+the old team's git repo stays there — remove it from that repo by hand.
+
 On 0.24.x: don't press Stop (it uploads to the team the recording started
 in).  Pause, quit the TUI (`ctrl+q`; while paused no recorder is running
 and the audio is finalized), then:

@@ -12,6 +12,7 @@ Layout (top to bottom):
       [y] sync now
       [p] share with team (un-personal)
       [l] open labeling
+      [m] move to another team (admin or uploader; 0.26.0)
       [ctrl+d] delete session (admin or uploader; confirm dialog)
       [escape] back
 """
@@ -168,6 +169,71 @@ class SessionDeleted(Message):
     ok: bool
     detail: str = ""
     warning: str | None = None
+
+
+@dataclass
+class SessionMoved(Message):
+    ok: bool
+    to_team: str = ""
+    detail: str = ""
+    warning: str | None = None
+    sync_queued: bool = False
+
+
+class MoveConfirmScreen(ModalScreen["str | None"]):
+    """Modal: confirm moving a session to another team (0.26.0).
+
+    Dismisses with ``"move"``, ``"move_sync"`` or None.  Cancel is focused,
+    so a stray Enter moves nothing.  States the one thing the move does NOT
+    do: a copy already synced to the old team's repo stays there.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+    CSS = """
+    MoveConfirmScreen { align: center middle; }
+    #move-box {
+        width: 72;
+        max-width: 90%;
+        height: auto;
+        border: round $warning;
+        padding: 1 2;
+        background: $surface;
+    }
+    #move-box Label { margin-top: 1; }
+    #move-box Horizontal { height: 3; margin-top: 1; }
+    #move-box Button { margin-right: 1; }
+    """
+
+    def __init__(self, title: str, src: str, dest: str, synced: bool) -> None:
+        super().__init__()
+        self._title = title
+        self._src = src
+        self._dest = dest
+        self._synced = synced
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="move-box"):
+            yield Label(f"[b]Move to {self._dest}?[/b]")
+            yield Label(f"  {self._title}\n  {self._src} → {self._dest}")
+            if self._synced:
+                yield Label(
+                    f"[yellow]It was synced to {self._src}'s git repo — that copy "
+                    "stays there. Remove it from the repo by hand.[/yellow]"
+                )
+            yield Label(
+                f"[dim]Voiceprints already learned from it stay in {self._src}.[/dim]"
+            )
+            with Horizontal():
+                yield Button("Cancel", id="move-cancel", variant="primary")
+                yield Button("Move", id="move-go", variant="warning")
+                yield Button(f"Move & sync to {self._dest}", id="move-sync")
+
+    def on_mount(self) -> None:
+        self.query_one("#move-cancel", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss({"move-go": "move", "move-sync": "move_sync"}.get(event.button.id or ""))
 
 
 class PresetPickerScreen(ModalScreen[tuple[str, str, str] | None]):
@@ -496,6 +562,7 @@ class DetailScreen(Screen):
         Binding("c", "copy_session_id", "Copy id"),
         Binding("f", "open_folder", "Open folder"),
         Binding("d", "copy_path", "Copy path"),
+        Binding("m", "move_session", "Move to team"),
         Binding("ctrl+d", "delete_session", "Delete"),
         # NOTE: do NOT bind "enter" here.  DataTable has its own
         # built-in `enter -> select_cursor` binding which fires
@@ -688,6 +755,73 @@ class DetailScreen(Screen):
             ConfirmDeleteScreen(self.session_id, title),
             self._on_delete_confirmed,
         )
+
+    # ── move to another team (0.26.0) ──
+
+    def action_move_session(self) -> None:
+        if self.session is None:
+            return
+        from .review_screen import TeamPickScreen, team_choices
+
+        src = self.app.team_slug_for(self.session.team_id) or self.app.active_team_id
+        choices = [t for t in team_choices(self.app) if t != src]
+        if not choices:
+            self.notify("You belong to no other team.", severity="warning")
+            return
+        synced = self.session.status == "done" and bool(self.session.sync_enabled)
+        title = self.session.title or self.session_id
+
+        def _picked(dest: str | None) -> None:
+            if not dest:
+                return
+
+            def _confirmed(choice: str | None) -> None:
+                if choice:
+                    self.notify(f"Moving to {dest}...", timeout=3)
+                    self._move_worker(dest, choice == "move_sync")
+
+            self.app.push_screen(MoveConfirmScreen(title, src or "?", dest, synced), _confirmed)
+
+        self.app.push_screen(TeamPickScreen(choices, None), _picked)
+
+    @work(thread=True, exclusive=True, group="detail-move")
+    def _move_worker(self, dest: str, sync: bool) -> None:
+        result = self.app.api.move_session(self.session_id, dest, sync=sync)
+        if not result.is_ok():
+            self.post_message(SessionMoved(ok=False, detail=result.error_message()))
+            return
+        body = result.ok if isinstance(result.ok, dict) else {}
+        to_team = body.get("to_team") or dest
+        try:
+            from ..local import rehome_uploaded
+
+            rehome_uploaded(self.session_id, to_team)
+        except Exception as exc:  # pragma: no cover - best effort
+            log.warning("could not move the local copy: %s", exc)
+        self.post_message(SessionMoved(
+            ok=True, to_team=to_team, warning=body.get("warning"),
+            sync_queued=bool(body.get("sync_queued")),
+        ))
+
+    def on_session_moved(self, message: SessionMoved) -> None:
+        if not message.ok:
+            self.notify(f"Move failed: {message.detail}", severity="error", timeout=10)
+            return
+        extra = f"; syncing to {message.to_team}" if message.sync_queued else ""
+        self.notify(
+            f"Moved to {message.to_team}{extra} — switch team (^t) to see it there.",
+            timeout=8,
+        )
+        if message.warning:
+            self.notify(message.warning, severity="warning", timeout=15)
+        # It left this team: back to the (refreshed) list.
+        self.app.pop_screen()
+        try:
+            from .sessions_screen import SessionsBody
+
+            self.app.find_widget(SessionsBody).action_refresh()
+        except Exception:
+            pass
 
     def _on_delete_confirmed(self, confirmed: bool | None) -> None:
         if not confirmed:
