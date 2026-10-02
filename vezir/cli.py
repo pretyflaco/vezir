@@ -148,6 +148,82 @@ def scribe(server_url, token, title, output_dir, compress, wait, wait_timeout,
 
 # ── upload ────────────────────────────────────────────────────────────────────
 
+def _resolve_upload_target(
+    server_url: str | None, token: str | None, team: str | None,
+) -> tuple[str, str, str]:
+    """Resolve ``(server_url, token, team_id)`` for an upload, or exit.
+
+    Every upload carries ``X-Team-Id`` (required by v0.7.0+ servers; a
+    missing header is a hard 400).  Precedence: explicit --server/--token/
+    --team, then --team's teams.json entry, then resolve_credentials()
+    (env → teams.json active → client.json).
+
+    0.24.0: a --team whose stored token is known-expired borrows a fresh
+    token of the same login identity (``freshest_credentials``) — the
+    session identifies the person, not the team.
+    """
+    from .client.config import freshest_credentials, resolve_credentials
+
+    team_id: str | None = None
+    if team:
+        t_id, t_url, t_token = freshest_credentials(team)
+        if t_id is None:
+            # Not in teams.json locally; still pass the slug through — the
+            # server resolves slugs to uuids.  url/token must come from
+            # elsewhere (--server/--token/env).
+            team_id = team
+        else:
+            team_id = t_id
+            server_url = server_url or t_url
+            token = token or t_token
+    if server_url is None or token is None or team_id is None:
+        r_url, r_token, r_team, _src = resolve_credentials()
+        server_url = server_url or r_url
+        token = token or r_token
+        if team_id is None:
+            team_id = r_team
+    server_url = server_url or config.server_url()
+    token = token or config.client_token()
+    if not token:
+        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
+        sys.exit(1)
+    config.validate_token_format(token)
+    if not team_id:
+        click.echo(
+            "vezir: error: no team selected; pass --team <slug>, set "
+            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
+            err=True,
+        )
+        sys.exit(1)
+    return server_url, token, team_id
+
+
+def _cli_refresh_cb(server_url: str, team_id: str):
+    """Refresh-on-401 callback for CLI uploads (0.24.0).
+
+    Only offered when *team_id* is a teams.json session entry for this
+    server — an explicit ``--token`` / env bearer has no refresh token and
+    must never be swapped for some other stored identity's.
+    """
+    from .client.api import refresh_session
+    from .client.config import load_teams_config
+
+    entry = next(
+        (t for t in load_teams_config()["teams"] if t["id"] == team_id), None,
+    )
+    if (
+        entry is None
+        or not entry.get("refresh_token")
+        or (entry.get("url") or "").rstrip("/") != server_url.rstrip("/")
+    ):
+        return None
+
+    def _cb() -> str | None:
+        return refresh_session(server_url, None, team_id)
+
+    return _cb
+
+
 @main.command("upload")
 @click.option("--server", "server_url", default=None,
               help="Server URL (default $VEZIR_URL)")
@@ -231,44 +307,8 @@ def upload_cmd(server_url, token, team, title, compress, preset, summary_templat
             f"retrying from byte 0: {exc}"
         )
 
-    # Resolve credentials + the active team so the upload carries the
-    # X-Team-Id header (required by v0.7.0+ servers; a missing header is a
-    # hard 400).  Precedence: explicit --server/--token/--team overrides,
-    # then --team's teams.json entry, then resolve_credentials() (env →
-    # teams.json active → client.json).
-    from .client.config import resolve_credentials, team_credentials
-
-    team_id: str | None = None
-    if team:
-        t_id, t_url, t_token = team_credentials(team)
-        if t_id is None:
-            # Not in teams.json locally; still pass the slug through — the
-            # server resolves slugs to uuids.  url/token must come from
-            # elsewhere (--server/--token/env).
-            team_id = team
-        else:
-            team_id = t_id
-            server_url = server_url or t_url
-            token = token or t_token
-    if server_url is None or token is None or team_id is None:
-        r_url, r_token, r_team, _src = resolve_credentials()
-        server_url = server_url or r_url
-        token = token or r_token
-        if team_id is None:
-            team_id = r_team
-    server_url = server_url or config.server_url()
-    token = token or config.client_token()
-    if not token:
-        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
-        sys.exit(1)
-    config.validate_token_format(token)
-    if not team_id:
-        click.echo(
-            "vezir: error: no team selected; pass --team <slug>, set "
-            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
-            err=True,
-        )
-        sys.exit(1)
+    server_url, token, team_id = _resolve_upload_target(server_url, token, team)
+    refresh_cb = _cli_refresh_cb(server_url, team_id)
 
     try:
         audio_file = uploader.validate_audio_path(audio_file)
@@ -298,6 +338,7 @@ def upload_cmd(server_url, token, team, title, compress, preset, summary_templat
             progress=progress,
             on_retry=on_retry,
             team_id=team_id,
+            refresh_cb=refresh_cb,
         )
         # Prefer the resumable protocol (the original failure was on a
         # resumable endpoint; it's the more robust path), fall back to the
@@ -422,36 +463,7 @@ def upload_multi_cmd(server_url, token, team, title, from_dir, preset,
             f"retrying: {exc}"
         )
 
-    from .client.config import resolve_credentials, team_credentials
-
-    team_id: str | None = None
-    if team:
-        t_id, t_url, t_token = team_credentials(team)
-        if t_id is None:
-            team_id = team
-        else:
-            team_id = t_id
-            server_url = server_url or t_url
-            token = token or t_token
-    if server_url is None or token is None or team_id is None:
-        r_url, r_token, r_team, _src = resolve_credentials()
-        server_url = server_url or r_url
-        token = token or r_token
-        if team_id is None:
-            team_id = r_team
-    server_url = server_url or config.server_url()
-    token = token or config.client_token()
-    if not token:
-        click.echo("vezir: error: VEZIR_TOKEN is not set", err=True)
-        sys.exit(1)
-    config.validate_token_format(token)
-    if not team_id:
-        click.echo(
-            "vezir: error: no team selected; pass --team <slug>, set "
-            "VEZIR_TEAM_ID, or run `vezir login` to populate teams.json",
-            err=True,
-        )
-        sys.exit(1)
+    server_url, token, team_id = _resolve_upload_target(server_url, token, team)
 
     if personal:
         sync = False
@@ -473,6 +485,7 @@ def upload_multi_cmd(server_url, token, team, title, from_dir, preset,
             personal=personal,
             on_retry=on_retry,
             team_id=team_id,
+            refresh_cb=_cli_refresh_cb(server_url, team_id),
         )
     except Exception as exc:
         click.echo(f"vezir: error: {exc}", err=True)
@@ -491,6 +504,229 @@ def upload_multi_cmd(server_url, token, team, title, from_dir, preset,
             server_url, token, result["session_id"],
             timeout=float(wait_timeout), team_id=team_id,
         )
+
+
+# ── local: recordings on this machine (0.24.0) ───────────────────────────────
+
+
+def _fmt_size(nbytes: int) -> str:
+    for unit, div in (("GiB", 1024 ** 3), ("MiB", 1024 ** 2), ("KiB", 1024)):
+        if nbytes >= div:
+            return f"{nbytes / div:.1f} {unit}"
+    return f"{nbytes} B"
+
+
+def _local_pick(ref: str):
+    """Resolve REF among all local recordings, or exit 2 with the reason."""
+    from .client import local as _local
+
+    try:
+        return _local.resolve_ref(ref, _local.scan(include_all=True))
+    except _local.RefError as exc:
+        click.echo(f"vezir: error: {exc}", err=True)
+        sys.exit(2)
+
+
+def _check_team_known(team: str) -> None:
+    from .client import local as _local
+
+    known = _local.known_teams()
+    if team not in known:
+        click.echo(
+            f"vezir: error: unknown team {team!r} (known: {', '.join(known) or 'none'})",
+            err=True,
+        )
+        sys.exit(2)
+
+
+@main.group("local")
+def local_group():
+    """Recordings on this machine: list, upload, move between teams, discard.
+
+    REF is a recording folder name (e.g. meeting-20261002-123316), a unique
+    prefix of one, or a path.  `vezir local list` shows the outbox — every
+    recording that has not reached the server; --all adds uploaded and
+    never-uploaded historical folders.
+    """
+
+
+@local_group.command("list")
+@click.option("--all", "show_all", is_flag=True, help="Include uploaded + local-only folders.")
+@click.option("--team", default=None, help="Only recordings of this team.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def local_list(show_all, team, as_json):
+    """List local recordings and their state (default: the outbox)."""
+    import json as _json
+
+    from .client import local as _local
+
+    recs = _local.scan(include_all=show_all)
+    if team:
+        recs = [r for r in recs if r.team == team]
+    if as_json:
+        click.echo(_json.dumps([r.to_json() for r in recs], indent=2))
+        return
+    if not recs:
+        click.echo(
+            "Nothing local is waiting for the server."
+            + ("" if show_all else "  (--all shows uploaded/historical folders)")
+        )
+        return
+    w_name = max(len(r.name) for r in recs)
+    w_team = max(4, *(len(r.team) for r in recs))
+    click.echo(f"{'NAME':<{w_name}}  {'TEAM':<{w_team}}  {'STATE':<11}  {'SIZE':>9}  DETAIL")
+    for r in recs:
+        click.echo(
+            f"{r.name:<{w_name}}  {r.team:<{w_team}}  {r.state:<11}  "
+            f"{_fmt_size(r.total_bytes):>9}  {r.detail}"
+        )
+
+
+@local_group.command("upload")
+@click.argument("ref")
+@click.option("--team", default=None,
+              help="Destination team (default: the recording's own).  A different "
+                   "team moves the folder there first.")
+@click.option("--title", default=None, help="Meeting title.")
+@click.option("--personal", is_flag=True, default=False,
+              help="Private to you, never synced, hidden from teammates.")
+@click.option("--sync/--no-sync", "sync", default=None,
+              help="Sync to the team repo (default: your saved preference). "
+                   "Applies to this upload only.")
+@click.option("--auto-label/--no-auto-label", "auto_label", default=None,
+              help="Auto-label speakers (default: your saved preference). "
+                   "Applies to this upload only.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the confirmation.")
+def local_upload(ref, team, title, personal, sync, auto_label, assume_yes):
+    """Stitch, compress and upload a local recording — to any of your teams.
+
+    Handles every pre-upload state: interrupted chunks are stitched, an
+    orphaned recorder is stopped first, a failed upload is retried.  The
+    upload journal and the folder↔session link are written exactly as the
+    TUI does.
+    """
+    from .client import recovery
+    from .client.config import load_client_prefs
+
+    rec = _local_pick(ref)
+    if rec.state == "in-progress":
+        click.echo(
+            f"vezir: error: {rec.name} is still recording (or paused) in a running "
+            "vezir; stop or quit it first", err=True,
+        )
+        sys.exit(2)
+    if rec.state == "uploaded":
+        click.echo(
+            f"vezir: error: {rec.name} is already uploaded as {rec.session_id} "
+            f"[{rec.team}].  To upload a second copy anyway: "
+            f"vezir upload --team <team> <audio file>", err=True,
+        )
+        sys.exit(2)
+
+    dest = team or rec.team
+    if dest != rec.team:
+        _check_team_known(dest)
+    prefs = load_client_prefs()
+    if sync is None:
+        sync = bool(prefs.get("sync", True))
+    if auto_label is None:
+        auto_label = bool(prefs.get("auto_label", True))
+    if personal:
+        sync = False
+    title = title or rec.title
+
+    click.echo(f"{rec.name}  ({_fmt_size(rec.total_bytes)}, {rec.state})")
+    if rec.state == "orphaned":
+        click.echo(f"  ⚠ stops the live recorder (pid {rec.recorder_pid}) first")
+    if dest != rec.team:
+        click.echo(f"  moves the folder {rec.team} → {dest}")
+    click.echo(
+        f"  uploads to {dest} · sync {'on' if sync else 'off'} · auto-label "
+        f"{'on' if auto_label else 'off'}" + (" · personal" if personal else "")
+        + (f" · title {title!r}" if title else "")
+    )
+    if not assume_yes:
+        click.confirm("Proceed?", abort=True)
+
+    server_url, token, team_id = _resolve_upload_target(None, None, dest)
+
+    def progress(sent: int, total: int, elapsed: float) -> None:
+        pct = (sent / total * 100) if total else 0.0
+        click.echo(f"\rupload: {pct:5.1f}%  {_fmt_size(sent)}/{_fmt_size(total)}", nl=False)
+
+    try:
+        session_id = recovery.salvage(
+            rec.to_recoverable(),
+            server_url=server_url,
+            token=token,
+            team=team_id,
+            title=title,
+            auto_label=auto_label,
+            sync=sync,
+            personal=personal,
+            refresh_cb=_cli_refresh_cb(server_url, team_id),
+            progress=progress,
+            on_status=lambda msg: click.echo(f"vezir: {msg}"),
+        )
+    except Exception as exc:
+        click.echo(f"\nvezir: error: {exc}", err=True)
+        click.echo("vezir: the journal marks it failed; retry with the same command.",
+                   err=True)
+        sys.exit(1)
+    click.echo(f"\nvezir: uploaded as session {session_id} [{team_id}]")
+
+
+@local_group.command("move")
+@click.argument("ref")
+@click.option("--team", required=True, help="Destination team.")
+def local_move(ref, team):
+    """Re-home a not-yet-uploaded recording under another team.
+
+    Updates the folder location, the upload journal and the recorder
+    metadata so the recovery dialog and `vezir local upload` target the
+    new team.
+    """
+    from .client import local as _local
+
+    rec = _local_pick(ref)
+    if team == rec.team:
+        click.echo(f"{rec.name} is already in {team}; nothing to do")
+        return
+    _check_team_known(team)
+    try:
+        new_dir = _local.move(rec, team)
+    except (ValueError, FileExistsError, OSError) as exc:
+        click.echo(f"vezir: error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(f"moved {rec.name}: {rec.team} → {team}  ({new_dir})")
+
+
+@local_group.command("discard")
+@click.argument("ref")
+@click.option("--purge", is_flag=True, help="Delete permanently instead of moving to the trash.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the confirmation.")
+def local_discard(ref, purge, assume_yes):
+    """Move a local recording to ~/vezir-meetings/.trash/ (or --purge it).
+
+    Only the local folder is affected; an uploaded session stays on the
+    server.
+    """
+    from .client import local as _local
+
+    rec = _local_pick(ref)
+    what = "DELETE permanently" if purge else "move to the trash"
+    note = f" (server session {rec.session_id} is unaffected)" if rec.session_id else ""
+    if rec.state not in ("uploaded",) and not rec.session_id:
+        note = "  ⚠ this recording has NOT reached the server"
+    click.echo(f"{rec.name} [{rec.team}, {rec.state}, {_fmt_size(rec.total_bytes)}]{note}")
+    if not assume_yes:
+        click.confirm(f"{what.capitalize()}?", abort=True)
+    try:
+        dest = _local.discard(rec, purge=purge)
+    except (ValueError, FileExistsError, OSError) as exc:
+        click.echo(f"vezir: error: {exc}", err=True)
+        sys.exit(2)
+    click.echo("deleted" if dest is None else f"moved to {dest}")
 
 
 # ── tui ───────────────────────────────────────────────────────────────────────

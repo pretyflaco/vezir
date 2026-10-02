@@ -3,6 +3,60 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.24.0 — `vezir local`; recovery picks the team; one login across teams
+
+Incident 2026-10-02: a recording started in the `blink` team was paused
+because it must not be shared there — it belonged in `twentyone`.  There
+was no way to say so.  The team is the one active when Stop uploads,
+switching teams is refused while a recording is paused, Stop always
+uploads (Escape on the attachment prompt too), and the recovery dialog
+infers the team from the folder name and hard-wires auto-label + sync on.
+It took a coding session: quit the TUI, `mv` the folder, stitch the chunk
+with a python one-liner, and `vezir upload --team twentyone` — which then
+401'd, because the `twentyone` entry in `teams.json` held an expired JWT
+while the same person's `blink` entry was fresh.  Now it is one command:
+`vezir local upload <ref> --team twentyone`.  No migration, no server
+change.  Suite grows to 1266 (34 new).
+
+### Added
+
+- **`vezir local list|upload|move|discard`** — every recording folder on
+  this machine with ONE classified state (`in-progress`, `orphaned`,
+  `interrupted`, `failed`, `uploading`, `pending`, `held`, `uploaded`,
+  `local-only`).  `list` defaults to the outbox (not on the server yet);
+  `--all` adds the rest; `--json` for scripts.  `upload` does the whole
+  salvage (stop orphan → move if `--team` differs → stitch → compress →
+  journal → upload → link folder to session); its `--sync`/`--auto-label`
+  apply to that upload only.  `move` re-homes a not-yet-uploaded recording
+  and rewrites its journal + recorder metadata; refuses in-progress,
+  orphaned and already-uploaded ones with the way out.  `discard` moves to
+  `~/vezir-meetings/.trash/` (`--purge` deletes).  `<ref>` is a folder
+  name, a unique prefix, or a path.
+- **Recovery dialog: destination + options.**  A line under the list shows
+  `→ <team> · sync … · auto-label …` before anything is sent; `t` picks
+  another team (the folder moves first), `p`/`s`/`a` toggle personal /
+  sync / auto-label, which now start from your saved preferences.
+
+### Changed
+
+- **One login, many teams.**  A session JWT identifies the person; the
+  team travels in `X-Team-Id`.  A refresh now writes the rotated pair to
+  every `teams.json` entry of the same identity (same server + npub/email;
+  `vzr_` bearers never), so switching teams can't leave other entries to
+  expire silently.  Concurrent refreshes from the TUI and CLI are safe:
+  the server's one-generation grace cache replays the same pair.
+- `vezir upload` / `upload-multi --team X` use a fresh same-identity token
+  when X's own is known-expired, and refresh on a 401 like the TUI does
+  (only for `teams.json` session entries — never for an env/`--token`
+  bearer).  `VezirClient` refreshes its own team's entry, not the active
+  one.
+- A recording's team is resolved journal → `vezir_team` in millet-record's
+  `<stem>.session.json` → folder name (`recovery.resolve_team`), shared by
+  the recovery scan and `vezir local`.
+- The salvage pipeline moved out of the dialog into
+  `recovery.salvage()`, shared by the TUI and the CLI.
+- mypy strict allowlist widened to `vezir/client/local.py`.
+
 ## 0.23.2 — voiceprint hygiene: `voiceprints remove/merge`; millet 0.21.5 floor
 
 Incident 2026-09-30: a blink profile named "Pattern" (Gustavo's handle is

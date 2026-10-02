@@ -12,12 +12,24 @@ the uploader, without any network.
 """
 from __future__ import annotations
 
+import json
+import time
 import wave
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from vezir.cli import main
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """Never read the developer's real ~/.config/vezir/teams.json."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    return home
 
 
 def _tiny_ogg(tmp_path: Path) -> Path:
@@ -148,3 +160,105 @@ def test_upload_no_team_errors_clearly(tmp_path, monkeypatch):
     assert res.exit_code == 1
     assert "no team selected" in res.output
     assert "team_id" not in captured  # never reached the uploader
+
+
+# ── 0.24.0: identity-wide credentials ──────────────────────────────────────
+
+
+def _write_teams(home: Path, teams: list, active: str) -> None:
+    from vezir import config as server_config
+
+    cfgdir = home / ".config" / "vezir"
+    cfgdir.mkdir(parents=True, exist_ok=True)
+    server_config.secure_write_text(
+        cfgdir / "teams.json", json.dumps({"teams": teams, "active": active}),
+    )
+
+
+def _nostr(team: str, token: str, exp: float, refresh: str = "vzrt_x",
+           npub: str = "npub1me", url: str = "https://srv") -> dict:
+    return {
+        "id": team, "url": url, "token": token, "auth": "nostr",
+        "npub": npub, "expires_at": exp, "refresh_token": refresh,
+    }
+
+
+def test_upload_stale_team_borrows_same_identity_token(
+    tmp_path, monkeypatch, _isolated_home,
+):
+    """Incident 2026-10-02: --team twentyone held an expired JWT while the
+    same person's blink entry was fresh; the upload must use the fresh one
+    (the JWT identifies the person; team scope is X-Team-Id)."""
+    captured: dict = {}
+    _stub_uploader(monkeypatch, captured)
+    monkeypatch.delenv("VEZIR_URL", raising=False)
+    monkeypatch.delenv("VEZIR_TOKEN", raising=False)
+    now = time.time()
+    _write_teams(_isolated_home, [
+        _nostr("blink", "eyJ.fresh", now + 600),
+        _nostr("twentyone", "eyJ.stale", now - 600),
+        # A different identity's fresher token must never be borrowed.
+        _nostr("startups", "eyJ.other", now + 9999, npub="npub1someoneelse"),
+    ], active="blink")
+
+    res = CliRunner().invoke(
+        main, ["upload", "--team", "twentyone", str(_tiny_ogg(tmp_path))]
+    )
+    assert res.exit_code == 0, res.output
+    assert captured["team_id"] == "twentyone"
+    assert captured["token"] == "eyJ.fresh"
+
+
+def test_upload_passes_refresh_cb_for_session_entries(
+    tmp_path, monkeypatch, _isolated_home,
+):
+    """A 401 mid-upload refreshes the TARGET team's entry (not just active)."""
+    from vezir.client import uploader
+
+    monkeypatch.delenv("VEZIR_URL", raising=False)
+    monkeypatch.delenv("VEZIR_TOKEN", raising=False)
+    now = time.time()
+    _write_teams(_isolated_home, [
+        _nostr("blink", "eyJ.b", now + 600, refresh="vzrt_b"),
+        _nostr("twentyone", "eyJ.t", now + 600, refresh="vzrt_t"),
+    ], active="blink")
+    monkeypatch.setattr(uploader, "validate_audio_path", lambda p: Path(p))
+    monkeypatch.setattr(uploader, "server_supports_resumable", lambda *a, **k: True)
+
+    seen: dict = {}
+
+    def fake_refresh(base_url, verify=None, team=None):
+        seen["team"] = team
+        return "eyJ.new"
+
+    monkeypatch.setattr("vezir.client.api.refresh_session", fake_refresh)
+
+    def fake_resumable(server_url, token, audio_path, **kw):
+        seen["new"] = kw["refresh_cb"]()
+        return {"session_id": "01TEST", "bytes": 1}
+
+    monkeypatch.setattr(uploader, "upload_resumable", fake_resumable)
+    res = CliRunner().invoke(
+        main, ["upload", "--team", "twentyone", str(_tiny_ogg(tmp_path))]
+    )
+    assert res.exit_code == 0, res.output
+    assert seen == {"team": "twentyone", "new": "eyJ.new"}
+
+
+def test_upload_env_bearer_gets_no_refresh_cb(tmp_path, monkeypatch):
+    """An env/--token bearer must never be swapped for a stored identity."""
+    captured: dict = {}
+    _stub_uploader(monkeypatch, captured)
+    from vezir.client import uploader
+
+    def fake_resumable(server_url, token, audio_path, **kw):
+        captured["refresh_cb"] = kw.get("refresh_cb")
+        return {"session_id": "01TEST", "bytes": 1}
+
+    monkeypatch.setattr(uploader, "upload_resumable", fake_resumable)
+    monkeypatch.setenv("VEZIR_URL", "https://srv")
+    monkeypatch.setenv("VEZIR_TOKEN", "vzr_tok")
+    monkeypatch.setenv("VEZIR_TEAM_ID", "ci")
+    res = CliRunner().invoke(main, ["upload", str(_tiny_ogg(tmp_path))])
+    assert res.exit_code == 0, res.output
+    assert captured["refresh_cb"] is None

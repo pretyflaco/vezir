@@ -373,6 +373,112 @@ def active_team_refresh_token() -> str | None:
     return None
 
 
+def team_refresh_token(team: str | None) -> str | None:
+    """Return *team*'s stored refresh token, or the active team's when
+    *team* is None / not configured locally."""
+    if team:
+        for t in load_teams_config()["teams"]:
+            if t["id"] == team:
+                return t.get("refresh_token")
+    return active_team_refresh_token()
+
+
+# ── 0.24.0: one login identity, many teams ──────────────────────────────────
+#
+# A session JWT identifies a *person*; team scope travels per request in
+# X-Team-Id.  But each `vezir login --team X` stored its own copy of the
+# credential pair, and a refresh rewrote only the entry it was made for —
+# so switching the TUI back and forth left the other entries' tokens to
+# silently expire (incident 2026-10-02: an upload to `twentyone` 401'd while
+# the very same identity's `blink` entry was fresh).  Entries that share an
+# identity now share the pair: a refresh is fanned out to all of them.
+
+
+def identity_key(entry: dict) -> tuple[str, str] | None:
+    """``(url, npub-or-email)`` for a nostr/Google session entry.
+
+    ``None`` for ``vzr_`` bearer entries (machine credentials, never
+    shared) and for session entries missing the identity field.
+    """
+    if entry.get("auth") != "nostr":
+        return None
+    url = (entry.get("url") or "").rstrip("/")
+    who = entry.get("npub") or ""
+    if not url or not who:
+        return None
+    return url, who
+
+
+def fan_out_session(
+    source_team: str,
+    *,
+    token: str,
+    refresh_token: str | None = None,
+    expires_at: float | None = None,
+    refresh_expires_at: float | None = None,
+) -> list[str]:
+    """Write a freshly rotated pair to every entry sharing *source_team*'s
+    identity (including *source_team* itself).  Returns the updated ids.
+
+    Safe with refresh-token rotation: after fan-out all entries hold the
+    SAME refresh token, and the server's one-generation grace cache
+    replays an identical response if two processes refresh concurrently.
+    The per-team families the entries held before are simply abandoned.
+    """
+    cfg = load_teams_config()
+    source = next((t for t in cfg["teams"] if t["id"] == source_team), None)
+    if source is None:
+        return []
+    key = identity_key(source)
+    targets = (
+        [t for t in cfg["teams"] if identity_key(t) == key]
+        if key is not None else [source]
+    )
+    for t in targets:
+        t["token"] = token
+        if refresh_token is not None:
+            t["refresh_token"] = refresh_token
+        if expires_at is not None:
+            t["expires_at"] = expires_at
+        if refresh_expires_at is not None:
+            t["refresh_expires_at"] = refresh_expires_at
+    save_teams_config(cfg)
+    return [t["id"] for t in targets]
+
+
+def freshest_credentials(
+    team: str, *, now: float | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Like :func:`team_credentials`, but if *team*'s own token is known to
+    be expired, borrow the newest unexpired token of the same identity.
+
+    An entry with no ``expires_at`` (bearer tokens, pre-0.8.9 logins) is
+    taken at face value.
+    """
+    import time as _time
+
+    t_id, url, token = team_credentials(team)
+    if t_id is None:
+        return None, None, None
+    now = _time.time() if now is None else now
+    cfg = load_teams_config()
+    entry = next((t for t in cfg["teams"] if t["id"] == t_id), None)
+    if entry is None:
+        return t_id, url, token
+    exp = entry.get("expires_at")
+    key = identity_key(entry)
+    if exp is None or float(exp) > now or key is None:
+        return t_id, url, token
+    siblings = [
+        t for t in cfg["teams"]
+        if identity_key(t) == key and float(t.get("expires_at") or 0) > now
+    ]
+    if not siblings:
+        return t_id, url, token
+    best = max(siblings, key=lambda t: float(t["expires_at"]))
+    return t_id, url, best.get("token")
+
+
 def remove_team_credentials(team_id: str) -> dict:
     """Remove a team entry from teams.json.  Idempotent if missing.
 

@@ -952,3 +952,129 @@ def test_refresh_active_session_none_without_token(monkeypatch, tmp_path):
 def _json_loads(content):
     import json as _json
     return _json.loads(content)
+
+
+# ── 0.24.0: one login identity across teams ─────────────────────────────────
+
+
+def _seed_teams(monkeypatch, tmp_path, teams, active):
+    import json as _json
+    from pathlib import Path
+
+    from vezir import config as server_config
+
+    cfgdir = tmp_path / ".config" / "vezir"
+    cfgdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    server_config.secure_write_text(
+        cfgdir / "teams.json", _json.dumps({"teams": teams, "active": active}),
+    )
+
+
+def _entry(team, token, refresh, npub="npub1me", url="https://test", **kw):
+    return {"id": team, "url": url, "token": token, "auth": "nostr",
+            "npub": npub, "refresh_token": refresh, **kw}
+
+
+def test_identity_key_excludes_bearers_and_blank_identity():
+    from vezir.client.config import identity_key
+
+    assert identity_key(_entry("a", "t", "r", url="https://x/")) == (
+        "https://x", "npub1me")
+    assert identity_key({"id": "a", "url": "https://x", "token": "vzr_1"}) is None
+    assert identity_key(_entry("a", "t", "r", npub="")) is None
+
+
+def test_fan_out_updates_only_same_identity(monkeypatch, tmp_path):
+    from vezir.client import config as cc
+
+    _seed_teams(monkeypatch, tmp_path, [
+        _entry("blink", "eyJ.b", "vzrt_b"),
+        _entry("twentyone", "eyJ.t", "vzrt_t"),
+        _entry("other", "eyJ.o", "vzrt_o", npub="npub1someoneelse"),
+        _entry("elsewhere", "eyJ.e", "vzrt_e", url="https://other-server"),
+        {"id": "ci", "url": "https://test", "token": "vzr_machine"},
+    ], active="blink")
+
+    ids = cc.fan_out_session(
+        "twentyone", token="eyJ.new", refresh_token="vzrt_new", expires_at=123.0,
+    )
+    assert sorted(ids) == ["blink", "twentyone"]
+    by_id = {t["id"]: t for t in cc.load_teams_config()["teams"]}
+    for tid in ("blink", "twentyone"):
+        assert by_id[tid]["token"] == "eyJ.new"
+        assert by_id[tid]["refresh_token"] == "vzrt_new"
+        assert by_id[tid]["expires_at"] == 123.0
+    assert by_id["other"]["token"] == "eyJ.o"
+    assert by_id["elsewhere"]["token"] == "eyJ.e"
+    assert by_id["ci"]["token"] == "vzr_machine"
+    # Fan-out never changes which team is active.
+    assert cc.load_teams_config()["active"] == "blink"
+
+
+def test_freshest_credentials_borrows_only_when_expired(monkeypatch, tmp_path):
+    from vezir.client import config as cc
+
+    _seed_teams(monkeypatch, tmp_path, [
+        _entry("blink", "eyJ.fresh", "r", expires_at=2000.0),
+        _entry("twentyone", "eyJ.stale", "r", expires_at=500.0),
+        _entry("other", "eyJ.other", "r", npub="npub1x", expires_at=9000.0),
+    ], active="blink")
+    assert cc.freshest_credentials("twentyone", now=1000.0) == (
+        "twentyone", "https://test", "eyJ.fresh")
+    # Not expired → its own token.
+    assert cc.freshest_credentials("twentyone", now=100.0)[2] == "eyJ.stale"
+    # All expired → its own token (the refresh path takes over).
+    assert cc.freshest_credentials("twentyone", now=5000.0)[2] == "eyJ.stale"
+    assert cc.freshest_credentials("nope") == (None, None, None)
+
+
+def test_refresh_session_uses_named_team_and_fans_out(
+    monkeypatch, tmp_path, mocked_client,
+):
+    """Refreshing a NON-active team uses that team's refresh token, writes
+    the rotated pair to every same-identity entry, and keeps `active`."""
+    from vezir.client import config as cc
+    from vezir.client.api import refresh_session
+
+    _seed_teams(monkeypatch, tmp_path, [
+        _entry("blink", "eyJ.b", "vzrt_b"),
+        _entry("twentyone", "eyJ.t", "vzrt_t"),
+    ], active="blink")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/auth/refresh"
+        assert _json_loads(request.content)["refresh_token"] == "vzrt_t"
+        return httpx.Response(200, json={
+            "access_jwt": "eyJ.rotated", "refresh_token": "vzrt_rotated",
+            "expires_in": 3600, "refresh_expires_in": 604800,
+        })
+
+    mocked_client(handler)
+    assert refresh_session("https://test", verify=False, team="twentyone") == "eyJ.rotated"
+    cfg = cc.load_teams_config()
+    assert cfg["active"] == "blink"
+    for t in cfg["teams"]:
+        assert t["token"] == "eyJ.rotated"
+        assert t["refresh_token"] == "vzrt_rotated"
+
+
+def test_client_refreshes_its_own_team(monkeypatch, tmp_path, mocked_client):
+    """VezirClient(team_id=X) refreshes X's entry, not the active one."""
+    _seed_teams(monkeypatch, tmp_path, [
+        _entry("blink", "eyJ.b", "vzrt_b"),
+        _entry("twentyone", "eyJ.t", "vzrt_t", npub="npub1other"),
+    ], active="blink")
+    used = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/refresh":
+            used["rt"] = _json_loads(request.content)["refresh_token"]
+            return httpx.Response(200, json={"access_jwt": "eyJ.new"})
+        if request.headers["authorization"] == "Bearer eyJ.new":
+            return httpx.Response(200, json={"github": "alice"})
+        return httpx.Response(401, text="expired")
+
+    client = mocked_client(handler, team_id="twentyone")
+    assert client.get_me().is_ok()
+    assert used["rt"] == "vzrt_t"

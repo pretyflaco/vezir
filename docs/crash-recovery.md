@@ -42,7 +42,38 @@ Open `vezir tui`.  If any local session never reached the server, a
 Recordings whose owner process is alive are never listed (another live
 vezir owns them).
 
+Before salvaging (0.24.0+), the line under the list shows where the
+upload goes — `→ twentyone · sync on · auto-label on`.  Change it per
+recording: **`t`** pick another team (the folder moves there first),
+**`p`** personal, **`s`** sync, **`a`** auto-label.  Sync and auto-label
+start from your saved preferences.
+
 `vezir doctor` reports the same three states non-interactively.
+
+## From the command line (0.24.0+): `vezir local`
+
+```bash
+vezir local list                 # the outbox: everything not on the server
+vezir local list --all           # + uploaded and never-uploaded historical folders
+vezir local upload <ref> [--team X] [--title T] [--personal] [--no-sync] [-y]
+vezir local move <ref> --team X  # re-home a not-yet-uploaded recording
+vezir local discard <ref>        # → ~/vezir-meetings/.trash/ (--purge deletes)
+```
+
+`<ref>` is the folder name, a unique prefix of it (`meeting-20261002-1233`),
+or a path.  `local upload` does the whole salvage — stop an orphaned
+recorder, stitch, compress, upload with the journal, link the folder to
+the new session — and `--team` sends it to a different team than the one
+it was recorded in.  Its `--sync`/`--auto-label` flags apply to that upload
+only.
+
+**Recorded in the wrong team?**  Don't press Stop — Stop uploads to the
+team the recording was started in.  Pause, quit the TUI (`ctrl+q`; while
+paused no recorder is running and the audio is finalized), then:
+
+```bash
+vezir local upload meeting-YYYYMMDD-HHMMSS --team <right-team>
+```
 
 ## The manual path (any version)
 

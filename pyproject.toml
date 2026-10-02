@@ -234,6 +234,7 @@ module = [
     "vezir.server.sessions_auth",
     "vezir.presets",
     "vezir.speakers",
+    "vezir.client.local",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true

@@ -72,6 +72,16 @@ def mark_pending(session_dir: Path, *, title: str | None, team_id: str | None) -
     _write(session_dir, state)
 
 
+def set_team(session_dir: Path, team_id: str) -> None:
+    """Re-point an existing journal at another team (``vezir local move``)."""
+    state = read(session_dir)
+    if not state:
+        return
+    state["team_id"] = team_id
+    state["updated_at"] = _now()
+    _write(session_dir, state)
+
+
 def mark_uploading(session_dir: Path) -> None:
     state = read(session_dir)
     if not state:

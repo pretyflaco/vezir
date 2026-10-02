@@ -27,8 +27,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .. import upload_journal
-from ..recovery import RecoverableSession, recover, scan_interrupted, stop_orphaned
+from ..recovery import RecoverableSession, scan_interrupted
 
 log = logging.getLogger("vezir.client.tui.recovery")
 
@@ -96,14 +95,31 @@ class RecoveryScreen(ModalScreen[None]):
         Binding("escape", "dismiss_all", "Close"),
         Binding("r", "salvage", "Salvage & upload"),
         Binding("o", "open_folder", "Open folder"),
+        Binding("t", "pick_team", "Team"),
+        Binding("p", "toggle_personal", "Personal"),
+        Binding("s", "toggle_sync", "Sync"),
+        Binding("a", "toggle_auto_label", "Auto-label"),
     ]
 
     def __init__(self, sessions: list[RecoverableSession]) -> None:
         super().__init__()
-        # (session, done) pairs; done rows stay visible but inert.
+        # Done rows stay visible but inert.  ``team`` is the destination,
+        # defaulting to where the recording lives (0.24.0: changeable).
         self._rows: list[dict] = [
-            {"rec": s, "done": False, "busy": False} for s in sessions
+            {"rec": s, "done": False, "busy": False, "team": s.team_id}
+            for s in sessions
         ]
+        # Upload options default to the saved preferences, like the Record
+        # tab (0.23.x hard-wired auto-label + sync on).
+        try:
+            from ..config import load_client_prefs
+
+            prefs = load_client_prefs()
+        except Exception:
+            prefs = {}
+        self._sync = bool(prefs.get("sync", True))
+        self._auto_label = bool(prefs.get("auto_label", True))
+        self._personal = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="recovery-box"):
@@ -120,8 +136,10 @@ class RecoveryScreen(ModalScreen[None]):
                 placeholder="Title for the upload (optional)",
                 id="recovery-title-input",
             )
+            yield Static("", id="recovery-target")
             yield Static(
-                "r salvage & upload selected · o open folder · esc close",
+                "r salvage & upload · t team · p personal · s sync · "
+                "a auto-label · o open folder · esc close",
                 id="recovery-status",
             )
             with Horizontal(id="recovery-actions"):
@@ -135,6 +153,7 @@ class RecoveryScreen(ModalScreen[None]):
         except Exception:
             pass
         self._prefill_title()
+        self._render_target()
 
     # ── selection helpers ──
 
@@ -161,6 +180,7 @@ class RecoveryScreen(ModalScreen[None]):
         self, event: OptionList.OptionHighlighted
     ) -> None:
         self._prefill_title()
+        self._render_target()
 
     def _set_status(self, text: str) -> None:
         try:
@@ -207,107 +227,127 @@ class RecoveryScreen(ModalScreen[None]):
             title = None
         self._salvage_worker(row, title)
 
+    # ── destination + options (0.24.0) ──
+
+    def _render_target(self) -> None:
+        """Show where the selected row will go — before anything is sent."""
+        row = self._selected_row()
+        if not row:
+            return
+        moved = (
+            f"  (moves from {row['rec'].team_id})"
+            if row["team"] != row["rec"].team_id else ""
+        )
+        text = (
+            f"→ [b]{row['team']}[/b]{moved} · "
+            f"sync {'on' if self._sync and not self._personal else 'off'} · "
+            f"auto-label {'on' if self._auto_label else 'off'}"
+            + (" · [b]personal[/b]" if self._personal else "")
+        )
+        try:
+            self.query_one("#recovery-target", Static).update(text)
+        except Exception:
+            pass
+
+    def _team_choices(self) -> list[str]:
+        teams: set[str] = set()
+        try:
+            teams.update(t["slug"] for t in self.app.all_teams())
+        except Exception:
+            pass
+        try:
+            from ..local import known_teams
+
+            teams.update(known_teams())
+        except Exception:
+            pass
+        return sorted(teams)
+
+    def action_pick_team(self) -> None:
+        row = self._selected_row()
+        if not row or row["done"] or row["busy"]:
+            return
+
+        def _after(team: str | None) -> None:
+            if team:
+                row["team"] = team
+                self._render_target()
+
+        self.app.push_screen(TeamPickScreen(self._team_choices(), row["team"]), _after)
+
+    def action_toggle_personal(self) -> None:
+        self._personal = not self._personal
+        self._render_target()
+
+    def action_toggle_sync(self) -> None:
+        self._sync = not self._sync
+        self._render_target()
+
+    def action_toggle_auto_label(self) -> None:
+        self._auto_label = not self._auto_label
+        self._render_target()
+
+    def _credentials_for(self, team: str) -> tuple[str, str]:
+        """Server + token for *team*: a fresh same-identity token from
+        teams.json when configured (0.24.0), else the running app's."""
+        try:
+            from ..config import freshest_credentials
+
+            t_id, url, token = freshest_credentials(team)
+            if t_id and url and token:
+                return url, token
+        except Exception:
+            pass
+        return self.app.server_url, self.app.token or ""
+
     @work(thread=True, group="recovery-salvage")
     def _salvage_worker(self, row: dict, title: str | None) -> None:
+        from ..recovery import salvage
+
         rec: RecoverableSession = row["rec"]
+        team = row["team"]
+        server_url, token = self._credentials_for(team)
+
+        def refresh_cb() -> str | None:
+            from ..api import refresh_session
+
+            new = refresh_session(server_url, None, team)
+            if new and team == getattr(self.app, "active_team_id", None):
+                self.app.token = new
+                if getattr(self.app, "api", None) is not None:
+                    self.app.api.token = new
+            return new
+
+        def on_status(msg: str) -> None:
+            self.app.call_from_thread(self._set_status, msg)
+
         try:
-            # 1. Orphaned recorder still writing? Stop it (SIGINT
-            #    finalizes the chunk WAV).
-            if rec.kind == "orphaned":
-                self.app.call_from_thread(
-                    self._set_status, f"stopping recorder (pid {rec.recorder_pid})…"
-                )
-                if not stop_orphaned(rec):
-                    raise RuntimeError(
-                        f"recorder pid {rec.recorder_pid} did not exit; "
-                        "stop it manually and retry"
-                    )
-
-            # 2. Stitch chunks (interrupted/orphaned) — pending uploads
-            #    already have their final audio file.
-            if rec.kind in ("interrupted", "orphaned"):
-                self.app.call_from_thread(
-                    self._set_status, f"stitching chunks in {rec.session_dir.name}…"
-                )
-                recover(rec)
-            if rec.audio_path is None:
-                rec.audio_path = upload_journal.find_audio(rec.session_dir)
-            if rec.audio_path is None:
-                raise RuntimeError("no uploadable audio file found")
-
-            # 3. Journal + upload.
-            upload_journal.mark_pending(
-                rec.session_dir, title=title, team_id=rec.team_id
+            session_id = salvage(
+                rec,
+                server_url=server_url,
+                token=token,
+                team=team,
+                title=title,
+                auto_label=self._auto_label,
+                sync=self._sync,
+                personal=self._personal,
+                refresh_cb=refresh_cb,
+                on_status=on_status,
             )
-            self.app.call_from_thread(self._set_status, "uploading…")
-            session_id = self._upload(rec, title)
-            upload_journal.mark_done(rec.session_dir, session_id or "")
-            if session_id:
-                try:
-                    from ..pull import record_uploaded_session
-
-                    record_uploaded_session(
-                        rec.session_dir, session_id,
-                        title=title, team_id=rec.team_id,
-                    )
-                except Exception as exc:
-                    log.warning("could not write upload session.json: %s", exc)
-
             row["done"] = True
-            rec_kind = rec.session_dir.name
             self.app.call_from_thread(
                 self._set_status,
-                f"✔ {rec_kind} uploaded as {session_id or '(no session id)'}",
+                f"✔ {rec.session_dir.name} uploaded to {team} as "
+                f"{session_id or '(no session id)'}",
             )
             self.app.call_from_thread(self._mark_row_done, row)
         except Exception as exc:
-            upload_journal.mark_failed(rec.session_dir, str(exc))
             log.warning("salvage of %s failed: %s", rec.session_dir, exc)
             self.app.call_from_thread(
                 self._set_status, f"✖ {rec.session_dir.name}: {exc}"
             )
         finally:
             row["busy"] = False
-
-    def _upload(self, rec: RecoverableSession, title: str | None) -> str:
-        """Compress (if WAV) + upload rec.audio_path. Returns session_id."""
-        from .. import uploader
-
-        audio_path = rec.audio_path
-        assert audio_path is not None
-        if audio_path.suffix.lower() == ".wav":
-            self.app.call_from_thread(self._set_status, "compressing…")
-            audio_path = uploader.compress_wav_for_upload(audio_path, keep_wav=False)
-            rec.audio_path = audio_path
-
-        server_url = self.app.server_url
-        token = self.app.token or ""
-        team_id = rec.team_id
-
-        def refresh_cb() -> str | None:
-            from ..api import refresh_active_session
-
-            new = refresh_active_session(server_url, None)
-            if new:
-                self.app.token = new
-                if getattr(self.app, "api", None) is not None:
-                    self.app.api.token = new
-            return new
-
-        upload_journal.mark_uploading(rec.session_dir)
-        kwargs = dict(
-            title=title,
-            auto_label=True,
-            sync=True,
-            personal=False,
-            team_id=team_id,
-            refresh_cb=refresh_cb,
-        )
-        if uploader.server_supports_resumable(server_url, token, team_id=team_id):
-            result = uploader.upload_resumable(server_url, token, audio_path, **kwargs)
-        else:
-            result = uploader.upload(server_url, token, audio_path, **kwargs)
-        return result.get("session_id", "")
 
     def _mark_row_done(self, row: dict) -> None:
         try:
@@ -318,6 +358,49 @@ class RecoveryScreen(ModalScreen[None]):
             )
         except Exception:
             pass
+
+
+class TeamPickScreen(ModalScreen["str | None"]):
+    """Pick the destination team for a salvaged recording."""
+
+    DEFAULT_CSS = """
+    TeamPickScreen {
+        align: center middle;
+    }
+    #team-pick-box {
+        width: 50;
+        height: auto;
+        max-height: 80%;
+        border: round $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+    def __init__(self, teams: list[str], current: str) -> None:
+        super().__init__()
+        self._teams = teams
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="team-pick-box"):
+            yield Static("Upload to which team?")
+            yield OptionList(
+                *[Option(("● " if t == self._current else "  ") + t, id=t)
+                  for t in self._teams],
+                id="team-pick-list",
+            )
+
+    def on_mount(self) -> None:
+        lst = self.query_one("#team-pick-list", OptionList)
+        lst.focus()
+        if self._current in self._teams:
+            lst.highlighted = self._teams.index(self._current)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
 
 
 def install_recovery_scan(host) -> None:

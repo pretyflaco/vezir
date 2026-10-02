@@ -153,22 +153,30 @@ def refresh_active_session(
     base_url: str,
     verify: bool | str | None = None,
 ) -> str | None:
-    """Exchange the active team's refresh token for a fresh access token.
+    """Back-compat alias: :func:`refresh_session` for the active team."""
+    return refresh_session(base_url, verify)
 
-    Shared by :meth:`VezirClient._try_refresh` and the uploader's
-    refresh-on-401 path so every credential flow refreshes identically.
-    Rotates the refresh token server-side, persists the new pair to
-    ``teams.json``, and returns the new access token — or ``None`` when
-    there's no refresh token, the server rejects it, or the network fails
-    (the caller then surfaces the original 401 / prompts a full re-login).
+
+def refresh_session(
+    base_url: str,
+    verify: bool | str | None = None,
+    team: str | None = None,
+) -> str | None:
+    """Exchange *team*'s refresh token for a fresh access token.
+
+    *team* defaults to the active team (also used when *team* is not
+    configured locally).  Shared by :meth:`VezirClient._try_refresh`, the
+    uploader's refresh-on-401 path and the CLI so every credential flow
+    refreshes identically.  Rotates the refresh token server-side, persists
+    the new pair to every ``teams.json`` entry of the same identity
+    (0.24.0, :func:`~vezir.client.config.fan_out_session`), and returns the
+    new access token — or ``None`` when there's no refresh token, the server
+    rejects it, or the network fails (the caller then surfaces the original
+    401 / prompts a full re-login).
     """
-    from .config import (
-        active_team_refresh_token,
-        load_teams_config,
-        set_team_session,
-    )
+    from .config import fan_out_session, load_teams_config, team_refresh_token
 
-    refresh_token = active_team_refresh_token()
+    refresh_token = team_refresh_token(team)
     if not refresh_token:
         return None
 
@@ -196,26 +204,26 @@ def refresh_active_session(
     if not new_access:
         return None
 
-    # Persist the rotated pair against the active team.
+    # Persist the rotated pair against the refreshed entry and every other
+    # entry of the same identity.
     import time as _time
     try:
         cfg = load_teams_config()
-        active = cfg.get("active")
+        ids = [t["id"] for t in cfg.get("teams", [])]
+        source = team if team in ids else cfg.get("active")
         entry = next(
-            (t for t in cfg.get("teams", []) if t["id"] == active), None,
+            (t for t in cfg.get("teams", []) if t["id"] == source), None,
         )
         if entry is not None and entry.get("auth") == "nostr":
             exp_in = body.get("expires_in")
             r_exp_in = body.get("refresh_expires_in")
-            set_team_session(
+            fan_out_session(
                 entry["id"],
-                entry.get("url") or base_url,
-                new_access,
-                entry.get("npub") or "",
+                token=new_access,
+                refresh_token=new_refresh,
                 expires_at=(
                     _time.time() + int(exp_in) if exp_in else None
                 ),
-                refresh_token=new_refresh,
                 refresh_expires_at=(
                     _time.time() + int(r_exp_in) if r_exp_in else None
                 ),
@@ -451,15 +459,16 @@ class VezirClient:
     def _try_refresh(self) -> bool:
         """Attempt a silent token refresh; return True iff it succeeded.
 
-        Delegates to :func:`refresh_active_session` (shared with the
-        uploader) to exchange the active team's refresh token, persist the
-        rotated pair to teams.json, and get a new access token.  Rebinds
+        Delegates to :func:`refresh_session` (shared with the uploader) to
+        exchange this client's team's refresh token (falling back to the
+        active team's), persist the rotated pair to teams.json, and get a
+        new access token.  Rebinds
         ``self.token`` and fires ``on_token_refreshed`` so snapshot readers
         (e.g. the TUI app's ``app.token``, used by the uploader) pick up
         the new token.  Best-effort: returns False on any failure so the
         caller surfaces the original 401.
         """
-        new_access = refresh_active_session(self.base_url, self._verify)
+        new_access = refresh_session(self.base_url, self._verify, self.team_id)
         if not new_access:
             return False
         self.token = new_access

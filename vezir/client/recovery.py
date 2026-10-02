@@ -21,6 +21,7 @@ still found.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -134,6 +135,181 @@ def _legacy_live_recorder(
     return None
 
 
+def _millet_meta_path(session_dir: Path) -> Path | None:
+    """millet-record's ``<stem>.session.json`` (not vezir's ``session.json``)."""
+    try:
+        metas = sorted(Path(session_dir).glob("*.session.json"))
+    except OSError:
+        return None
+    return metas[0] if metas else None
+
+
+def _read_json(path: Path | None) -> dict:
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_team(session_dir: Path, folder_team: str | None = None) -> str:
+    """The team a local recording belongs to (0.24.0).
+
+    Precedence: the upload journal's ``team_id`` (the destination chosen
+    when the upload was attempted) → the ``vezir_team`` key in
+    millet-record's ``<stem>.session.json`` → the recordings-root subdir the
+    folder lives in.  ``vezir local move`` keeps all three in agreement.
+    """
+    session_dir = Path(session_dir)
+    team = upload_journal.read(session_dir).get("team_id")
+    if team:
+        return str(team)
+    team = _read_json(_millet_meta_path(session_dir)).get("vezir_team")
+    if team:
+        return str(team)
+    return folder_team or session_dir.parent.name
+
+
+def move_session_dir(session_dir: Path, team: str) -> Path:
+    """Re-home a local recording under *team*'s recordings root (0.24.0).
+
+    Renames the folder to ``<base>/<team>/<name>`` and rewrites the
+    metadata that names a team or an absolute path, so every reader
+    (recovery scan, ``vezir local``, the upload) agrees on the new home:
+
+    * upload journal ``team_id`` (if a journal exists)
+    * millet-record meta: ``vezir_team`` + ``output_file`` re-rooted
+
+    Raises ``FileExistsError`` when the destination exists.  The caller
+    must ensure no recorder is writing into the folder.
+    """
+    from .. import config as _config
+
+    session_dir = Path(session_dir)
+    dest_root = _config.recordings_dir(team)
+    dest = dest_root / session_dir.name
+    if dest.resolve() == session_dir.resolve():
+        return session_dir
+    if dest.exists():
+        raise FileExistsError(f"{dest} already exists")
+    dest_root.mkdir(parents=True, exist_ok=True)
+    session_dir.rename(dest)
+
+    upload_journal.set_team(dest, team)
+
+    meta_path = _millet_meta_path(dest)
+    if meta_path is not None:
+        meta = _read_json(meta_path)
+        meta["vezir_team"] = team
+        out = meta.get("output_file")
+        if isinstance(out, str) and out:
+            meta["output_file"] = str(dest / Path(out).name)
+        try:
+            meta_path.write_text(json.dumps(meta, indent=2))
+        except OSError as exc:
+            log.warning("could not update %s: %s", meta_path, exc)
+    return dest
+
+
+def salvage(
+    rec: RecoverableSession,
+    *,
+    server_url: str,
+    token: str,
+    team: str,
+    title: str | None = None,
+    auto_label: bool = True,
+    sync: bool = True,
+    personal: bool = False,
+    refresh_cb=None,
+    progress=None,
+    on_status=None,
+) -> str:
+    """Stop/stitch/compress/upload one local recording; return session_id.
+
+    The single salvage pipeline behind the TUI recovery dialog and
+    ``vezir local upload`` (0.24.0; previously inlined in the dialog with
+    auto-label/sync hard-wired on and the team fixed to the folder).  If
+    *team* differs from where the recording lives, the folder is moved
+    first (after an orphaned recorder is stopped — never move a dir a live
+    process is writing into).  The upload journal tracks every step, so a
+    failure here is offered again on the next launch.
+    """
+    from . import uploader
+
+    def status(msg: str) -> None:
+        if on_status is not None:
+            on_status(msg)
+
+    if rec.kind == "orphaned":
+        status(f"stopping recorder (pid {rec.recorder_pid})…")
+        if not stop_orphaned(rec):
+            raise RuntimeError(
+                f"recorder pid {rec.recorder_pid} did not exit; "
+                "stop it manually and retry"
+            )
+
+    if team != rec.team_id:
+        status(f"moving {rec.session_dir.name} → {team}…")
+        old_dir = rec.session_dir
+        rec.session_dir = move_session_dir(rec.session_dir, team)
+        if rec.audio_path is not None:
+            rec.audio_path = rec.session_dir / rec.audio_path.relative_to(old_dir)
+        rec.team_id = team
+
+    try:
+        if rec.kind in ("interrupted", "orphaned"):
+            status(f"stitching chunks in {rec.session_dir.name}…")
+            recover(rec)
+        if rec.audio_path is None:
+            rec.audio_path = upload_journal.find_audio(rec.session_dir)
+        if rec.audio_path is None:
+            raise RuntimeError("no uploadable audio file found")
+
+        upload_journal.mark_pending(rec.session_dir, title=title, team_id=team)
+        audio_path = rec.audio_path
+        if audio_path.suffix.lower() == ".wav":
+            status("compressing…")
+            audio_path = uploader.compress_wav_for_upload(audio_path, keep_wav=False)
+            rec.audio_path = audio_path
+
+        if personal:
+            sync = False  # server enforces this too; keep the request honest
+        status(f"uploading to {team}…")
+        upload_journal.mark_uploading(rec.session_dir)
+        kwargs = dict(
+            title=title,
+            auto_label=auto_label,
+            sync=sync,
+            personal=personal,
+            team_id=team,
+            refresh_cb=refresh_cb,
+            progress=progress,
+        )
+        if uploader.server_supports_resumable(server_url, token, team_id=team):
+            result = uploader.upload_resumable(server_url, token, audio_path, **kwargs)
+        else:
+            result = uploader.upload(server_url, token, audio_path, **kwargs)
+    except Exception as exc:
+        upload_journal.mark_failed(rec.session_dir, str(exc))
+        raise
+
+    session_id = result.get("session_id", "")
+    upload_journal.mark_done(rec.session_dir, session_id)
+    if session_id:
+        try:
+            from .pull import record_uploaded_session
+
+            record_uploaded_session(
+                rec.session_dir, session_id, title=title, team_id=team,
+            )
+        except Exception as exc:
+            log.warning("could not write upload session.json: %s", exc)
+    return session_id
+
+
 def scan_interrupted() -> list[RecoverableSession]:
     """Scan all recordings roots for salvageable sessions, newest first.
 
@@ -176,7 +352,7 @@ def scan_interrupted() -> list[RecoverableSession]:
                 found.append(
                     RecoverableSession(
                         session_dir=s.session_dir,
-                        team_id=team_id,
+                        team_id=resolve_team(s.session_dir, team_id),
                         kind=kind,
                         started_at=s.started_at,
                         total_bytes=s.total_bytes,
@@ -196,7 +372,7 @@ def scan_interrupted() -> list[RecoverableSession]:
             found.append(
                 RecoverableSession(
                     session_dir=p.session_dir,
-                    team_id=p.team_id or team_id,
+                    team_id=resolve_team(p.session_dir, team_id),
                     kind="pending_upload",
                     started_at=p.updated_at,
                     total_bytes=p.audio_path.stat().st_size if p.audio_path else 0,
