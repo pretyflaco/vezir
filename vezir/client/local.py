@@ -53,6 +53,8 @@ class LocalRecording:
     recorder_pid: int | None  # live orphaned recorder, else None
     audio_path: Path | None
     detail: str
+    needs_stitch: bool = False  # chunks on disk, no final WAV yet
+    options: dict | None = None  # upload options saved with a "held" choice
 
     @property
     def name(self) -> str:
@@ -67,8 +69,10 @@ class LocalRecording:
 
     def to_recoverable(self) -> recovery.RecoverableSession:
         """Adapter for :func:`recovery.salvage`."""
-        if self.state in ("orphaned", "interrupted"):
-            kind = self.state
+        if self.state == "orphaned":
+            kind = "orphaned"
+        elif self.needs_stitch:
+            kind = "interrupted"
         else:
             kind = "pending_upload"
         return recovery.RecoverableSession(
@@ -146,6 +150,7 @@ def scan(*, include_all: bool = False) -> list[LocalRecording]:
             pid = None
             sid = None
             audio = None
+            needs_stitch = False
             if d in in_progress:
                 s = in_progress[d]
                 state = "in-progress"
@@ -159,6 +164,9 @@ def scan(*, include_all: bool = False) -> list[LocalRecording]:
                 total = r.total_bytes
                 pid = r.recorder_pid
                 detail = r.detail
+                needs_stitch = True
+                if state == "interrupted" and journal.get("status") == "held":
+                    state, detail = "held", "kept local (not stitched yet)"
             else:
                 audio = upload_journal.find_audio(d)
                 total = _dir_bytes(d)
@@ -168,6 +176,12 @@ def scan(*, include_all: bool = False) -> list[LocalRecording]:
                 status = journal.get("status")
                 if sid:
                     state, detail = "uploaded", f"session {sid}"
+                elif status == "held" and audio is not None:
+                    state, detail = "held", "kept local"
+                elif status == "recording" and audio is not None:
+                    # Clean stop, then nothing: the process died before the
+                    # review step journaled it.
+                    state, detail = "pending", "recorded; upload never started"
                 elif status in _JOURNAL_STATES and audio is not None:
                     state = status
                     detail = journal.get("error") or f"upload {status}"
@@ -181,6 +195,8 @@ def scan(*, include_all: bool = False) -> list[LocalRecording]:
                 session_dir=d, team=team, state=state, total_bytes=total,
                 started_at=started, title=title, session_id=sid,
                 recorder_pid=pid, audio_path=audio, detail=detail,
+                needs_stitch=needs_stitch,
+                options=journal.get("options") or None,
             ))
 
     def _mtime(r: LocalRecording) -> float:

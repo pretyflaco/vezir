@@ -12,9 +12,16 @@ next launch.
 Marker file: ``<session_dir>/.upload.json`` (hidden, alongside
 ``.pull-manifest.json``).  States:
 
+    recording   (0.25.0) written when the TUI starts recording; carries
+                the destination team so a crash mid-recording is
+                salvaged to the RIGHT team.  millet-record rewrites its own
+                ``<stem>.session.json`` from memory at stop, so vezir's
+                destination can't live there while recording.
     pending     recorded (or imported), upload not yet attempted
     uploading   upload in flight when the process died
     failed      last attempt failed (error recorded)
+    held        (0.25.0) deliberately kept local ("Keep local" after Stop);
+                carries the chosen ``options`` and ``pending_attachments``
     done        upload completed (session_id recorded)
 
 Only sessions that ever entered the upload flow get a marker, so
@@ -69,6 +76,53 @@ def mark_pending(session_dir: Path, *, title: str | None, team_id: str | None) -
         }
     )
     state.setdefault("created_at", state["updated_at"])
+    _write(session_dir, state)
+
+
+def mark_recording(session_dir: Path, *, team_id: str | None) -> None:
+    """Record the destination team the moment a recording starts."""
+    if session_dir is None:
+        return
+    try:
+        Path(session_dir).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    now = _now()
+    _write(session_dir, {
+        "status": "recording", "team_id": team_id, "title": None,
+        "created_at": now, "updated_at": now,
+    })
+
+
+def mark_held(
+    session_dir: Path,
+    *,
+    title: str | None,
+    team_id: str | None,
+    options: dict | None = None,
+    pending_attachments: bool = False,
+) -> None:
+    """Record a deliberate "keep local" — listed in the Outbox, never nagged."""
+    if session_dir is None:
+        return
+    state = read(session_dir)
+    state.update({
+        "status": "held",
+        "title": title,
+        "team_id": team_id,
+        "options": options or {},
+        "pending_attachments": bool(pending_attachments),
+        "updated_at": _now(),
+    })
+    state.setdefault("created_at", state["updated_at"])
+    state.pop("error", None)
+    _write(session_dir, state)
+
+
+def clear_pending_attachments(session_dir: Path) -> None:
+    state = read(session_dir)
+    if state.pop("pending_attachments", None) is None:
+        return
     _write(session_dir, state)
 
 

@@ -229,7 +229,7 @@ def salvage(
 ) -> str:
     """Stop/stitch/compress/upload one local recording; return session_id.
 
-    The single salvage pipeline behind the TUI recovery dialog and
+    The single salvage pipeline behind the TUI Outbox tab and
     ``vezir local upload`` (0.24.0; previously inlined in the dialog with
     auto-label/sync hard-wired on and the team fixed to the folder).  If
     *team* differs from where the recording lives, the folder is moved
@@ -297,7 +297,17 @@ def salvage(
         raise
 
     session_id = result.get("session_id", "")
+    held_attachments = bool(upload_journal.read(rec.session_dir).get("pending_attachments"))
     upload_journal.mark_done(rec.session_dir, session_id)
+    if session_id and held_attachments:
+        from .attachments import send_held_attachments
+
+        stored = send_held_attachments(
+            server_url, token, session_id, rec.session_dir, team,
+            on_info=status, on_error=status,
+        )
+        if stored:
+            upload_journal.clear_pending_attachments(rec.session_dir)
     if session_id:
         try:
             from .pull import record_uploaded_session

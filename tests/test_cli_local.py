@@ -333,3 +333,63 @@ def test_discard_refuses_in_progress(base):
     res = _run("discard", "meeting-20261002-140104", "-y")
     assert res.exit_code == 2
     assert d.exists()
+
+
+# ── 0.25.0: held + recording journal states ─────────────────────────────────
+
+
+def test_held_with_chunks_is_held_but_still_stitched(base, fake_upload):
+    d = _paused_recording(base / "blink", "meeting-20261002-123316")
+    upload_journal.mark_held(
+        d, title="Kept", team_id="blink",
+        options={"sync": False, "auto_label": False, "personal": True},
+    )
+    [rec] = local.scan()
+    assert rec.state == "held" and rec.needs_stitch
+    assert rec.to_recoverable().kind == "interrupted"
+    # Upload defaults come from the held choice.
+    res = _run("upload", "meeting-20261002-123316", "-y")
+    assert res.exit_code == 0, res.output
+    assert fake_upload["sync"] is False
+    assert fake_upload["auto_label"] is False
+    assert fake_upload["personal"] is True
+    assert fake_upload["title"] == "Kept"
+
+
+def test_recording_journal_with_final_audio_is_pending(base):
+    d = _local_only(base / "twentyone", "meeting-20261002-140104")
+    upload_journal.mark_recording(d, team_id="twentyone")
+    [rec] = local.scan()
+    assert rec.state == "pending"
+    assert rec.team == "twentyone"
+
+
+def test_held_attachments_go_out_with_the_upload(base, fake_upload, monkeypatch):
+    from vezir.client import uploader
+
+    d = _local_only(base / "blink", "meeting-20260601-000000")
+    (d / "attachments").mkdir()
+    (d / "attachments" / "slides.pdf").write_bytes(b"deck")
+    upload_journal.mark_held(d, title=None, team_id="blink", pending_attachments=True)
+    sent = {}
+
+    def fake_att(server_url, token, sid, paths, team_id=None):
+        sent.update(sid=sid, names=[p.name for p in paths], team=team_id)
+        return [{"name": "slides.pdf"}]
+
+    monkeypatch.setattr(uploader, "upload_attachments", fake_att)
+    res = _run("upload", "meeting-20260601-000000", "--team", "twentyone", "-y")
+    assert res.exit_code == 0, res.output
+    assert sent == {"sid": "01NEW", "names": ["slides.pdf"], "team": "twentyone"}
+    new = base / "twentyone" / "meeting-20260601-000000"
+    assert "pending_attachments" not in upload_journal.read(new)
+
+
+def test_doctor_does_not_report_held(base):
+    from vezir.doctor import _check_recordings_health, _Results
+
+    d = _paused_recording(base / "blink", "meeting-20261002-123316")
+    upload_journal.mark_held(d, title=None, team_id="blink")
+    r = _Results()
+    _check_recordings_health(r)
+    assert not any("123316" in msg for _sev, msg in r.rows)

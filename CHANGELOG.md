@@ -3,6 +3,72 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.25.0 — the destination is part of the recording; Keep local; Outbox tab
+
+The TUI half of the 2026-10-02 fix (0.24.0 was the CLI half).  A recording
+now carries its own destination team from the moment it starts, Stop asks
+before anything leaves the machine, and everything that hasn't reached the
+server lives in one tab.  No migration, no server change.  Suite grows to
+1281 (15 net new).
+
+### Added
+
+- **Team selector on the Record tab.**  Where *this* recording uploads.
+  Defaults to the active team and follows app-wide switches while idle;
+  once recording it belongs to the recording and can still be changed —
+  while recording or paused.  The destination is journaled the moment
+  recording starts (new `recording` journal state), so a crash
+  mid-recording is salvaged to the right team.  The folder is never moved
+  under a live recorder; it moves right after Stop.
+- **"Ready to upload" review after Stop** (replaces the attachment prompt):
+  team, title, auto-label / sync / personal, staged attachments.  **Upload**
+  sends it to the chosen team (moving the folder first if needed);
+  **Keep local** journals it `held`, parks the staged attachments in the
+  recording's `attachments/` (so they can't ride along with the next
+  meeting) and points to the Outbox.  **Escape keeps it local** — this
+  reverses 0.23's "dismissing always uploads": an accidental dismissal now
+  shares nothing, and a held recording is tracked, not lost.  Imports
+  (`^u`) are reviewed too (Escape cancels).
+- **Outbox tab (`^o`)** — every local recording not on the server, from
+  `vezir local`'s scanner: `u` review + upload to any team, `t` move to a
+  team, `h` hold, `d` discard to the trash (confirms; defaults to Cancel),
+  `o` open folder, `a` show all.  The tab label counts what's waiting.
+  **Replaces the startup recovery dialog**: at launch the TUI switches to
+  the Outbox when something needs attention (held and in-progress
+  recordings never trigger it) and raises an error toast for an orphaned
+  recorder that is still capturing.
+- Held recordings upload their parked attachments with the audio
+  (`attachments.send_held_attachments`), from the Outbox or
+  `vezir local upload`, which also defaults to the options chosen at hold.
+
+### Changed
+
+- **Switching the app-wide team while recording is allowed.**  It no longer
+  redirects anything — the recording keeps its destination, and a toast
+  says so.  (The old refusal was the reason the incident had no way out.)
+- Recordings are written into the destination team's folder (was the
+  `teams.json` active team, which disagreed with the upload team when the
+  active team was a discovered-only membership).
+- After an upload to a non-active team, status polling and artifact
+  download use that team's scope (they'd have 404'd on the active one).
+- A new login (`vezir login`, in-TUI re-auth) is handed to every
+  `teams.json` entry of the same identity, like a refresh (0.24.0).
+- `vezir doctor` doesn't report held recordings and points at the Outbox /
+  `vezir local upload` instead of the removed dialog.
+
+### Fixed
+
+- `App.query_one` only searches Textual's empty default screen, never
+  `MainScreen`, so every app-level lookup of a tab body silently failed:
+  the "no team switch while recording" guard never fired and the Sessions
+  tab never reloaded on a team switch.  New `VezirTuiApp.find_widget`
+  searches the screen stack.
+
+### Removed
+
+- `RecoveryScreen` (`recovery_screen.py`) and `AttachmentPromptScreen` —
+  superseded by the Outbox tab and the upload review.
+
 ## 0.24.0 — `vezir local`; recovery picks the team; one login across teams
 
 Incident 2026-10-02: a recording started in the `blink` team was paused

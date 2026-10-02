@@ -1078,3 +1078,24 @@ def test_client_refreshes_its_own_team(monkeypatch, tmp_path, mocked_client):
     client = mocked_client(handler, team_id="twentyone")
     assert client.get_me().is_ok()
     assert used["rt"] == "vzrt_t"
+
+
+def test_new_login_reaches_every_entry_of_the_identity(monkeypatch, tmp_path):
+    """0.25.0: `vezir login --team X` / in-TUI re-auth refreshes the
+    identity's other team entries too, not only X."""
+    from vezir.client import config as cc
+
+    _seed_teams(monkeypatch, tmp_path, [
+        _entry("blink", "eyJ.old", "vzrt_old"),
+        _entry("twentyone", "eyJ.old", "vzrt_old"),
+        _entry("other", "eyJ.o", "vzrt_o", npub="npub1x"),
+    ], active="blink")
+    cfg = cc.set_team_session(
+        "twentyone", "https://test", "eyJ.login", "npub1me",
+        refresh_token="vzrt_login", expires_at=99.0, activate=False,
+    )
+    by_id = {t["id"]: t for t in cfg["teams"]}
+    assert by_id["blink"]["token"] == by_id["twentyone"]["token"] == "eyJ.login"
+    assert by_id["blink"]["refresh_token"] == "vzrt_login"
+    assert by_id["other"]["token"] == "eyJ.o"
+    assert cfg["active"] == "blink"

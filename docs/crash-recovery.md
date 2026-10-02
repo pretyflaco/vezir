@@ -20,35 +20,37 @@ A session dir contains some of:
 | `*.ogg` | compressed upload artifact + local archive |
 | `meeting-….session.json` | millet-record metadata; `status` is `recording` / `stopped` / `failed` / `recovered` |
 | `meeting-….recorder.json` | live-recorder identity (pid + owner pid); present only while a recorder runs |
-| `.upload.json` | vezir upload journal: `pending` / `uploading` / `failed` / `done` |
+| `.upload.json` | vezir upload journal: `recording` (+ destination team, 0.25.0) / `pending` / `uploading` / `failed` / `held` / `done` |
 | `session.json` | vezir upload stub — written **only after a successful upload**; its absence means "never reached the server" |
 | `recording.lock` (in the team dir) | held by the active recording; stale locks are reclaimed automatically |
 
-## The automatic path (0.23.0+)
+## The automatic path: the Outbox tab (0.25.0+)
 
-Open `vezir tui`.  If any local session never reached the server, a
-**Recovered recordings** dialog appears listing each with its state:
+Open `vezir tui`.  If any local recording never reached the server, the
+TUI switches to the **Outbox** tab (`ctrl+o`) and says so.  Each row has
+its state:
 
-- **interrupted** — recorder dead, chunks on disk.  Salvage stitches
-  them (repairing SIGKILL-damaged headers) and uploads.
+- **interrupted** — recorder dead, chunks on disk.  Upload stitches
+  them (repairing SIGKILL-damaged headers) first.
 - **orphaned** — the recorder is *still running* but the vezir process
-  that owned it is gone.  Salvage first SIGINTs the recorder (ffmpeg
-  finalizes the WAV cleanly), then stitches and uploads.  Orphans keep
+  that owned it is gone; an error toast flags it at launch.  Upload first
+  SIGINTs the recorder (ffmpeg finalizes the WAV cleanly).  Orphans keep
   capturing whatever happens next into the dead session's file, so stop
   them promptly.
-- **pending upload** — recording finished; the upload didn't.  Salvage
-  re-uploads the existing audio file.
+- **pending / uploading / failed** — recording finished; the upload
+  didn't.  Upload re-sends the existing audio file.
+- **held** — you chose *Keep local* after Stop (or `h`).  Never nags at
+  launch.
 
-Recordings whose owner process is alive are never listed (another live
-vezir owns them).
+Keys: **`u`** review + upload (pick any team; the folder moves there
+first), **`t`** move to a team, **`h`** hold, **`d`** discard to
+`~/vezir-meetings/.trash/`, **`o`** open folder, **`a`** show all.
+Recordings whose owner process is alive show as *in-progress* and are
+left alone.
 
-Before salvaging (0.24.0+), the line under the list shows where the
-upload goes — `→ twentyone · sync on · auto-label on`.  Change it per
-recording: **`t`** pick another team (the folder moves there first),
-**`p`** personal, **`s`** sync, **`a`** auto-label.  Sync and auto-label
-start from your saved preferences.
+(0.23–0.24 showed a one-shot "Recovered recordings" dialog instead.)
 
-`vezir doctor` reports the same three states non-interactively.
+`vezir doctor` reports the same states non-interactively.
 
 ## From the command line (0.24.0+): `vezir local`
 
@@ -67,9 +69,14 @@ the new session — and `--team` sends it to a different team than the one
 it was recorded in.  Its `--sync`/`--auto-label` flags apply to that upload
 only.
 
-**Recorded in the wrong team?**  Don't press Stop — Stop uploads to the
-team the recording was started in.  Pause, quit the TUI (`ctrl+q`; while
-paused no recorder is running and the audio is finalized), then:
+**Recorded in the wrong team?**  Since 0.25.0, change the **Team**
+selector on the Record tab — it works while recording or paused — or pick
+the team in the *Ready to upload* review after Stop.  Not sure yet?
+*Keep local* (or Escape) and decide later from the Outbox.
+
+On 0.24.x: don't press Stop (it uploads to the team the recording started
+in).  Pause, quit the TUI (`ctrl+q`; while paused no recorder is running
+and the audio is finalized), then:
 
 ```bash
 vezir local upload meeting-YYYYMMDD-HHMMSS --team <right-team>

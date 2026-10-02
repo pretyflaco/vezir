@@ -171,3 +171,53 @@ def send_attachments(
         session_dir, staged, on_info=on_info, on_error=on_error,
     )
     return stored
+
+
+def hold_staged(session_dir: Path, *, on_error: Notify = _noop) -> int:
+    """"Keep local" (0.25.0): park staged attachments with their recording.
+
+    Without this they'd stay in the fixed staging folder and ride along
+    with the NEXT meeting's upload.  Returns the number of files moved; the
+    caller records ``pending_attachments`` in the upload journal so the
+    eventual upload sends them (:func:`send_held_attachments`).
+    """
+    staged = staged_attachments()
+    if not staged:
+        return 0
+    return move_staged_into_recording(session_dir, staged, on_error=on_error)
+
+
+def send_held_attachments(
+    server_url: str,
+    token: str,
+    session_id: str,
+    session_dir: Path,
+    team_id: str | None,
+    *,
+    on_info: Notify = _noop,
+    on_error: Notify = _noop,
+) -> list[dict]:
+    """Upload the attachments parked in ``<session_dir>/attachments/``.
+
+    The counterpart of :func:`hold_staged`, called after a held recording's
+    audio upload succeeds.  Never raises; the files stay where they are on
+    failure (``vezir upload-attachments``-style retry is manual).
+    """
+    adir = Path(session_dir) / ATTACHMENTS_SUBDIR
+    try:
+        files = sorted(p for p in adir.iterdir() if p.is_file())
+    except OSError:
+        return []
+    if not files:
+        return []
+    on_info(f"uploading {len(files)} held attachment(s) ...")
+    try:
+        stored = uploader.upload_attachments(
+            server_url, token, session_id, files, team_id=team_id,
+        )
+    except Exception as exc:
+        on_error(f"attachment upload failed: {exc}; files kept in {adir}")
+        return []
+    for item in stored:
+        on_info(f"  attached {item.get('name')}")
+    return stored

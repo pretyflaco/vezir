@@ -336,98 +336,6 @@ class _AudioOnlyDirectoryTree(DirectoryTree):
         return out
 
 
-class AttachmentPromptScreen(ModalScreen[None]):
-    """Last chance to drop files into the staging folder before upload.
-
-    The TUI counterpart of ``vezir scribe``'s Enter prompt: recording has
-    stopped and the upload is about to go out, so this is the moment the
-    issue-#16 workflow asks for.  Dismissing always continues into the
-    upload — the meeting is already recorded, and there is no outcome where
-    silently dropping it is the helpful choice.
-    """
-
-    DEFAULT_CSS = """
-    AttachmentPromptScreen {
-        align: center middle;
-    }
-    #attach-box {
-        width: 70%;
-        height: auto;
-        max-height: 80%;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #attach-title {
-        height: 1;
-        margin-bottom: 1;
-        text-style: bold;
-    }
-    #attach-folder {
-        height: auto;
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-    #attach-list {
-        height: auto;
-        max-height: 12;
-        margin-bottom: 1;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "upload", "Upload"),
-        Binding("enter", "upload", "Upload"),
-        Binding("r", "rescan", "Rescan"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="attach-box"):
-            yield Static("Attachments — last chance", id="attach-title")
-            yield Static(
-                f"Drop files into {attachments.staging_dir()} now; they upload "
-                f"with this meeting.",
-                id="attach-folder",
-            )
-            yield Static("", id="attach-list")
-            with Horizontal(id="attach-actions"):
-                yield Button("⬆ Upload now", id="attach-upload", variant="primary")
-                yield Button("↻ Rescan folder", id="attach-rescan")
-
-    def on_mount(self) -> None:
-        self._refresh_list()
-        try:
-            self.query_one("#attach-upload", Button).focus()
-        except Exception:
-            pass
-
-    def _refresh_list(self) -> None:
-        staged = attachments.staged_attachments()
-        if staged:
-            body = "\n".join(
-                f"  • {p.name} ({_fmt_bytes(p.stat().st_size)})" for p in staged
-            )
-            text = f"{len(staged)} file(s) staged:\n{body}"
-        else:
-            text = "[dim]No files staged.[/]"
-        try:
-            self.query_one("#attach-list", Static).update(text)
-        except Exception:
-            pass
-
-    def action_rescan(self) -> None:
-        self._refresh_list()
-
-    def action_upload(self) -> None:
-        self.dismiss(None)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "attach-rescan":
-            self._refresh_list()
-        else:
-            self.dismiss(None)
-
-
 class ImportScreen(ModalScreen["Path | None"]):
     """Modal picker for selecting an audio or video file to upload.
 
@@ -657,6 +565,10 @@ class RecordBody(Vertical):
     #title-row Input {
         width: 1fr;
     }
+    #title-row Select {
+        width: 30;
+        margin-left: 1;
+    }
 
     /* ── shared 4-column grid for toggles + controls rows ── */
     #toggles-row,
@@ -776,6 +688,16 @@ class RecordBody(Vertical):
         self._mic_history: deque[float] = deque([0.0] * 12, maxlen=12)
         self._sys_history: deque[float] = deque([0.0] * 12, maxlen=12)
         self._silence_since: float = 0.0
+        # 0.25.0: per-recording destination.  ``_dest_team`` is the team
+        # selector's value; while idle it follows app-wide team switches
+        # (``_followed_active`` = last active team seen), once recording it
+        # belongs to the recording.  ``_rec_dir`` = in-flight session dir.
+        self._dest_team: str | None = None
+        self._followed_active: str | None = None
+        self._rec_dir: Path | None = None
+        self._team_opts: list[str] = []
+        # Review result of the upload in flight (re-used by the re-auth retry).
+        self._last_review = None
 
     @classmethod
     def body_widget(cls) -> RecordBody:
@@ -787,6 +709,9 @@ class RecordBody(Vertical):
     def compose(self) -> ComposeResult:
         with Horizontal(id="title-row"):
             yield Input(placeholder="optional meeting title", id="title-input")
+            # 0.25.0: the destination belongs to the recording, not to the
+            # app-wide active team — changeable while recording or paused.
+            yield Select([], prompt="team", allow_blank=True, id="team-select")
 
         with Horizontal(id="toggles-row"):
             yield Button("Auto-label", id="auto-label-btn")
@@ -878,6 +803,50 @@ class RecordBody(Vertical):
         self.set_interval(
             5.0, self._refresh_attachments_line, name="attachments-line-refresh",
         )
+        # Memberships arrive asynchronously (/api/me); keep the selector's
+        # options current and follow app-wide switches while idle.
+        self.refresh_team_select()
+        self.set_interval(3.0, self.refresh_team_select, name="team-select-refresh")
+
+    # ── destination team (0.25.0) ──
+
+    @property
+    def destination_team(self) -> str | None:
+        return self._dest_team or getattr(self.app, "active_team_id", None)
+
+    def refresh_team_select(self) -> None:
+        """Sync the team selector with memberships + the app-wide team."""
+        try:
+            sel = self.query_one("#team-select", Select)
+        except Exception:
+            return
+        from .review_screen import team_choices
+
+        active = getattr(self.app, "active_team_id", None)
+        if not self.is_recording and active != self._followed_active:
+            self._followed_active = active
+            self._dest_team = active
+        opts = team_choices(self.app, self._dest_team)
+        if opts != self._team_opts:
+            self._team_opts = opts
+            with sel.prevent(Select.Changed):
+                sel.set_options([(t, t) for t in opts])
+        if self._dest_team and sel.value != self._dest_team:
+            with sel.prevent(Select.Changed):
+                sel.value = self._dest_team
+
+    def _set_destination(self, team: str) -> None:
+        if team == self._dest_team:
+            return
+        self._dest_team = team
+        if self.is_recording and self._rec_dir is not None:
+            from .. import upload_journal
+
+            upload_journal.set_team(self._rec_dir, team)
+            self.status_text = f"recording → uploads to {team}"
+            self.app.notify(
+                f"This recording will upload to {team}.", timeout=4,
+            )
 
     def _warn_if_session_expiring(self) -> None:
         """Proactively warn only when re-login is genuinely needed.
@@ -1031,6 +1000,10 @@ class RecordBody(Vertical):
                 btn.remove_class("toggle-on")
 
     def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "team-select":
+            if event.value is not Select.BLANK and event.value:
+                self._set_destination(str(event.value))
+            return
         if event.select.id == "preset":
             self._prefs["preset"] = str(event.value)
             save_client_prefs(self._prefs)
@@ -1117,7 +1090,9 @@ class RecordBody(Vertical):
                 pass  # non-fatal
             self.error_text = ""
             self.status_text = f"importing {picked.name}"
-            self._kick_upload(picked)
+            # 0.25.0: imports are reviewed too (they used to go straight to
+            # the app-wide active team).
+            self._open_review(picked, recording=False)
 
         self.app.push_screen(ImportScreen(browse_start), _after_pick)
 
@@ -1140,13 +1115,26 @@ class RecordBody(Vertical):
             self.error_text = " | ".join(issues)
             return
 
+        # 0.25.0: record straight into the destination team's root (was the
+        # teams.json active team, which disagreed with the upload team for
+        # discovered-only memberships) and journal the destination now, so a
+        # crash mid-recording is salvaged to the right team.
+        dest = self.destination_team
         try:
-            output_dir = config.recordings_dir()
+            output_dir = config.recordings_dir(dest)
             output_dir.mkdir(parents=True, exist_ok=True)
             self._session = create_session(output_dir=str(output_dir))
         except Exception as exc:
             self.error_text = f"could not create session: {exc}"
             return
+        self._dest_team = dest
+        try:
+            from .. import upload_journal
+
+            self._rec_dir = Path(self._session.output_file).parent
+            upload_journal.mark_recording(self._rec_dir, team_id=dest)
+        except Exception:
+            self._rec_dir = None  # journaling is best-effort
 
         # v0.7.0: bump generation so stale messages from the previous
         # session's upload/poll workers are discarded.
@@ -1180,7 +1168,7 @@ class RecordBody(Vertical):
             # one is active (or orphaned by a crash).  The message already
             # carries holder pid/start; add the way out.
             if exc.__class__.__name__ == "RecordingInProgressError":
-                reason = f"{reason}  — or salvage it via the recovery dialog on next launch."
+                reason = f"{reason}  — or salvage it from the Outbox tab (^o)."
             self.post_message(RecorderFailed(reason=reason, gen=gen))
             return
         # Notify the UI to flip into recording mode.
@@ -1273,16 +1261,16 @@ class RecordBody(Vertical):
 
     # ── upload lifecycle ──
 
-    def _kick_upload(self, audio_path: Path) -> None:
-        title_widget = self.query_one("#title-input", Input)
-        auto_label = "toggle-on" in self.query_one("#auto-label-btn", Button).classes
-        sync = "toggle-on" in self.query_one("#sync-btn", Button).classes
-        personal = "toggle-personal-on" in self.query_one("#personal-btn", Button).classes
+    def _kick_upload(self, audio_path: Path, review) -> None:
+        """Upload *audio_path* with the reviewed team/title/options (0.25.0:
+        never the app-wide active team, never re-read from the tab)."""
+        self._last_review = review
+        team = review.team
+        auto_label = review.auto_label
+        personal = review.personal
+        sync = review.sync and not personal  # match server-side enforcement
+        title = review.title
         preset = str(self.query_one("#preset", Select).value)
-        title = (title_widget.value or "").strip() or None
-
-        if personal:
-            sync = False  # match server-side enforcement
 
         # Iteration-plan template (v0.19.0): only for video uploads — a
         # plan keyed to cue frames makes no sense for an audio meeting.
@@ -1297,15 +1285,13 @@ class RecordBody(Vertical):
         try:
             from .. import upload_journal
 
-            upload_journal.mark_pending(
-                audio_path.parent,
-                title=title,
-                team_id=getattr(self.app, "active_team_id", None),
-            )
+            upload_journal.mark_pending(audio_path.parent, title=title, team_id=team)
         except Exception:
             pass  # journaling is best-effort; never block an upload
+        self.status_text = f"uploading to {team}"
         self._upload_worker(
-            audio_path, title, preset, template, auto_label, sync, personal, self._gen,
+            audio_path, title, preset, template, auto_label, sync, personal,
+            team, self._gen,
         )
 
     @work(thread=True, exclusive=True, group="upload")
@@ -1318,9 +1304,11 @@ class RecordBody(Vertical):
         auto_label: bool,
         sync: bool,
         personal: bool,
+        team_id: str,
         gen: int,
     ) -> None:
         from .. import upload_journal, uploader
+        from .review_screen import upload_credentials
 
         session_dir = audio_path.parent  # survives the wav→ogg path swap
 
@@ -1352,20 +1340,9 @@ class RecordBody(Vertical):
                 gen=gen,
             ))
 
-        server_url = self.app.server_url
-        token = self.app.token or ""
-        team_id = getattr(self.app, "active_team_id", None)
-
-        def refresh_cb() -> str | None:
-            """Rotate the session on a mid-upload 401 and propagate the new
-            token to the app so subsequent requests use it (0.10.1)."""
-            from ..api import refresh_active_session
-            new = refresh_active_session(server_url, None)
-            if new:
-                self.app.token = new
-                if getattr(self.app, "api", None) is not None:
-                    self.app.api.token = new
-            return new
+        # The reviewed team's credentials (a fresh same-identity token);
+        # refresh_cb rotates on a mid-upload 401 and rebinds the app token.
+        server_url, token, refresh_cb = upload_credentials(self.app, team_id)
 
         upload_kwargs = dict(
             title=title,
@@ -1461,12 +1438,23 @@ class RecordBody(Vertical):
         terminal = {"done", "error", "needs_labeling", "sync_failed", "empty"}
         last_status = ""
         deadline = _t.time() + 600
+        # 0.25.0: the session lives in the REVIEWED team, which need not be
+        # the app-wide active one; a client scoped to the active team would
+        # 404 on it forever.
+        api = self.app.api
+        team = getattr(self._last_review, "team", None)
+        if team and team != getattr(self.app, "active_team_id", None):
+            from ..api import VezirClient
+            from .review_screen import upload_credentials
+
+            url, tok, _cb = upload_credentials(self.app, team)
+            api = VezirClient(url, tok, team_id=team)
         while _t.time() < deadline and not worker.is_cancelled:
             # v0.7.0: bail early if the generation has moved on (user
             # started a new recording and that recording also uploaded).
             if gen < self._gen:
                 return
-            result = self.app.api.get_session(session_id)
+            result = api.get_session(session_id)
             if not result.is_ok():
                 worker.cancelled_event.wait(5)
                 continue
@@ -1485,9 +1473,7 @@ class RecordBody(Vertical):
                     try:
                         from ..artifacts import download_session_artifacts
                         dest = self._last_audio_path.parent
-                        saved = download_session_artifacts(
-                            self.app.api, session, dest,
-                        )
+                        saved = download_session_artifacts(api, session, dest)
                         if saved:
                             self.post_message(ServerStatus(
                                 status="done",
@@ -1612,19 +1598,102 @@ class RecordBody(Vertical):
         # Auto-upload of the just-finished recording still happens below.)
         size = audio_path.stat().st_size if audio_path.exists() else 0
         self.file_bytes = size
-        self.status_text = (
-            f"recording finished ({_fmt_bytes(size)}); uploading..."
+        self.status_text = f"recording finished ({_fmt_bytes(size)}); review the upload"
+        self._rec_dir = None
+        # 0.25.0: journal it as pending BEFORE the review, so a crash while
+        # the review is open is still offered for salvage.
+        try:
+            from .. import upload_journal
+
+            upload_journal.mark_pending(
+                audio_path.parent,
+                title=self._current_title(),
+                team_id=self.destination_team,
+            )
+        except Exception:
+            pass
+        self._open_review(audio_path, recording=True)
+
+    # ── upload review (0.25.0) ──
+
+    def _current_title(self) -> str | None:
+        try:
+            return (self.query_one("#title-input", Input).value or "").strip() or None
+        except Exception:
+            return None
+
+    def _toggle_is_on(self, btn_id: str, cls: str = "toggle-on") -> bool:
+        try:
+            return cls in self.query_one(btn_id, Button).classes
+        except Exception:
+            return False
+
+    def _open_review(self, audio_path: Path, *, recording: bool) -> None:
+        """Push the review modal; Upload / Keep local (recording) / Cancel."""
+        from .review_screen import UploadReviewScreen, team_choices
+
+        team = self.destination_team or ""
+        screen = UploadReviewScreen(
+            name=audio_path.parent.name if recording else audio_path.name,
+            audio_path=audio_path,
+            team=team,
+            teams=team_choices(self.app, team),
+            title=self._current_title(),
+            auto_label=self._toggle_is_on("#auto-label-btn"),
+            sync=self._toggle_is_on("#sync-btn"),
+            personal=self._toggle_is_on("#personal-btn", "toggle-personal-on"),
+            hold_label="Keep local" if recording else "Cancel",
         )
-        # Auto-kick upload to match gui.py's behavior — but first give the
-        # user the same last-chance attachment prompt the CLI shows.
-        def _then_upload(_result=None) -> None:
+
+        def _after(result) -> None:
             self._refresh_attachments_line()
-            self._kick_upload(audio_path)
+            if result is None or result.action == "cancel":
+                self.status_text = "upload cancelled"
+                return
+            if recording:
+                audio = self._rehome(audio_path, result.team)
+                self._last_audio_path = audio  # artifacts land in the new home
+            else:
+                audio = audio_path
+            if result.action == "hold":
+                self._hold(audio, result)
+                return
+            self._kick_upload(audio, result)
 
         try:
-            self.app.push_screen(AttachmentPromptScreen(), _then_upload)
+            self.app.push_screen(screen, _after)
         except Exception:  # pragma: no cover - defensive
-            _then_upload()
+            log.exception("could not open the upload review")
+            self.error_text = "could not open the upload review; recording kept local"
+
+    def _rehome(self, audio_path: Path, team: str) -> Path:
+        """Move a finished recording's folder under *team* if needed."""
+        from ..recovery import move_session_dir
+
+        try:
+            new_dir = move_session_dir(audio_path.parent, team)
+        except Exception as exc:
+            self.error_text = f"could not move the recording to {team}: {exc}"
+            return audio_path
+        return new_dir / audio_path.name
+
+    def _hold(self, audio_path: Path, review) -> None:
+        """Keep local: park attachments, journal ``held``, say where it is."""
+        from .. import upload_journal
+
+        session_dir = audio_path.parent
+        moved = attachments.hold_staged(
+            session_dir, on_error=lambda m: setattr(self, "error_text", m),
+        )
+        upload_journal.mark_held(
+            session_dir, title=review.title, team_id=review.team,
+            options=review.options, pending_attachments=moved > 0,
+        )
+        self._refresh_attachments_line()
+        self.status_text = (
+            f"kept local in {review.team} — Outbox tab (^o) or: "
+            f"vezir local upload {session_dir.name}"
+        )
 
     def on_server_status(self, message: ServerStatus) -> None:
         if message.gen < self._gen:
@@ -1715,6 +1784,9 @@ class RecordBody(Vertical):
             self.error_text = ""
             if audio_path is not None:
                 self._pending_reauth_upload = None
-                self._kick_upload(audio_path)
+                if self._last_review is not None:
+                    self._kick_upload(audio_path, self._last_review)
+                else:
+                    self._open_review(audio_path, recording=False)
 
         self.app.push_screen(ReauthScreen(server_url, team_id), _after)

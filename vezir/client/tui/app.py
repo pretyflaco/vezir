@@ -8,8 +8,8 @@ Architecture:
   state.  v0.6.1+: when ``~/.config/vezir/teams.json`` exists with an
   active entry, those credentials win over env+client.json — see
   :func:`vezir.client.config.resolve_credentials`.
-* A single root ``MainScreen`` wraps the two top-level views
-  (RecordScreen, SessionsScreen) inside a ``TabbedContent``.  This is
+* A single root ``MainScreen`` wraps the top-level views (Record,
+  Sessions, Teams, Outbox) inside a ``TabbedContent``.  This is
   the Textual-idiomatic shape for "bottom-nav" UIs and dodges the
   switch_screen / install_screen state-tracking edge cases.
 * Transient screens (DetailScreen, ArtifactScreen, LabelScreen,
@@ -23,6 +23,8 @@ Architecture:
 Global bindings (priority on the App):
   ctrl+r  Record tab
   ctrl+s  Sessions tab
+  ctrl+e  Teams tab
+  ctrl+o  Outbox tab (0.25.0)
   ctrl+l  Refresh
   ctrl+q  Quit
   ctrl+t  Cycle active team (v0.6.1+, requires teams.json)
@@ -77,12 +79,13 @@ def _resolve_credentials() -> tuple[str, str | None, str | None, str]:
 
 
 class MainScreen(Screen):
-    """Single root screen with Record / Sessions tabs."""
+    """Single root screen with Record / Sessions / Teams / Outbox tabs."""
 
     BINDINGS = [
         Binding("ctrl+r", "show_tab('record')", "Record"),
         Binding("ctrl+s", "show_tab('sessions')", "Sessions"),
         Binding("ctrl+e", "show_tab('teams')", "Teams"),
+        Binding("ctrl+o", "show_tab('outbox')", "Outbox"),
         Binding("ctrl+l", "refresh_current", "Refresh", show=False),
     ]
 
@@ -92,6 +95,7 @@ class MainScreen(Screen):
 
     def compose(self) -> ComposeResult:
         # Lazy imports so `vezir --help` stays snappy on minimal installs.
+        from .outbox_screen import OutboxBody
         from .record_screen import RecordBody
         from .sessions_screen import SessionsBody
         from .teams_screen import TeamsBody
@@ -104,6 +108,8 @@ class MainScreen(Screen):
                 yield SessionsBody.body_widget()
             with TabPane("Teams", id="teams"):
                 yield TeamsBody.body_widget()
+            with TabPane("Outbox", id="outbox"):
+                yield OutboxBody.body_widget()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -128,16 +134,17 @@ class MainScreen(Screen):
             except Exception as exc:
                 log.warning("update-check poll setup failed: %s", exc)
 
-        # One-shot crash-recovery scan (0.23.0): offer to salvage local
-        # recordings that never reached the server (interrupted chunks,
-        # orphaned recorders, unfinished uploads).  Separate env guard so
-        # tests can disable it independently.
+        # One-shot launch scan (0.23.0 recovery dialog → 0.25.0 Outbox tab):
+        # when local recordings never reached the server (interrupted
+        # chunks, orphaned recorders, unfinished uploads), switch to the
+        # Outbox and say so.  Held recordings don't count.  Separate env
+        # guard so tests can disable it independently.
         if os.environ.get("VEZIR_TUI_DISABLE_RECOVERY_SCAN") != "1":
             try:
-                from .recovery_screen import install_recovery_scan
-                install_recovery_scan(self)
+                from .outbox_screen import install_outbox_check
+                install_outbox_check(self)
             except Exception as exc:
-                log.warning("recovery scan setup failed: %s", exc)
+                log.warning("outbox launch scan setup failed: %s", exc)
 
     def action_show_tab(self, tab_id: str) -> None:
         tabs = self.query_one(TabbedContent)
@@ -145,6 +152,7 @@ class MainScreen(Screen):
 
     def action_refresh_current(self) -> None:
         """Forward refresh to whichever tab's body widget exposes it."""
+        from .outbox_screen import OutboxBody
         from .record_screen import RecordBody
         from .sessions_screen import SessionsBody
         from .teams_screen import TeamsBody
@@ -154,7 +162,7 @@ class MainScreen(Screen):
         if active is None:
             return
         try:
-            body = active.query_one((RecordBody, SessionsBody, TeamsBody))
+            body = active.query_one((RecordBody, SessionsBody, TeamsBody, OutboxBody))
         except Exception:
             return
         action = getattr(body, "action_refresh", None)
@@ -175,10 +183,13 @@ class MainScreen(Screen):
         over LAN); imperceptible.  No debounce: users don't tab-
         flick fast enough for it to matter.
         """
+        from .outbox_screen import OutboxBody
         from .sessions_screen import SessionsBody
         from .teams_screen import TeamsBody
         if event.pane.id == "sessions":
             cls: type = SessionsBody
+        elif event.pane.id == "outbox":
+            cls = OutboxBody
         elif event.pane.id == "teams":
             # v0.7.6: re-fetch /api/me memberships so the Teams tab
             # reflects any server-side membership changes.
@@ -504,15 +515,40 @@ class VezirTuiApp(App):
                 return team_id
         return team_id
 
-    def _inflight_blocks_switch(self) -> bool:
-        """True if a recording/upload is in flight (mid-flight switching
-        would orphan the upload on the old team's server view)."""
+    def find_widget(self, cls):
+        """First *cls* widget on the screen stack, topmost screen first.
+
+        ``App.query_one`` searches only Textual's (empty) default screen,
+        never MainScreen — so every ``self.query_one(RecordBody)`` here used
+        to raise and be swallowed: the 0.7.x "no team switch while
+        recording" guard never fired, and the Sessions tab never reloaded on
+        a team switch (found 0.25.0).
+        """
+        from textual.css.query import NoMatches
+
+        for screen in reversed(self.screen_stack):
+            try:
+                return screen.query_one(cls)
+            except NoMatches:
+                continue
+        raise NoMatches(f"no {cls.__name__} on any screen")
+
+    def _inflight_destination(self) -> str | None:
+        """Team of a recording/upload in flight, or None.
+
+        0.25.0: a recording carries its own destination (Record tab's team
+        selector), so switching the app-wide team mid-recording is safe —
+        it no longer redirects the upload.  It used to be refused outright,
+        which left a recording started in the wrong team with no way out.
+        """
         try:
             from .record_screen import RecordBody
-            body = self.query_one(RecordBody)
-            return bool(body.is_recording or body.is_uploading)
+            body = self.find_widget(RecordBody)
+            if body.is_recording or body.is_uploading:
+                return body.destination_team
         except Exception:
-            return False  # Record screen not mounted; nothing to guard.
+            pass  # Record screen not mounted; nothing in flight.
+        return None
 
     def switch_to_team(self, slug: str) -> bool:
         """Switch the active team to ``slug`` (token-preserving).
@@ -523,16 +559,10 @@ class VezirTuiApp(App):
         for the session (mirrors android: the server is the source of
         truth, no redundant teams.json writes).
 
-        Returns True on success.  Refuses (returns False) while a
-        recording/upload is in flight.
+        Returns True on success.  A recording/upload in flight keeps its own
+        destination team (0.25.0); the user is told so.
         """
-        if self._inflight_blocks_switch():
-            self.notify(
-                "Cannot switch teams while recording or uploading.",
-                severity="error",
-                timeout=5,
-            )
-            return False
+        inflight = self._inflight_destination()
         if slug == self.active_team_id:
             return True  # already active; no-op
 
@@ -570,14 +600,21 @@ class VezirTuiApp(App):
         # Force the Sessions tab to reload against the new team.
         try:
             from .sessions_screen import SessionsBody
-            body = self.query_one(SessionsBody)
+            body = self.find_widget(SessionsBody)
             body.action_refresh()
         except Exception:
             pass
         # Refresh the Teams tab's active marker if it's mounted.
         try:
             from .teams_screen import TeamsBody
-            self.query_one(TeamsBody).refresh_active_marker()
+            self.find_widget(TeamsBody).refresh_active_marker()
+        except Exception:
+            pass
+
+        # Idle Record tab follows the switch; a recording keeps its team.
+        try:
+            from .record_screen import RecordBody
+            self.find_widget(RecordBody).refresh_team_select()
         except Exception:
             pass
 
@@ -587,6 +624,13 @@ class VezirTuiApp(App):
             severity="information",
             timeout=4,
         )
+        if inflight and inflight != slug:
+            self.notify(
+                f"The recording in progress still uploads to {inflight} — "
+                "change it with the Team selector on the Record tab.",
+                severity="warning",
+                timeout=8,
+            )
         return True
 
     def apply_reauth_session(self, body: dict) -> None:

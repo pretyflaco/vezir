@@ -626,11 +626,14 @@ def local_upload(ref, team, title, personal, sync, auto_label, assume_yes):
     dest = team or rec.team
     if dest != rec.team:
         _check_team_known(dest)
-    prefs = load_client_prefs()
+    # Defaults: the options chosen when it was held ("Keep local"), else
+    # the saved preferences.
+    prefs = {**load_client_prefs(), **(rec.options or {})}
     if sync is None:
         sync = bool(prefs.get("sync", True))
     if auto_label is None:
         auto_label = bool(prefs.get("auto_label", True))
+    personal = personal or bool((rec.options or {}).get("personal"))
     if personal:
         sync = False
     title = title or rec.title
@@ -683,7 +686,7 @@ def local_move(ref, team):
     """Re-home a not-yet-uploaded recording under another team.
 
     Updates the folder location, the upload journal and the recorder
-    metadata so the recovery dialog and `vezir local upload` target the
+    metadata so the TUI Outbox and `vezir local upload` target the
     new team.
     """
     from .client import local as _local

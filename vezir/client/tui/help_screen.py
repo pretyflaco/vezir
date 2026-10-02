@@ -14,6 +14,7 @@ _HELP_TEXT = """\
   [b]ctrl+r[/b]        Record tab
   [b]ctrl+s[/b]        Sessions tab
   [b]ctrl+e[/b]        Teams tab
+  [b]ctrl+o[/b]        Outbox tab (local recordings not on the server)
   [b]ctrl+t[/b]        Switch to next team (cycles all your teams)
   [b]ctrl+l[/b]        Refresh current screen
   [b]ctrl+q[/b]        Quit
@@ -71,7 +72,19 @@ _HELP_TEXT = """\
   [b]ctrl+p[/b]    Pause / resume
   [b]ctrl+u[/b]    Import file for upload
   [b]ctrl+x[/b]    Toggle personal flag
+  [b]Team ▾[/b]     Where THIS recording uploads — changeable while
+                recording or paused; switching the app's team (^t/^e)
+                doesn't redirect a recording in progress.
   Audio level bars show live mic + system audio during recording.
+  [b]Stop[/b] opens [b]Ready to upload[/b]: team, title, options, attachments.
+    [b]Upload[/b] sends it; [b]Keep local[/b] (or [b]escape[/b]) keeps it in the Outbox.
+
+[b cyan]Outbox (ctrl+o)[/b cyan]
+  Local recordings that haven't reached the server: interrupted, failed,
+  kept local, …  Opens itself at launch when something needs you.
+  [b]u[/b] upload…  [b]t[/b] move to team…  [b]h[/b] hold  [b]d[/b] discard (to trash)
+  [b]o[/b] open folder  [b]a[/b] show all
+  CLI twin: [dim]vezir local list | upload | move | discard[/dim]
 
 [b cyan]CLI: vezir pull[/b cyan]
   Download meeting artifacts from the server into

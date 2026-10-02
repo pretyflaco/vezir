@@ -428,7 +428,13 @@ def _check_recordings_health(r: _Results) -> None:
 
     roots = recordings_roots()
     try:
-        sessions = scan_interrupted()
+        from .client import upload_journal
+
+        # A deliberate "Keep local" (0.25.0) is not a problem to report.
+        sessions = [
+            s for s in scan_interrupted()
+            if upload_journal.read(s.session_dir).get("status") != "held"
+        ]
     except Exception as exc:
         r.warn(f"recordings: recovery scan failed: {exc}")
         sessions = []
@@ -445,17 +451,20 @@ def _check_recordings_health(r: _Results) -> None:
             r.warn(
                 f"recordings: ORPHANED recorder pid {s.recorder_pid} still "
                 f"writing to {s.session_dir} — its controlling process is "
-                "gone. Salvage via `vezir tui` recovery dialog."
+                f"gone. Salvage: TUI Outbox tab (^o) or `vezir local upload "
+                f"{s.session_dir.name}`."
             )
         for s in interrupted:
             r.warn(
                 f"recordings: interrupted session {s.session_dir} "
-                "(never uploaded). Salvage via `vezir tui` recovery dialog."
+                "(never uploaded). Salvage: TUI Outbox tab (^o) or "
+                f"`vezir local upload {s.session_dir.name}`."
             )
         for s in pending:
             r.warn(
                 f"recordings: upload never finished for {s.session_dir} "
-                f"({s.detail}). Resume via `vezir tui` recovery dialog."
+                f"({s.detail}). Resume: TUI Outbox tab (^o) or "
+                f"`vezir local upload {s.session_dir.name}`."
             )
 
     for _team, root in roots:

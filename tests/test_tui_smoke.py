@@ -1820,10 +1820,15 @@ async def test_record_body_video_upload_sends_template(app, mock_server, monkeyp
     vid.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16)
 
     async with app.run_test() as pilot:
+        from vezir.client.tui.review_screen import ReviewResult
+
         body = RecordBody()
         await app.mount(body)
         await pilot.pause(0.2)
-        body._kick_upload(vid)
+        body._kick_upload(vid, ReviewResult(
+            action="upload", team="blink", title=None,
+            auto_label=True, sync=True, personal=False,
+        ))
         for _ in range(30):
             await pilot.pause(0.1)
             if "summary_template" in captured:

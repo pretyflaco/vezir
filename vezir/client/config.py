@@ -354,6 +354,13 @@ def set_team_session(
     if activate or not cfg.get("active"):
         cfg["active"] = team_id
     save_teams_config(cfg)
+    # 0.25.0: a fresh login (CLI or in-TUI re-auth) is the identity's, not
+    # the team's — hand it to the identity's other entries too.
+    if npub and len(fan_out_session(
+        team_id, token=session_jwt, refresh_token=refresh_token,
+        expires_at=expires_at, refresh_expires_at=refresh_expires_at,
+    )) > 1:
+        cfg = load_teams_config()
     return cfg
 
 

@@ -326,47 +326,115 @@ def test_upload_attachments_explains_a_404(tmp_path, monkeypatch):
 # ── TUI record screen (issue #16 review follow-up) ──────────────────────────
 
 
-def test_record_screen_prompt_lists_staged_files(staging, monkeypatch):
-    """The modal is the TUI's equivalent of scribe's Enter prompt."""
-    from vezir.client.tui.record_screen import AttachmentPromptScreen
+class _ReviewHost:
+    """Minimal Textual app hosting one UploadReviewScreen."""
+
+    @staticmethod
+    def make(**kw):
+        from textual.app import App
+
+        from vezir.client.tui.review_screen import UploadReviewScreen
+
+        results: list = []
+        params = dict(
+            name="meeting-1", audio_path=None, team="blink",
+            teams=["blink", "twentyone"], title=None,
+            auto_label=True, sync=True, personal=False,
+        )
+        params.update(kw)
+
+        class Host(App):
+            def on_mount(self):
+                self.push_screen(UploadReviewScreen(**params), results.append)
+
+        return Host(), results
+
+
+async def test_review_screen_lists_staged_files(staging):
+    """The review modal is the TUI's equivalent of scribe's Enter prompt."""
+    from textual.widgets import Static
 
     (staging / "slides.pdf").write_bytes(b"deck")
-    screen = AttachmentPromptScreen()
-    shown: list = []
-
-    class _Static:
-        def update(self, text):
-            shown.append(text)
-
-    screen.query_one = lambda *_a, **_k: _Static()
-    screen._refresh_list()
-    assert "1 file(s) staged" in shown[0]
-    assert "slides.pdf" in shown[0]
-
-    (staging / "slides.pdf").unlink()
-    screen._refresh_list()
-    assert "No files staged" in shown[1]
+    app, _results = _ReviewHost.make()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        line = str(app.screen.query_one("#review-attachments", Static).render())
+        assert "1 staged" in line and "slides.pdf" in line
+        (staging / "slides.pdf").unlink()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        line = str(app.screen.query_one("#review-attachments", Static).render())
+        assert "none" in line
 
 
-def test_record_screen_prompt_always_continues_to_upload(staging):
-    """Dismissal (button, Enter or Escape) must never cancel the upload —
-    the meeting is already recorded."""
-    from vezir.client.tui.record_screen import AttachmentPromptScreen
+async def test_review_screen_escape_keeps_local(staging):
+    """0.25.0 reverses 0.23's "dismissing always uploads": an accidental
+    Escape must share nothing.  The recording is held (journaled, listed in
+    the Outbox), not dropped."""
+    app, results = _ReviewHost.make()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert results[0].action == "hold"
+    assert results[0].team == "blink"
 
-    screen = AttachmentPromptScreen()
-    dismissed: list = []
-    screen.dismiss = lambda result=None: dismissed.append(result)
 
-    screen.action_upload()
+async def test_review_screen_upload_carries_choices(staging):
+    from textual.widgets import Input, Select
 
-    class _Btn:
-        id = "attach-upload"
+    app, results = _ReviewHost.make()
+    async with app.run_test() as pilot:  # default 80x24 must fit
+        await pilot.pause()
+        app.screen.query_one("#review-team", Select).value = "twentyone"
+        app.screen.query_one("#review-title", Input).value = "Bounty"
+        await pilot.pause()
+        await pilot.click("#review-personal")
+        await pilot.click("#review-auto-label")
+        await pilot.pause()
+        await pilot.click("#review-upload")
+        await pilot.pause()
+    r = results[0]
+    assert (r.action, r.team, r.title) == ("upload", "twentyone", "Bounty")
+    assert r.personal is True and r.sync is False and r.auto_label is False
 
-    class _Event:
-        button = _Btn()
 
-    screen.on_button_pressed(_Event())
-    assert dismissed == [None, None]
+async def test_review_screen_import_escape_cancels(staging):
+    app, results = _ReviewHost.make(hold_label="Cancel")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert results[0].action == "cancel"
+
+
+def test_hold_staged_parks_attachments_with_recording(staging, tmp_path):
+    from vezir.client import attachments
+
+    (staging / "slides.pdf").write_bytes(b"deck")
+    rec = tmp_path / "meeting-1"
+    rec.mkdir()
+    assert attachments.hold_staged(rec) == 1
+    assert (rec / "attachments" / "slides.pdf").read_bytes() == b"deck"
+    assert attachments.staged_attachments() == []  # next meeting starts empty
+
+
+def test_send_held_attachments(staging, tmp_path, monkeypatch):
+    from vezir.client import attachments, uploader
+
+    rec = tmp_path / "meeting-1"
+    (rec / "attachments").mkdir(parents=True)
+    (rec / "attachments" / "slides.pdf").write_bytes(b"deck")
+    sent = {}
+
+    def fake(server_url, token, sid, paths, team_id=None):
+        sent.update(sid=sid, names=[p.name for p in paths], team=team_id)
+        return [{"name": "slides.pdf"}]
+
+    monkeypatch.setattr(uploader, "upload_attachments", fake)
+    out = attachments.send_held_attachments("u", "t", "01S", rec, "twentyone")
+    assert out == [{"name": "slides.pdf"}]
+    assert sent == {"sid": "01S", "names": ["slides.pdf"], "team": "twentyone"}
 
 
 def test_record_screen_line_shows_folder_and_count(staging, monkeypatch):
