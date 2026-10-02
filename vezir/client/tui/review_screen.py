@@ -41,16 +41,16 @@ class ReviewResult:
 
 
 def team_choices(app, *extra: str | None) -> list[str]:
-    """Every team the user can target: memberships + teams.json + local roots."""
+    """Teams the user can target: their memberships (+ teams.json entries).
+
+    Never local folder names (0.26.1): you can only upload to a team you
+    belong to, and a stray folder in the recordings base was showing up as
+    a "team".  *extra* (e.g. a recording's current team) is always kept so
+    a picker can show where something is now.
+    """
     teams: set[str] = {t for t in extra if t}
     try:
         teams.update(t["slug"] for t in app.all_teams())
-    except Exception:
-        pass
-    try:
-        from ..local import known_teams
-
-        teams.update(known_teams())
     except Exception:
         pass
     return sorted(teams)

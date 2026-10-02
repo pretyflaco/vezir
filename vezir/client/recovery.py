@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass
@@ -52,6 +53,9 @@ class RecoverableSession:
     detail: str  # human-readable state line for the UI
 
 
+_SESSION_DIR_RE = re.compile(r"^meeting-\d{8}-\d{6}")
+
+
 def recordings_roots() -> list[tuple[str, Path]]:
     """All (team_id, recordings_root) pairs present on disk.
 
@@ -60,6 +64,11 @@ def recordings_roots() -> list[tuple[str, Path]]:
     Enumerating the base directly — rather than resolving teams.json —
     also covers recordings of teams since removed from the client
     config.  Sorted by team id for stable output.
+
+    A folder named like a session (``meeting-YYYYMMDD-HHMMSS…``) sitting
+    directly in the base — e.g. an old ``vezir pull`` that couldn't
+    resolve the team — is a stray session, not a team (0.26.1: it was
+    offered as a "team" in every team picker).
     """
     from .. import config as _config
 
@@ -73,7 +82,10 @@ def recordings_roots() -> list[tuple[str, Path]]:
         entries = sorted(base.iterdir())
     except OSError:
         return []
-    return [(d.name, d) for d in entries if d.is_dir() and not d.name.startswith(".")]
+    return [
+        (d.name, d) for d in entries
+        if d.is_dir() and not d.name.startswith(".") and not _SESSION_DIR_RE.match(d.name)
+    ]
 
 
 def _pid_alive(pid: int | None) -> bool:

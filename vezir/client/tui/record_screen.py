@@ -711,7 +711,14 @@ class RecordBody(Vertical):
             yield Input(placeholder="optional meeting title", id="title-input")
             # 0.25.0: the destination belongs to the recording, not to the
             # app-wide active team — changeable while recording or paused.
-            yield Select([], prompt="team", allow_blank=True, id="team-select")
+            # No blank "team" entry when a team is known (0.26.1).
+            active = getattr(self.app, "active_team_id", None)
+            if active:
+                yield Select(
+                    [(active, active)], value=active, allow_blank=False, id="team-select",
+                )
+            else:
+                yield Select([], prompt="team", allow_blank=True, id="team-select")
 
         with Horizontal(id="toggles-row"):
             yield Button("Auto-label", id="auto-label-btn")
@@ -827,7 +834,7 @@ class RecordBody(Vertical):
             self._followed_active = active
             self._dest_team = active
         opts = team_choices(self.app, self._dest_team)
-        if opts != self._team_opts:
+        if opts and opts != self._team_opts:
             self._team_opts = opts
             with sel.prevent(Select.Changed):
                 sel.set_options([(t, t) for t in opts])

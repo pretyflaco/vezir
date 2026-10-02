@@ -23,9 +23,14 @@ def mock_server(monkeypatch):
         if request.url.path == "/api/sessions":
             return httpx.Response(200, json={"sessions": []})
         if request.url.path == "/api/me":
+            # Team pickers offer memberships only (0.26.1), never folder names.
             return httpx.Response(200, json={
                 "github": "tester", "is_admin": False,
-                "memberships": [], "alternate_urls": [],
+                "memberships": [
+                    {"team_id": "u1", "slug": "startups", "role": "member"},
+                    {"team_id": "u2", "slug": "twentyone", "role": "member"},
+                ],
+                "alternate_urls": [],
             })
         if request.url.path == "/api/team":
             return httpx.Response(200, json={"team": []})
@@ -130,7 +135,7 @@ async def test_outbox_upload_to_other_team(app, tmp_path, monkeypatch):
     monkeypatch.setattr("vezir.client.recovery.salvage", fake_salvage)
     async with app.run_test(size=(120, 40)) as pilot:
         body = _outbox(app)
-        assert await _wait(pilot, lambda: bool(body._recs))
+        assert await _wait(pilot, lambda: bool(body._recs) and bool(app.memberships))
         body.action_upload()
         assert await _wait(pilot, lambda: app.screen.__class__.__name__ == "UploadReviewScreen")
         app.screen.query_one("#review-team", Select).value = "twentyone"
@@ -150,7 +155,7 @@ async def test_outbox_move_hold_discard(app, tmp_path):
     d = _make_interrupted(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         body = _outbox(app)
-        assert await _wait(pilot, lambda: bool(body._recs))
+        assert await _wait(pilot, lambda: bool(body._recs) and bool(app.memberships))
 
         # t → pick twentyone → folder moves.
         body.action_move_team()
@@ -188,3 +193,31 @@ async def test_outbox_discard_defaults_to_no(app, tmp_path):
         await pilot.press("enter")  # focused button is Cancel
         await pilot.pause()
         assert d.exists()
+
+
+async def test_stray_session_folder_is_not_a_team(app, tmp_path):
+    """0.26.1: a session folder sitting directly in ~/vezir-meetings/ (an old
+    pull that couldn't resolve its team) was offered as a "team" in every
+    picker.  Pickers now list memberships only, and the folder is not a
+    recordings root."""
+    from vezir.client import local, recovery
+    from vezir.client.tui.review_screen import team_choices
+
+    stray = tmp_path / "vezir-meetings" / "meeting-20260620-162219_DANIEL_BIP110"
+    stray.mkdir(parents=True)
+    (stray / "session.json").write_text('{"session_id": "01OLD"}')
+    (tmp_path / "vezir-meetings" / "oldteam").mkdir()
+    assert [n for n, _ in recovery.recordings_roots()] == ["oldteam"]
+    assert "meeting-20260620-162219_DANIEL_BIP110" not in local.known_teams()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await _wait(pilot, lambda: bool(app.memberships))
+        choices = team_choices(app)
+        assert choices == ["startups", "twentyone"]  # not oldteam, not the stray
+        from textual.widgets import Select
+
+        from vezir.client.tui.record_screen import RecordBody
+        body = app.screen_stack[1].query_one(RecordBody)
+        sel = body.query_one("#team-select", Select)
+        await _wait(pilot, lambda: body._team_opts == ["startups", "twentyone"])
+        labels = [str(o[0]) for o in sel._options]
+        assert not any("meeting-" in lbl or lbl == "team" for lbl in labels)

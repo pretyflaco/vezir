@@ -3,6 +3,21 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.26.1 — team pickers list your teams, not folder names
+
+### Fixed
+
+- The Record tab's team selector (and the upload review / Outbox / move
+  pickers) offered local folder names as teams: a session folder sitting
+  directly in `~/vezir-meetings/` (an old `vezir pull` that couldn't resolve
+  its team) showed up as a "team" called `meeting-…_TITLE`.  Pickers now list
+  only teams you're a member of (memberships + `teams.json`), and a folder
+  named like a session is never treated as a team root.
+- The team selector no longer shows a blank "team" entry when a team is
+  known.
+
+Client-only; no server change.  Suite: 1304 (1 new).
+
 ## 0.26.0 — move your own session to another team
 
 Last piece of the 2026-10-02 fix.  0.24/0.25 covered recordings that hadn't
