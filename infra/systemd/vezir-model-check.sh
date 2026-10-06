@@ -27,7 +27,7 @@ ENV_FILE="${VEZIR_ENV_FILE:-$HOME/.config/environment.d/vezir.conf}"
 
 # Models vezir's summarization depends on. Keep in sync with
 # millet/summarize.py: DEFAULT_TINFOIL_MODEL + DEFAULT_TINFOIL_FALLBACK_MODEL.
-MODELS="${VEZIR_TINFOIL_MODELS:-glm-5-3-flash deepseek-v4-1-flash}"
+MODELS="${VEZIR_TINFOIL_MODELS:-deepseek-v4-1-flash glm-5-3}"
 
 key="${TINFOIL_API_KEY:-}"
 if [ -z "$key" ] && [ -r "$ENV_FILE" ]; then

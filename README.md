@@ -198,7 +198,7 @@ The worker records `<backend>/<model>` on every job in
 sidecar.  The TUI shows it in the session detail:
 
 ```
-  summary: tinfoil/glm-5-3-flash (hardware-attested TEE)
+  summary: tinfoil/deepseek-v4-1-flash (hardware-attested TEE)
 ```
 
 The session list badges only the **exception** — a yellow `· unattested`
@@ -227,9 +227,9 @@ For these sessions the worker passes `--no-summarize`, extracts frames,
 then generates the summary once. Every other session keeps the single-pass
 flow.
 
-Only `glm-5-3-flash` is vision-capable in millet's allowlist; a summary
-that falls back to a sibling model degrades to text-only rather than
-failing. See the [case study](https://github.com/pretyflaco/millet/blob/main/docs/vision-summarization-case-study.md)
+The default model (`deepseek-v4-1-flash`, since millet 0.21.6) is on
+millet's vision allowlist; a summary that falls back to the text-only
+sibling (`glm-5-3`) degrades to text-only rather than failing. See the [case study](https://github.com/pretyflaco/millet/blob/main/docs/vision-summarization-case-study.md)
 for what this does and does not buy — it is an n=1 case study, not an
 evaluation.
 

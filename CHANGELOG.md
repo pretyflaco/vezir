@@ -3,6 +3,24 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.26.2 — summaries move to DeepSeek V4.1 Flash
+
+Tinfoil deprecated `glm-5-3-flash`, the default summary model, on
+2026-10-09.
+
+### Changed
+
+- Requires `millet-pipeline>=0.21.6`, which makes `deepseek-v4-1-flash`
+  the default TEE summary model (vision re-verified, so screen recordings
+  keep their frames) and `glm-5-3` the sibling fallback.  DeepSeek was the
+  runner-up in millet's TEE evaluation: equal precision, ~4 pp lower
+  recall, steadier latency.
+- `vezir-model-check.sh` now watches `deepseek-v4-1-flash glm-5-3`.
+- New summaries show `tinfoil/deepseek-v4-1-flash` as provenance; stored
+  `glm-5-3-flash` provenance is unchanged and still reads as attested.
+
+No vezir code or DB change.  Suite: 1304 (unchanged).
+
 ## 0.26.1 — team pickers list your teams, not folder names
 
 ### Fixed
