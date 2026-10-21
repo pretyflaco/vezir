@@ -405,14 +405,27 @@ def google_client_secret() -> str | None:
     return None
 
 
-def google_allowed_domain() -> str:
-    """Workspace domain that may sign in via Google (default ``blinkbtc.com``).
+def google_allowed_domains() -> list[str]:
+    """Email domains that may sign in via Google (default ``["blinkbtc.com"]``).
 
-    The ID token must carry this as its ``hd`` (hosted-domain) claim and/or
-    an ``email`` ending in ``@<domain>``.  Override with
-    ``$VEZIR_GOOGLE_ALLOWED_DOMAIN``.
+    The ID token must carry one of these as its ``hd`` (hosted-domain) claim
+    and/or an ``email`` whose domain is exactly one of them.  Override with
+    ``$VEZIR_GOOGLE_ALLOWED_DOMAIN``, a comma-separated list (e.g.
+    ``blinkbtc.com,gmail.com``).  The email allowlist still applies, so
+    listing a consumer domain admits only allowlisted addresses in it.
     """
-    return os.environ.get("VEZIR_GOOGLE_ALLOWED_DOMAIN", "blinkbtc.com").strip() or "blinkbtc.com"
+    raw = os.environ.get("VEZIR_GOOGLE_ALLOWED_DOMAIN", "")
+    domains: list[str] = []
+    for part in raw.split(","):
+        d = part.strip().lower().lstrip("@")
+        if d and d not in domains:
+            domains.append(d)
+    return domains or ["blinkbtc.com"]
+
+
+def google_allowed_domain() -> str:
+    """Primary (first) Google sign-in domain; see `google_allowed_domains`."""
+    return google_allowed_domains()[0]
 
 
 def host() -> str:

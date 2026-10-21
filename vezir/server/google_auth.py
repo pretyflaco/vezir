@@ -19,7 +19,8 @@ and token exchanges; the client only ever sees the public ``user_code`` /
 client_id is public — it's the ID token's ``aud``.)
 
 Flow:
-  1. ``GET  /api/auth/google/config``        → {configured, client_id, allowed_domain}
+  1. ``GET  /api/auth/google/config``        → {configured, client_id,
+       allowed_domain, allowed_domains}
   2. ``POST /api/auth/google/device/start``  → server calls Google's device
        endpoint; returns user_code, verification_url, device_code, interval.
   3. ``POST /api/auth/google/device/poll``   → server exchanges device_code
@@ -27,19 +28,22 @@ Flow:
        hasn't approved, returns 202 (authorization_pending).  On success it
        verifies the returned **ID token** (signature via Google's JWKS,
        ``aud``==client_id, ``iss``, ``exp``, ``email_verified``, and the
-       ``hd``/email domain == allowed domain), maps the email to a member,
+       ``hd``/email domain in the allowed domains), maps the email to a member,
        and returns the session JWT (same shape as the nostr login).
 
 Security: a valid Google token is not enough — the email must be on the
-``google_members`` allowlist AND in the allowed Workspace domain AND
+``google_members`` allowlist AND in an allowed domain AND
 ``email_verified``.  This blocks a personal Gmail from spoofing a
-``@blinkbtc.com`` address.
+``@blinkbtc.com`` address.  ``$VEZIR_GOOGLE_ALLOWED_DOMAIN`` may list
+several domains (comma-separated, vezir 0.26.4+); a consumer domain such as
+``gmail.com`` admits only the exact allowlisted addresses in it.
 """
 from __future__ import annotations
 
 import logging
 import time
 import urllib.parse
+from collections.abc import Iterable
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -102,8 +106,8 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     return False
 
 
-def _require_configured() -> tuple[str, str, str]:
-    """Return (client_id, client_secret, allowed_domain) or raise 501.
+def _require_configured() -> tuple[str, str, list[str]]:
+    """Return (client_id, client_secret, allowed_domains) or raise 501.
 
     Google sign-in is optional; if the operator hasn't set the client_id
     + secret, every endpoint here reports "not configured" rather than
@@ -120,7 +124,7 @@ def _require_configured() -> tuple[str, str, str]:
                 "[_FILE])."
             ),
         )
-    return client_id, client_secret, config.google_allowed_domain()
+    return client_id, client_secret, config.google_allowed_domains()
 
 
 @router.get("/api/auth/google/config", dependencies=[Depends(ratelimit.limit_api)])
@@ -134,10 +138,13 @@ def google_config():
     client_id = config.google_client_id()
     secret = config.google_client_secret()
     configured = bool(client_id and secret)
+    domains = config.google_allowed_domains() if configured else None
     return {
         "configured": configured,
         "client_id": client_id if configured else None,
-        "allowed_domain": config.google_allowed_domain() if configured else None,
+        # ``allowed_domain`` (primary) is kept for pre-0.26.4 clients.
+        "allowed_domain": domains[0] if domains else None,
+        "allowed_domains": domains,
     }
 
 
@@ -174,7 +181,7 @@ def _post_with_retry(url: str, data: dict):
 )
 def google_device_start():
     """Begin the device grant: ask Google for a user_code + device_code."""
-    client_id, _secret, allowed_domain = _require_configured()
+    client_id, _secret, allowed_domains = _require_configured()
     try:
         r = _post_with_retry(
             _DEVICE_CODE_URL,
@@ -217,16 +224,20 @@ def google_device_start():
         "verification_url_complete": verification_url_complete,
         "expires_in": data.get("expires_in"),
         "interval": data.get("interval", 5),
-        "allowed_domain": allowed_domain,
+        "allowed_domain": allowed_domains[0],
+        "allowed_domains": allowed_domains,
     }
 
 
-def _verify_id_token(id_token_str: str, client_id: str, allowed_domain: str):
+def _verify_id_token(
+    id_token_str: str, client_id: str, allowed_domains: str | Iterable[str]
+):
     """Verify a Google ID token; return its claims dict or raise 401/403.
 
     Checks signature (Google JWKS), ``aud``, ``iss``, ``exp`` (via the
     library), then our extra policy: ``email_verified`` and the email's
-    domain == allowed domain (``hd`` claim and/or email suffix).
+    domain is one of ``allowed_domains`` (``hd`` claim and/or email domain).
+    A bare string is accepted as a single domain.
     """
     from google.auth.transport import requests as g_requests
     from google.oauth2 import id_token as g_id_token
@@ -282,12 +293,17 @@ def _verify_id_token(id_token_str: str, client_id: str, allowed_domain: str):
     # (Workspace domain, cryptographically in the verified token) is an
     # additional accept for Workspace accounts.
     email_domain = email.rsplit("@", 1)[-1] if "@" in email else ""
-    domain_ok = (email_domain == allowed_domain) or (hd == allowed_domain)
+    if isinstance(allowed_domains, str):
+        allowed_domains = [allowed_domains]
+    allowed = [d.strip().lower() for d in allowed_domains if d.strip()]
+    domain_ok = (email_domain in allowed) or (bool(hd) and hd in allowed)
     if not email or not domain_ok:
-        log.info("google login rejected: email %r not in domain %s", email, allowed_domain)
+        log.info("google login rejected: email %r not in domains %s", email, allowed)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"sign-in is restricted to @{allowed_domain} accounts.",
+            detail="sign-in is restricted to "
+            + ", ".join(f"@{d}" for d in allowed)
+            + " accounts.",
         )
     return claims
 
@@ -306,7 +322,7 @@ def google_device_poll(device_code: str = Body(..., embed=True)):
       * 401 if the token is invalid / the grant expired or was denied.
       * 403 if the (verified) email is wrong-domain or not allowlisted.
     """
-    client_id, client_secret, allowed_domain = _require_configured()
+    client_id, client_secret, allowed_domains = _require_configured()
     try:
         r = _post_with_retry(
             _TOKEN_URL,
@@ -346,7 +362,7 @@ def google_device_poll(device_code: str = Body(..., embed=True)):
         )
 
     try:
-        claims = _verify_id_token(id_token_str, client_id, allowed_domain)
+        claims = _verify_id_token(id_token_str, client_id, allowed_domains)
     except _TransientVerifyError as exc:
         # Couldn't reach Google's JWKS (DNS/network blip).  The grant is
         # fine; tell the client to keep polling rather than failing hard.

@@ -3,6 +3,23 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.26.4 — Google sign-in for more than one domain
+
+### Added
+
+- `VEZIR_GOOGLE_ALLOWED_DOMAIN` takes a comma-separated list (e.g.
+  `blinkbtc.com,gmail.com`).  Until now it held one Workspace domain, so a
+  teammate with a personal Google account could not sign in, even when
+  their email was allowlisted.  Every entry is still an exact match on the
+  part after the last `@` (or the `hd` claim), and the `google_members`
+  email allowlist still applies.  Listing `gmail.com` lets in only the
+  allowlisted Gmail addresses, not all of Gmail.
+- `/api/auth/google/config` and `/device/start` return `allowed_domains`
+  (the list).  `allowed_domain` is still returned and holds the first
+  entry, so older TUI and Android clients keep working.
+
+No DB change.  Suite: 1309 (+5).
+
 ## 0.26.3 — distrust the leaked eMudhra intermediates
 
 The private keys of eight eMudhra intermediate CAs were found to be

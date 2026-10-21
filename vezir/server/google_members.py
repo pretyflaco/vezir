@@ -9,8 +9,8 @@ ownership of the email; this table maps it to a ``github`` handle +
 
 A valid Google account is NOT sufficient on its own: the email must be on
 this allowlist (mirrors the npub allowlist).  ``google_auth`` additionally
-requires the email's Workspace domain to match
-``config.google_allowed_domain()`` (default ``blinkbtc.com``) and
+requires the email's domain to be one of
+``config.google_allowed_domains()`` (default ``blinkbtc.com``) and
 ``email_verified`` to be true.
 
 Storage: the ``google_members`` table in ``~/vezir-data/vezir.sqlite``

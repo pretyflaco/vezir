@@ -57,6 +57,21 @@ def test_config_configured(client, configured):
     assert body["configured"] is True
     assert body["client_id"].endswith(".apps.googleusercontent.com")
     assert body["allowed_domain"] == "blinkbtc.com"
+    assert body["allowed_domains"] == ["blinkbtc.com"]
+
+
+def test_config_multiple_domains(client, configured, monkeypatch):
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " BlinkBTC.com , @gmail.com,,gmail.com")
+    body = client.get("/api/auth/google/config").json()
+    assert body["allowed_domain"] == "blinkbtc.com"
+    assert body["allowed_domains"] == ["blinkbtc.com", "gmail.com"]
+
+
+def test_allowed_domains_default_when_blank(monkeypatch):
+    from vezir import config
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " , ")
+    assert config.google_allowed_domains() == ["blinkbtc.com"]
+    assert config.google_allowed_domain() == "blinkbtc.com"
 
 
 # ── ID-token policy (_verify_id_token) ───────────────────────────────────────
@@ -91,6 +106,31 @@ def test_verify_rejects_wrong_domain(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         google_auth._verify_id_token("tok", "cid", "blinkbtc.com")
     assert exc.value.status_code == 403
+
+
+def test_verify_accepts_second_listed_domain(monkeypatch):
+    from vezir.server import google_auth
+    _patch_verify(monkeypatch, {
+        "iss": "https://accounts.google.com",
+        "email": "Pat@Gmail.com", "email_verified": True,
+    })
+    claims = google_auth._verify_id_token("tok", "cid", ["blinkbtc.com", "gmail.com"])
+    assert claims["email"] == "Pat@Gmail.com"
+
+
+def test_verify_multi_domain_still_exact(monkeypatch):
+    from fastapi import HTTPException
+
+    from vezir.server import google_auth
+    for email in ("m@evilgmail.com", "m@x.gmail.com", "m@gmail.com.evil"):
+        _patch_verify(monkeypatch, {
+            "iss": "https://accounts.google.com",
+            "email": email, "email_verified": True,
+        })
+        with pytest.raises(HTTPException) as exc:
+            google_auth._verify_id_token("tok", "cid", ["blinkbtc.com", "gmail.com"])
+        assert exc.value.status_code == 403
+        assert "@blinkbtc.com, @gmail.com" in exc.value.detail
 
 
 def test_verify_rejects_unverified_email(monkeypatch):
@@ -193,6 +233,29 @@ def test_device_poll_not_allowlisted_403(client, configured, monkeypatch):
         "iss": "https://accounts.google.com",
         "email": "stranger@blinkbtc.com", "email_verified": True,
         "hd": "blinkbtc.com",
+    })
+    r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
+    assert r.status_code == 403
+
+
+def test_device_poll_gmail_domain_still_needs_allowlist(client, configured, monkeypatch):
+    """Listing a consumer domain admits only the allowlisted addresses in it."""
+    from vezir.server import google_members
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", "blinkbtc.com,gmail.com")
+    google_members.add("pat@gmail.com", "pat", is_admin=False)
+    _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
+
+    _patch_verify(monkeypatch, {
+        "iss": "https://accounts.google.com",
+        "email": "pat@gmail.com", "email_verified": True,
+    })
+    r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
+    assert r.status_code == 200, r.text
+    assert r.json()["github"] == "pat"
+
+    _patch_verify(monkeypatch, {
+        "iss": "https://accounts.google.com",
+        "email": "stranger@gmail.com", "email_verified": True,
     })
     r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
     assert r.status_code == 403
