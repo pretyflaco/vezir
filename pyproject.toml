@@ -44,6 +44,12 @@ dependencies = [
     # those land via `pip install vezir[server]`.
     "click>=8.0",
     "httpx>=0.27",
+    # Floor added in vezir 0.26.3: certifi < 2026.10.19 still trusts the eight
+    # eMudhra intermediates whose private keys leaked (2026-10-20,
+    # emudhra.we-have-a-problem.com).  httpx verifies against certifi by
+    # default, and on the server Google's token exchange + JWKS fetch go
+    # through it, so a stale bundle means a forged JWKS could mint logins.
+    "certifi>=2026.10.19",
     "ulid-py>=1.1",
     # Raised to >= 0.6.0 (vezir 0.23.0): the startup recovery scan and
     # RecordingInProgressError surfacing build on millet-record 0.6.0's

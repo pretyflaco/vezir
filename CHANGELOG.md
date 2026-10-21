@@ -3,6 +3,32 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.26.3 — distrust the leaked eMudhra intermediates
+
+The private keys of eight eMudhra intermediate CAs were found to be
+recoverable from their certificates (disclosed 2026-10-20,
+<https://emudhra.we-have-a-problem.com/>).  Browsers block them; bundled
+trust stores need an update.
+
+### Security
+
+- Requires `certifi>=2026.10.19`, the first release that drops them.  Every
+  vezir HTTPS call verifies against certifi (httpx's default, and the public
+  half of `trust.resolve_verify`), including the server's Google token
+  exchange and the `google-auth` JWKS fetch — with a stale bundle, anyone
+  holding a leaked key and an on-path position could serve a forged JWKS and
+  sign in as any allowlisted Google account.  No exploitation is known; the
+  intermediates never appeared in CT logs.
+- `trust.resolve_verify` loads certifi *and* the OS store when an internal CA
+  is configured, so trust is the union: keep the system `ca-certificates`
+  patched too (Ubuntu `20260816ubuntu0.<release>.1`).
+- Existing installs: `pip install -U 'certifi>=2026.10.19'` in the vezir
+  environment (and millet's) fixes it without upgrading vezir.  Verify with
+  `curl https://dv-g3b-emudhra.we-have-a-problem.com/` and the same URL via
+  Python + certifi — both must fail with a certificate error.
+
+No code or DB change.  Suite: 1304 (unchanged).
+
 ## 0.26.2 — summaries move to DeepSeek V4.1 Flash
 
 Tinfoil deprecated `glm-5-3-flash`, the default summary model, on
