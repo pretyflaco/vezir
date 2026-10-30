@@ -68,7 +68,7 @@ def add(
     pk = _normalize_pubkey(pubkey_hex)
     with queue._conn() as c:
         existing = c.execute(
-            "SELECT added_at FROM nostr_members WHERE npub = ?", (pk,)
+            "SELECT github, is_admin, added_at FROM nostr_members WHERE npub = ?", (pk,)
         ).fetchone()
         added_at = existing["added_at"] if existing else _now_iso()
         c.execute(
@@ -79,14 +79,39 @@ def add(
             "label=excluded.label",
             (pk, github, 1 if is_admin else 0, label or None, added_at),
         )
+    # A demotion or a re-pointed handle must not survive in live sessions:
+    # the access JWT carries is_admin for up to an hour and rotate() used to
+    # re-mint from the session row alone (security audit 2026-10-30, H-2).
+    if existing is not None and (
+        (bool(existing["is_admin"]) and not is_admin) or existing["github"] != github
+    ):
+        _revoke_sessions(existing["github"], reason="nostr member changed")
 
 
 def remove(pubkey_hex: str) -> int:
     """Remove a nostr member by hex pubkey.  Returns count removed (0 or 1)."""
     pk = _normalize_pubkey(pubkey_hex)
     with queue._conn() as c:
+        row = c.execute(
+            "SELECT github FROM nostr_members WHERE npub = ?", (pk,)
+        ).fetchone()
         cur = c.execute("DELETE FROM nostr_members WHERE npub = ?", (pk,))
-        return cur.rowcount
+        removed = cur.rowcount
+    if removed and row is not None:
+        # De-authorizing an identity ends its sessions NOW, not when the
+        # refresh family hits its 30-day cap (audit H-2).
+        _revoke_sessions(row["github"], reason="nostr member removed")
+    return removed
+
+
+def _revoke_sessions(github: str, *, reason: str) -> None:
+    if not github:
+        return
+    from . import sessions_auth  # lazy: sessions_auth imports this module
+
+    n = sessions_auth.revoke_all_for(github)
+    if n:
+        log.info("revoked %d session(s) for github=%s (%s)", n, github, reason)
 
 
 def list_members() -> list[dict]:

@@ -1472,6 +1472,7 @@ def npub_remove(npub_str):
     removed = nostr_members.remove(pubkey_hex)
     if removed:
         click.echo(f"Removed nostr key {nostr_nip19.encode_npub(pubkey_hex)}")
+        click.echo("  (any live sessions for that identity were revoked)")
     else:
         click.echo("(no matching nostr key; nothing removed)")
 
@@ -1583,6 +1584,7 @@ def google_remove(email):
         raise click.BadParameter(str(exc), param_hint="--email") from exc
     if removed:
         click.echo(f"Removed google email {email.strip().lower()}")
+        click.echo("  (any live sessions for that identity were revoked)")
     else:
         click.echo("(no matching google email; nothing removed)")
 

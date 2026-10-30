@@ -72,10 +72,51 @@ def _install_auth_issue_shim() -> None:
     _auth.issue = _shimmed_issue  # type: ignore[assignment]
 
 
+def _install_create_session_shim() -> None:
+    """Wrap ``sessions_auth.create_session`` to allowlist the identity.
+
+    Since the 2026-10-30 audit (H-2) ``rotate()`` re-resolves the session's
+    identity against the nostr/google allowlist on every refresh and fails
+    closed.  Pre-existing unit tests call ``create_session("alice", "",
+    False, "nostr")`` with no allowlist row — in production a session
+    only ever exists for an allowlisted identity, so this shim adds that
+    row (a deterministic pubkey per handle when none is given) instead of
+    rewriting every call site.  Tests that need the raw behaviour use
+    ``sessions_auth._create_session_raw``.
+    """
+    import hashlib
+
+    from vezir.server import google_members as _gm
+    from vezir.server import nostr_members as _nm
+    from vezir.server import sessions_auth as _sa
+
+    if hasattr(_sa, "_create_session_raw"):
+        return
+
+    _sa._create_session_raw = _sa.create_session
+
+    def _shimmed(github, npub, is_admin, auth_method):  # type: ignore[no-untyped-def]
+        if auth_method == "nostr":
+            if not npub:
+                npub = hashlib.sha256(f"test-npub:{github}".encode()).hexdigest()
+            if _nm.lookup_npub(npub) is None:
+                _nm.add(npub, github, is_admin=is_admin)
+        elif auth_method == "google":
+            if _gm.lookup_github(github) is None:
+                _gm.add(f"{github}@example.test", github, is_admin=is_admin)
+        return _sa._create_session_raw(github, npub, is_admin, auth_method)
+
+    _sa.create_session = _shimmed  # type: ignore[assignment]
+
+
 def pytest_collection_modifyitems(config, items):  # noqa: ARG001
-    """Install the auth.issue shim once tests have been collected."""
+    """Install the auth.issue / create_session shims once tests are collected."""
     try:
         _install_auth_issue_shim()
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        _install_create_session_shim()
     except Exception:  # pragma: no cover - defensive
         pass
 

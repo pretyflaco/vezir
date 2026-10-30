@@ -346,7 +346,28 @@ def rotate(refresh_token: str) -> dict:
         )
         github = row["github"]
         npub = row["npub"] or ""
-        is_admin = bool(row["is_admin"])
+        auth_method = row["auth_method"] or ("nostr" if npub else "google")
+
+    # Re-resolve the identity against the allowlist on EVERY rotation
+    # (security audit 2026-10-30, H-2).  The session row captured is_admin
+    # at login; re-minting from it alone let a removed or demoted identity
+    # keep refreshing — with its old admin bit — until the 30-day cap.
+    current = _current_identity(github, npub, auth_method)
+    if current is None:
+        with queue._conn() as c:
+            c.execute("UPDATE sessions SET revoked = 1 WHERE sid = ?", (sid,))
+        _note_revoked(sid)
+        log.warning(
+            "session rotation refused: sid=%s github=%s no longer allowlisted (%s)",
+            sid, github, auth_method,
+        )
+        raise SessionError("identity no longer authorized")
+    is_admin = current
+    if is_admin != bool(row["is_admin"]):
+        with queue._conn() as c:
+            c.execute(
+                "UPDATE sessions SET is_admin = ? WHERE sid = ?", (1 if is_admin else 0, sid),
+            )
 
     log.debug("session rotated: sid=%s github=%s", sid, github)
     pair = _access_pair(github, npub, is_admin, sid, new_refresh)
@@ -355,6 +376,32 @@ def rotate(refresh_token: str) -> dict:
     # forking the family.
     _grace_store(token_hash, pair)
     return pair
+
+
+def _current_identity(github: str, npub: str, auth_method: str) -> bool | None:
+    """Return the identity's *current* admin bit, or ``None`` if it has been
+    removed from the allowlist it logged in through.
+
+    Nostr: the session row holds the pubkey, so the lookup is exact.
+    Google: the row holds no email (``npub = ""``), so the handle is checked
+    against the google allowlist by ``github``.  Any lookup error fails
+    closed — a DB hiccup must not preserve or elevate a privilege.
+    """
+    try:
+        if auth_method == "nostr" or npub:
+            from . import nostr_members
+
+            resolved = nostr_members.lookup_npub(npub)
+            if resolved is None or resolved[0] != github:
+                return None
+            return bool(resolved[1])
+        from . import google_members
+
+        admin = google_members.lookup_github(github)
+        return None if admin is None else bool(admin)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("identity re-check failed for github=%s: %s", github, exc)
+        return None
 
 
 # ── Revoked-sid cache (v0.11.0) ─────────────────────────────────────────────

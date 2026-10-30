@@ -352,3 +352,115 @@ def test_logout_idempotent_without_session(client, tmp_data):
     out = client.post(LOGOUT_PATH, headers={"Authorization": f"Bearer {token}"})
     assert out.status_code == 200
     assert out.json()["revoked"] is False
+
+
+# ── H-2 (security audit 2026-10-30): allowlist changes end live sessions ────
+#
+# Before: removing an npub/email only deleted the allowlist row; rotate()
+# re-minted from the sessions row, so a removed identity kept refreshing —
+# with its login-time is_admin bit — until the 30-day absolute cap.
+
+
+def _login_as(client, github: str, *, is_admin: bool = False):
+    from vezir.server import nostr_members
+
+    priv = PrivateKey()
+    pubkey = priv.public_key_xonly.format().hex()
+    nostr_members.add(pubkey, github, is_admin=is_admin)
+    header = _login_header(priv, f"http://testserver{LOGIN_PATH}")
+    resp = client.post(LOGIN_PATH, headers={"Authorization": header})
+    assert resp.status_code == 200, resp.text
+    return pubkey, resp.json()
+
+
+def test_removed_npub_cannot_refresh_and_access_jwt_dies(client, tmp_data):
+    from vezir.server import nostr_members
+
+    pubkey, body = _login_as(client, "mallory")
+    # Sanity: the pair works.
+    r = client.post(REFRESH_PATH, json={"refresh_token": body["refresh_token"]})
+    assert r.status_code == 200
+    body = r.json()
+    me = client.get("/api/me", headers={"Authorization": f"Bearer {body['access_jwt']}"})
+    assert me.status_code == 200
+
+    assert nostr_members.remove(pubkey) == 1
+
+    # Refresh is refused ...
+    r = client.post(REFRESH_PATH, json={"refresh_token": body["refresh_token"]})
+    assert r.status_code == 401
+    # ... and the still-unexpired access JWT is dead too (family revoked).
+    me = client.get("/api/me", headers={"Authorization": f"Bearer {body['access_jwt']}"})
+    assert me.status_code == 401
+
+
+def test_removed_google_email_cannot_refresh(client, tmp_data):
+    from vezir.server import google_members, sessions_auth
+
+    google_members.add("eve@example.test", "eve")
+    pair = sessions_auth._create_session_raw("eve", "", False, "google")
+    assert sessions_auth.rotate(pair["refresh_token"])["sid"] == pair["sid"]
+
+    google_members.remove("eve@example.test")
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(pair["refresh_token"])
+    assert sessions_auth.is_sid_revoked(pair["sid"])
+
+
+def test_demoted_admin_loses_admin_on_next_rotation_and_live_jwt(client, tmp_data):
+    from vezir.server import nostr_auth, nostr_members
+
+    pubkey, body = _login_as(client, "root", is_admin=True)
+    assert nostr_auth.verify_session_jwt(body["access_jwt"])[1] is True
+
+    # Demote (same handle, admin bit off).
+    nostr_members.add(pubkey, "root", is_admin=False)
+
+    # The live access JWT is revoked immediately ...
+    assert client.get(
+        "/admin/teams", headers={"Authorization": f"Bearer {body['access_jwt']}"}
+    ).status_code == 401
+    # ... and refresh is refused for the revoked family.
+    r = client.post(REFRESH_PATH, json={"refresh_token": body["refresh_token"]})
+    assert r.status_code == 401
+
+
+def test_rotation_refreshes_admin_bit_from_allowlist(tmp_data):
+    """A promotion lands on the next refresh without re-login."""
+    from vezir.server import nostr_auth, nostr_members, sessions_auth
+
+    pubkey = "cd" * 32
+    nostr_members.add(pubkey, "grace", is_admin=False)
+    pair = sessions_auth._create_session_raw("grace", pubkey, False, "nostr")
+    assert nostr_auth.verify_session_jwt(pair["access_jwt"])[1] is False
+
+    nostr_members.add(pubkey, "grace", is_admin=True)  # promotion: no revocation
+    nxt = sessions_auth.rotate(pair["refresh_token"])
+    assert nxt["sid"] == pair["sid"]
+    assert nostr_auth.verify_session_jwt(nxt["access_jwt"])[1] is True
+
+
+def test_repointed_handle_revokes_old_sessions(tmp_data):
+    from vezir.server import nostr_members, sessions_auth
+
+    pubkey = "ef" * 32
+    nostr_members.add(pubkey, "old-handle")
+    pair = sessions_auth._create_session_raw("old-handle", pubkey, False, "nostr")
+    nostr_members.add(pubkey, "new-handle")  # same key, different github
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(pair["refresh_token"])
+
+
+def test_rotation_fails_closed_when_lookup_errors(tmp_data, monkeypatch):
+    from vezir.server import nostr_members, sessions_auth
+
+    pubkey = "01" * 32
+    nostr_members.add(pubkey, "heidi")
+    pair = sessions_auth._create_session_raw("heidi", pubkey, False, "nostr")
+
+    def boom(_pk):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(nostr_members, "lookup_npub", boom)
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(pair["refresh_token"])

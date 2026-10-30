@@ -59,7 +59,7 @@ def add(
     em = _normalize_email(email)
     with queue._conn() as c:
         existing = c.execute(
-            "SELECT added_at FROM google_members WHERE email = ?", (em,)
+            "SELECT github, is_admin, added_at FROM google_members WHERE email = ?", (em,)
         ).fetchone()
         added_at = existing["added_at"] if existing else _now_iso()
         c.execute(
@@ -70,14 +70,54 @@ def add(
             "label=excluded.label",
             (em, github, 1 if is_admin else 0, label or None, added_at),
         )
+    # A demotion or a re-pointed handle must not survive in live sessions
+    # (security audit 2026-10-30, H-2); see nostr_members.add.
+    if existing is not None and (
+        (bool(existing["is_admin"]) and not is_admin) or existing["github"] != github
+    ):
+        _revoke_sessions(existing["github"], reason="google member changed")
 
 
 def remove(email: str) -> int:
     """Remove a google member by email.  Returns count removed (0 or 1)."""
     em = _normalize_email(email)
     with queue._conn() as c:
+        row = c.execute(
+            "SELECT github FROM google_members WHERE email = ?", (em,)
+        ).fetchone()
         cur = c.execute("DELETE FROM google_members WHERE email = ?", (em,))
-        return cur.rowcount
+        removed = cur.rowcount
+    if removed and row is not None:
+        _revoke_sessions(row["github"], reason="google member removed")
+    return removed
+
+
+def _revoke_sessions(github: str, *, reason: str) -> None:
+    if not github:
+        return
+    from . import sessions_auth  # lazy: sessions_auth imports this module
+
+    n = sessions_auth.revoke_all_for(github)
+    if n:
+        log.info("revoked %d session(s) for github=%s (%s)", n, github, reason)
+
+
+def lookup_github(github: str) -> bool | None:
+    """Current admin bit for ``github`` if any google row still names it.
+
+    Used by session rotation to re-check an identity whose session row
+    has no email (Google sessions store ``npub = ""``).  ``None`` means
+    the handle is no longer allowlisted via Google at all.
+    """
+    if not github:
+        return None
+    with queue._conn() as c:
+        rows = c.execute(
+            "SELECT is_admin FROM google_members WHERE github = ?", (github,)
+        ).fetchall()
+    if not rows:
+        return None
+    return any(bool(r["is_admin"]) for r in rows)
 
 
 def list_members() -> list[dict]:
