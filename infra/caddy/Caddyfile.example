@@ -50,6 +50,18 @@
 }
 
 (proxy_to_vezir) {
+	# Hard ceiling on request bodies BEFORE they reach uvicorn.  FastAPI
+	# resolves `File(...)` by spooling every multipart part to $TMPDIR
+	# *before* the handler's own size check runs, so without this cap one
+	# authenticated request can fill the server's disk.  Caddy enforces it
+	# on read (http.MaxBytesReader), not on Content-Length, so it bounds
+	# bytes streamed upstream rather than rejecting up front.  Caddy's
+	# "MB" is decimal: 2200MB = 2.2e9 bytes > vezir's 2 GiB (2.147e9)
+	# default plus multipart overhead.  Keep in step with
+	# VEZIR_MAX_UPLOAD_BYTES if you raise it.
+	request_body {
+		max_size 2200MB
+	}
 	# Reverse-proxy to the local uvicorn. Vezir trusts the X-Forwarded-*
 	# headers Caddy sets by default.
 	reverse_proxy 127.0.0.1:8000 {

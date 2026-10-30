@@ -3,6 +3,116 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.26.5 — security audit 2026-10-30
+
+Fixes from a full review of vezir, millet-pipeline and millet-record
+(auth/sessions, uploads/filesystem, the millet subprocess boundary,
+crypto/TLS/client).  Companion release: millet-pipeline 0.21.8, now the
+floor.  No DB migration.  No wire-format change; older clients keep
+working.
+
+### Security
+
+- **The client never trusts a server-supplied name as a local path.**
+  `session.artifacts` is a dict straight off the wire and
+  `artifact_friendly_name` returns unknown names verbatim (a live path:
+  language summaries), so a compromised server — or a MITM against a
+  rogue-but-trusted CA, exactly 0.26.3's scenario — could name an artifact
+  `../../.ssh/authorized_keys` and `vezir pull` / the TUI's auto-download
+  would `mkdir -p` + write it there.  Every artifact and attachment name
+  must now be one plain filename component (`config.safe_path_component`
+  — refused, never sanitized), the destination is asserted inside the
+  target directory before any write, and the team slug from `/api/me` or
+  a move response is validated before it becomes a recordings
+  subdirectory.
+- **Uploads stream straight to disk; nothing is spooled first.**  FastAPI
+  resolves `File(...)` by calling `request.form()` before the handler runs,
+  and Starlette spools every part to a temp file with no cap — so the
+  handlers' size checks ran only after the whole body was on the server's
+  temp disk, and on a mid-upload disconnect that spool was *never closed*
+  (Starlette closes it only on `MultiPartException`; FastAPI registers
+  `body.close` only after `form()` returns).  Observed on saray as a
+  deleted 2.1 GB temp file held open at 0 % CPU after one aborted upload.
+  New `vezir.server.multipart_stream` drives python-multipart's push parser
+  over `request.stream()` and hands bytes to a bounded sink; the declared
+  `Content-Length` is rejected before the first read, the raw body is
+  capped, and every sink is closed in a `finally`.  `/upload`,
+  `/upload/multi`, `/api/sessions/import` and attachments use it.  Form
+  fields may now follow the file part.  Pair with Caddy's
+  `request_body { max_size 2200MB }` (now in `Caddyfile.example`).
+- **Removing an identity from the allowlist — or demoting an admin — ends
+  its sessions now**, not at the 30-day refresh cap.  `vezir npub remove` /
+  `vezir google remove` only deleted the allowlist row, and `rotate()`
+  re-minted the pair from the sessions row with its login-time `is_admin`
+  claim.  The member modules revoke on remove, demote or re-pointed handle;
+  `rotate()` re-resolves the identity against its allowlist on every
+  refresh (fails closed, revoking the family) and refreshes the admin bit,
+  so a promotion lands on the next rotation too.
+- **Sync clones are namespaced per team.**  Every `millet sync` carries
+  `--team <slug>` and the HOME shim exposes the team's config at the path
+  millet reads for it, so two teams whose remotes share a basename no
+  longer share one clone (millet 0.21.8 adds the origin check on its side).
+  The legacy global `VEZIR_DATA/sync_config.json` is no longer a fallback
+  target for every remote-less team (ignored with a warning).
+- **`team.sync_remote` works, and is validated.**  The materialized config
+  wrote `remote_url` — a key millet never read — so every team configured
+  through the admin API or `vezir team set-sync` failed with "No repo_url
+  configured".  Now `repo_url`, and the value must be `https://`,
+  `ssh://user@` or scp-style: no embedded credentials, no option-shaped
+  values, no control characters, no `file://` / absolute paths (which let
+  one team point at another team's clone), no `git://`.  Bad values are a
+  400.
+- **Honest attestation badge.**  `venice` / `near` are no longer counted as
+  attested backends on the client: millet verifies their NRAS evidence +
+  nonce, but nothing binds that attestation to the TLS peer that receives
+  the transcript.  Sessions summarized there show `· unattested`.  millet
+  0.21.8 drops them from the default chain and records them as
+  `(TEE, transport unbound)`.
+- **Rate limits on every privileged route.**  All `/admin/teams*` routes,
+  `/api/auth/sessions*` and `HEAD /upload/resumable/{id}` were unmetered.
+- **`summary_template` is validated at every upload boundary** with one
+  shared rule (`presets.TEMPLATE_RE`); the upload paths used to truncate
+  only, so a value the retry path would reject could reach the worker's
+  glob and millet's argv.
+- **Loud warning when `VEZIR_PUBLIC_URL` is unset** — the NIP-98 login
+  target then comes from request headers.
+- `VEZIR_GOOGLE_ALLOWED_DOMAIN` set-but-blank now means *no* domain
+  (Google sign-in disabled, with a warning) instead of silently falling
+  back to the hardcoded default.  Unset keeps the default.
+- Non-string NIP-98 tag values are a 401, not a 500.
+- `/artifact/{id}/{name}` applies the attachments rule: single plain
+  component, regular file, no symlink, resolved parent is the session dir,
+  no dotfiles, no transient `.concat.txt` / `.labels.json`.
+- The worker never picks the transient `.{id}.labels.json` as the
+  transcript (`*.json` matches dotfiles and `.` sorts first).
+- NIP-46 client: `hmac.compare_digest` on `str` raised `TypeError` for a
+  non-ASCII connect result and malformed relay frames raised inside the
+  receive loops — one hostile frame could crash a login.  Both guarded.
+- `vezir team config add --token vzr_…` over a nostr/google login left the
+  stale session fields behind, so fan-out could overwrite the bearer with
+  a JWT and the client POSTed the dead refresh token.  Cleared now.
+- A refresh token is only ever POSTed to the origin that issued it
+  (`--server X --team Y` used to send Y's token to X).
+- Client-side artifacts, attachments, clips, `session.json`, the pull
+  manifest, the upload journal and the TUI crash log are written 0600 in
+  0700 directories, atomically, regardless of umask — meeting content
+  pulled to a shared laptop is no longer world-readable.
+
+### Changed
+
+- `millet-pipeline>=0.21.8`.
+- `infra/caddy/Caddyfile.example`: `request_body { max_size 2200MB }` in
+  the proxy snippet (Caddy's `MB` is decimal; 2 GiB app limit + framing).
+
+### Tests
+
+1436 (+127): `test_client_fs_trust.py`, `test_upload_streaming.py` (real
+uvicorn: declared and chunked oversize, disconnect leaves no file / fd,
+late fields, malformed bodies), `test_audit_hardening_0_26_5.py`, six H-2
+cases in `test_session_refresh.py`, sync-policy and `--team` cases in
+`test_sync_per_team.py`.  `conftest.py` gains a `create_session` shim that
+allowlists the identity for the pre-existing unit call sites.
+
 ## 0.26.4 — Google sign-in for more than one domain
 
 ### Added
