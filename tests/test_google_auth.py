@@ -67,11 +67,22 @@ def test_config_multiple_domains(client, configured, monkeypatch):
     assert body["allowed_domains"] == ["blinkbtc.com", "gmail.com"]
 
 
-def test_allowed_domains_default_when_blank(monkeypatch):
+def test_allowed_domains_default_only_when_unset(monkeypatch):
     from vezir import config
-    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " , ")
+    monkeypatch.delenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", raising=False)
     assert config.google_allowed_domains() == ["blinkbtc.com"]
     assert config.google_allowed_domain() == "blinkbtc.com"
+
+
+def test_allowed_domains_set_but_blank_fails_closed(monkeypatch, caplog):
+    """Audit L-5: ' , ' used to silently fall back to the hardcoded default.
+    Set-but-empty now means NO domain (every Google login rejected)."""
+    from vezir import config
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " , ")
+    with caplog.at_level("WARNING"):
+        assert config.google_allowed_domains() == []
+    assert config.google_allowed_domain() == ""
+    assert "Google sign-in is disabled" in caplog.text
 
 
 # ── ID-token policy (_verify_id_token) ───────────────────────────────────────

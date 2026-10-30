@@ -125,6 +125,27 @@ def _pick_extension(upload_filename: str | None, content_type: str | None) -> st
     )
 
 
+def _validate_template(summary_template: str | None) -> str | None:
+    """Normalize/validate a ``summary_template`` at the upload boundary.
+
+    The value becomes a millet prompt filename AND a worker glob pattern
+    (``*.{template}.md``); until 0.26.5 only the retry endpoint checked it
+    while the three upload paths merely truncated (audit M-13).  Same rule
+    everywhere now: ``presets.TEMPLATE_RE``.
+    """
+    if summary_template is None:
+        return None
+    tpl = summary_template.strip()
+    if not tpl:
+        return None
+    if not presets.TEMPLATE_RE.match(tpl):
+        raise HTTPException(
+            status_code=422,
+            detail="summary_template must match [a-z0-9][a-z0-9_-]{0,63}",
+        )
+    return tpl
+
+
 def _validate_preset(summary_preset: str | None) -> None:
     """Reject an unknown summary preset at the upload boundary.
 
@@ -308,7 +329,7 @@ async def upload(
             raise HTTPException(status_code=422, detail="missing audio file")
         title = fields.get("title") or None
         summary_preset = fields.get("summary_preset") or None
-        summary_template = fields.get("summary_template") or None
+        summary_template = _validate_template(fields.get("summary_template"))
         _validate_preset(summary_preset)
         auto_label_enabled = _parse_bool_form(fields.get("auto_label"), default=True)
         sync_enabled = _parse_bool_form(fields.get("sync"), default=True)
@@ -447,7 +468,7 @@ async def upload_multi(
             raise HTTPException(status_code=400, detail="no audio files provided")
         title = fields.get("title") or None
         summary_preset = fields.get("summary_preset") or None
-        summary_template = fields.get("summary_template") or None
+        summary_template = _validate_template(fields.get("summary_template"))
         _validate_preset(summary_preset)
         auto_label_enabled = _parse_bool_form(fields.get("auto_label"), default=True)
         sync_enabled = _parse_bool_form(fields.get("sync"), default=True)
@@ -629,6 +650,7 @@ async def create_resumable_upload(
     """
     github, team_id, _admin = auth_triple
     _validate_preset(summary_preset)
+    summary_template = _validate_template(summary_template)
     if upload_length is None or upload_length <= 0:
         raise HTTPException(status_code=400, detail="missing/invalid Upload-Length")
     max_bytes = config.max_upload_bytes()
@@ -683,7 +705,7 @@ def _owned_meta_or_404(upload_id: str, github: str, team_id: str) -> dict:
     return meta
 
 
-@router.head("/upload/resumable/{upload_id}")
+@router.head("/upload/resumable/{upload_id}", dependencies=[Depends(ratelimit.limit_api)])
 async def resumable_offset(
     upload_id: str,
     auth_triple: tuple = Depends(auth.require_team_context),

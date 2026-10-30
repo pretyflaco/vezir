@@ -329,7 +329,7 @@ def logout(authorization: str | None = Header(default=None)):
     return {"revoked": revoked}
 
 
-@router.get("/api/auth/sessions")
+@router.get("/api/auth/sessions", dependencies=[Depends(ratelimit.limit_api)])
 def admin_list_sessions(
     github: str | None = None,
     _admin: str = Depends(auth.require_admin),
@@ -342,7 +342,7 @@ def admin_list_sessions(
     return {"sessions": sessions_auth.list_sessions(github)}
 
 
-@router.post("/api/auth/sessions/{sid}/revoke")
+@router.post("/api/auth/sessions/{sid}/revoke", dependencies=[Depends(ratelimit.limit_api)])
 def admin_revoke_session(
     sid: str,
     _admin: str = Depends(auth.require_admin),
@@ -353,7 +353,7 @@ def admin_revoke_session(
     return {"revoked": revoked}
 
 
-@router.post("/api/auth/sessions/revoke-all")
+@router.post("/api/auth/sessions/revoke-all", dependencies=[Depends(ratelimit.limit_api)])
 def admin_revoke_all_sessions(
     github: str,
     _admin: str = Depends(auth.require_admin),

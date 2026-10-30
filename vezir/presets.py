@@ -23,6 +23,8 @@ Android label stayed two model-migrations out of date.
 """
 from __future__ import annotations
 
+import re
+
 # The canonical name.  Still called "confidential" because that is what
 # existing clients and stored jobs send; it now describes every summary
 # rather than selecting one.
@@ -54,3 +56,12 @@ def normalize(preset: str | None) -> str | None:
     a historical record, not a routing instruction.
     """
     return preset or None
+
+
+# ── summary templates ───────────────────────────────────────────────────────
+#
+# A ``summary_template`` names a millet prompt file and feeds a worker glob
+# (``*.{template}.md``).  One rule for every boundary that accepts it —
+# /upload, /upload/multi, /upload/resumable, retry-summary — so a value that
+# would be rejected on retry can't be stored by an upload (audit M-13).
+TEMPLATE_RE = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,63}\Z")

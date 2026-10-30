@@ -31,7 +31,7 @@ import logging
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from . import auth, queue
+from . import auth, queue, ratelimit
 
 log = logging.getLogger("vezir.teams")
 router = APIRouter()
@@ -51,13 +51,13 @@ class _UpdateTeamBody(BaseModel):
     sync_meeting_type: str | None = None
 
 
-@router.get("/admin/teams")
+@router.get("/admin/teams", dependencies=[Depends(ratelimit.limit_api)])
 def admin_list_teams(_github: str = Depends(auth.require_admin)):
     """List every team (admin only)."""
     return {"teams": queue.list_teams()}
 
 
-@router.post("/admin/teams")
+@router.post("/admin/teams", dependencies=[Depends(ratelimit.limit_api)])
 def admin_create_team(
     body: _CreateTeamBody = Body(...),
     _github: str = Depends(auth.require_admin),
@@ -86,7 +86,7 @@ def admin_create_team(
     return queue.get_team(body.id)
 
 
-@router.get("/admin/teams/{team_id}")
+@router.get("/admin/teams/{team_id}", dependencies=[Depends(ratelimit.limit_api)])
 def admin_get_team(
     team_id: str,
     _github: str = Depends(auth.require_admin),
@@ -97,7 +97,7 @@ def admin_get_team(
     return row
 
 
-@router.patch("/admin/teams/{team_id}")
+@router.patch("/admin/teams/{team_id}", dependencies=[Depends(ratelimit.limit_api)])
 def admin_update_team(
     team_id: str,
     body: _UpdateTeamBody = Body(...),
@@ -151,7 +151,7 @@ class _AddMemberBody(BaseModel):
     role: str = "scribe"  # 'admin' or 'scribe'
 
 
-@router.get("/admin/teams/{team_id}/members")
+@router.get("/admin/teams/{team_id}/members", dependencies=[Depends(ratelimit.limit_api)])
 def admin_list_members(
     team_id: str,
     _github: str = Depends(auth.require_admin),
@@ -162,7 +162,7 @@ def admin_list_members(
     return {"team_id": team_id, "members": queue.get_team_members(team_id)}
 
 
-@router.post("/admin/teams/{team_id}/members")
+@router.post("/admin/teams/{team_id}/members", dependencies=[Depends(ratelimit.limit_api)])
 def admin_add_member(
     team_id: str,
     body: _AddMemberBody = Body(...),
@@ -198,7 +198,10 @@ def admin_add_member(
     }
 
 
-@router.delete("/admin/teams/{team_id}/members/{github}")
+@router.delete(
+    "/admin/teams/{team_id}/members/{github}",
+    dependencies=[Depends(ratelimit.limit_api)],
+)
 def admin_remove_member(
     team_id: str,
     github: str,
@@ -224,7 +227,7 @@ def admin_remove_member(
     return {"team_id": team_id, "github": github, "removed": True}
 
 
-@router.delete("/admin/teams/{team_id}")
+@router.delete("/admin/teams/{team_id}", dependencies=[Depends(ratelimit.limit_api)])
 def admin_delete_team(
     team_id: str,
     reassign_to: str | None = Query(

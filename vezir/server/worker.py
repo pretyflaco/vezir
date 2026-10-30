@@ -525,6 +525,10 @@ def _find_artifacts(session_dir: Path) -> dict:
             for marker in (
                 ".session.", ".summary.", ".translation.",
                 ".frontmatter.", ".autoid.", ".meta.",
+                # The transient label map ``.{id}.labels.json`` — pathlib's
+                # ``*.json`` DOES match dotfiles, and ``.`` sorts first
+                # (audit L-22).
+                ".labels.",
             )
         ):
             continue

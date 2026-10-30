@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -47,7 +46,7 @@ _VALID_SUMMARY_LANGUAGES = {"auto", "en", "de", "fr", "es", "tr", "fa"}
 # Template names become millet prompt filenames; millet validates the same
 # charset ([a-z0-9][a-z0-9_-]*) and unknown templates fall back to the
 # default prompts, so this is a shape check, not an allowlist.
-_TEMPLATE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_TEMPLATE_RE = presets.TEMPLATE_RE  # shared with the upload boundaries (M-13)
 
 
 def _decorate(row: dict) -> dict:
@@ -229,11 +228,19 @@ def artifact(
     sdir = config.sessions_dir() / session_id
     if not sdir.exists():
         raise HTTPException(404, "session not found")
-    # Path traversal protection: name must be a single filename
-    if "/" in name or ".." in name:
+    # Path traversal protection: name must be a single plain filename.
+    # Same rule as attachments (audit L-24): no separators, no ``.``/``..``,
+    # a regular file (never a directory or a symlink), resolved parent is
+    # the session dir, and the transient working files are not served.
+    if (
+        config.safe_path_component(name) is None
+        or "\\" in name
+        or name.startswith(".")
+        or name.endswith((".concat.txt", ".labels.json"))
+    ):
         raise HTTPException(400, "invalid artifact name")
     p = sdir / name
-    if not p.exists():
+    if not p.is_file() or p.is_symlink() or p.parent.resolve() != sdir.resolve():
         raise HTTPException(404, "artifact not found")
     # Friendly download name (v0.14.1): YYYYMMDD_<title_slug>.<ext> so
     # browser/Android downloads don't get the ULID-based stored name.

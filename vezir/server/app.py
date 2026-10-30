@@ -37,6 +37,15 @@ def create_app() -> FastAPI:
 
     config.ensure_dirs()
     ratelimit.warn_if_disabled(log)
+    if not config.public_url():
+        # Without a pinned public URL the NIP-98 login target falls back to
+        # the request's X-Forwarded-Proto / Host, which anyone reaching
+        # uvicorn directly controls (security audit 2026-10-30, M-9).
+        log.warning(
+            "VEZIR_PUBLIC_URL is not set: the nostr login URL is derived from "
+            "request headers.  Set it to the exact public origin "
+            "(e.g. https://vezir.example.com) for any non-dev deployment."
+        )
     migrations.run_pending_migrations()
     for _t in queue.list_teams():
         voiceprints.ensure_db_exists(_t["id"])

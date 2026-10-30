@@ -85,7 +85,9 @@ def _get_tag_value(tags: list, name: str) -> str | None:
     """Return the first value of the first tag whose name matches, or None."""
     for t in tags:
         if isinstance(t, list) and len(t) >= 2 and t[0] == name:
-            return t[1]
+            # A non-string value (int, list, null) is a malformed event, not
+            # a 500 (audit L-4): callers treat None as "tag missing".
+            return t[1] if isinstance(t[1], str) else None
     return None
 
 

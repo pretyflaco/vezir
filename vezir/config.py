@@ -414,18 +414,32 @@ def google_allowed_domains() -> list[str]:
     ``blinkbtc.com,gmail.com``).  The email allowlist still applies, so
     listing a consumer domain admits only allowlisted addresses in it.
     """
-    raw = os.environ.get("VEZIR_GOOGLE_ALLOWED_DOMAIN", "")
+    raw = os.environ.get("VEZIR_GOOGLE_ALLOWED_DOMAIN")
+    if raw is None:
+        return ["blinkbtc.com"]
     domains: list[str] = []
     for part in raw.split(","):
         d = part.strip().lower().lstrip("@")
         if d and d not in domains:
             domains.append(d)
-    return domains or ["blinkbtc.com"]
+    if not domains:
+        # Set but empty/whitespace: the operator asked for NO domain, not
+        # for the default (audit L-5).  Fail closed; the verifier rejects
+        # every Google login against an empty list.
+        log.warning(
+            "VEZIR_GOOGLE_ALLOWED_DOMAIN is set but names no domain: "
+            "Google sign-in is disabled"
+        )
+    return domains
 
 
 def google_allowed_domain() -> str:
-    """Primary (first) Google sign-in domain; see `google_allowed_domains`."""
-    return google_allowed_domains()[0]
+    """Primary (first) Google sign-in domain; see `google_allowed_domains`.
+
+    Empty string when the operator disabled every domain (L-5).
+    """
+    domains = google_allowed_domains()
+    return domains[0] if domains else ""
 
 
 def host() -> str:
