@@ -239,17 +239,25 @@ def test_exchange_endpoint(tmp_data, monkeypatch):
     assert client.post("/api/enroll/exchange", json={"code": "nope"}).status_code == 401
 
 
-def test_exchange_endpoint_is_on_the_login_bucket(tmp_data):
-    from fastapi.routing import APIRoute
+def test_exchange_endpoint_is_on_the_login_bucket(tmp_data, monkeypatch):
+    from fastapi.testclient import TestClient
 
     from vezir.server import ratelimit
     from vezir.server.app import create_app
 
-    app = create_app()
-    route = next(
-        r for r in app.routes if isinstance(r, APIRoute) and r.path == "/api/enroll/exchange"
-    )
-    assert ratelimit.limit_login in [d.dependency for d in route.dependencies]
+    monkeypatch.delenv("VEZIR_DISABLE_RATELIMIT", raising=False)
+    monkeypatch.setattr(ratelimit, "_LIMITERS", {
+        **ratelimit._LIMITERS,
+        "login": ratelimit._Limiter(capacity=5, window_sec=60.0),
+        "auth-fail": ratelimit._Limiter(capacity=1000, window_sec=60.0),
+    })
+    client = TestClient(create_app(), follow_redirects=False)
+    codes = [
+        client.post("/api/enroll/exchange", json={"code": "invalid"}).status_code
+        for _ in range(6)
+    ]
+    assert codes[:5] == [401] * 5
+    assert codes[5] == 429
 
 
 def test_cli_enroll_default_is_v3_and_legacy_still_available(tmp_data, monkeypatch):

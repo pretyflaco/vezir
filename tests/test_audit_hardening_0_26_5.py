@@ -96,22 +96,24 @@ def test_startup_warns_without_public_url(tmp_data, monkeypatch):
         ("HEAD", "/upload/resumable/{upload_id}"),
     ],
 )
-def test_privileged_routes_carry_the_api_limiter(tmp_data, method, path):
-    """Every admin / session-management route and the resumable HEAD must
-    declare the api rate-limit dependency (audit M-10)."""
-    from fastapi.routing import APIRoute
+def test_privileged_routes_carry_the_api_limiter(tmp_data, monkeypatch, method, path):
+    """Every privileged route must actually 429, across FastAPI route layouts."""
+    from fastapi.testclient import TestClient
 
     from vezir.server import ratelimit
     from vezir.server.app import create_app
 
-    app = create_app()
-    matches = [
-        r for r in app.routes
-        if isinstance(r, APIRoute) and r.path == path and method in r.methods
-    ]
-    assert matches, f"route not found: {method} {path}"
-    deps = [d.dependency for d in matches[0].dependencies]
-    assert ratelimit.limit_api in deps, f"{method} {path} is not rate-limited"
+    monkeypatch.delenv("VEZIR_DISABLE_RATELIMIT", raising=False)
+    monkeypatch.setattr(ratelimit, "_LIMITERS", {
+        **ratelimit._LIMITERS,
+        "api": ratelimit._Limiter(capacity=5, window_sec=60.0),
+        "auth-fail": ratelimit._Limiter(capacity=1000, window_sec=60.0),
+    })
+    client = TestClient(create_app(), follow_redirects=False)
+    url = path.format(team_id="blink", github="alice", sid="sid", upload_id="upload")
+    codes = [client.request(method, url).status_code for _ in range(6)]
+    assert codes[:5] == [401] * 5
+    assert codes[5] == 429
 
 
 def test_admin_route_actually_429s_when_sprayed(tmp_data, monkeypatch):
@@ -123,7 +125,9 @@ def test_admin_route_actually_429s_when_sprayed(tmp_data, monkeypatch):
     monkeypatch.delenv("VEZIR_DISABLE_RATELIMIT", raising=False)
     # Fresh limiter so other tests' traffic doesn't matter.
     monkeypatch.setattr(ratelimit, "_LIMITERS", {
-        **ratelimit._LIMITERS, "api": ratelimit._Limiter(capacity=5, window_sec=60.0),
+        **ratelimit._LIMITERS,
+        "api": ratelimit._Limiter(capacity=5, window_sec=60.0),
+        "auth-fail": ratelimit._Limiter(capacity=1000, window_sec=60.0),
     })
     client = TestClient(create_app(), follow_redirects=False)
     codes = [client.get("/admin/teams").status_code for _ in range(8)]

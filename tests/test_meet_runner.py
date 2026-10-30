@@ -396,6 +396,7 @@ def test_sync_does_not_force_on_git_error(monkeypatch, tmp_path):
     --force --meeting-type (which created duplicate folders)."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     calls = []
 
@@ -420,6 +421,7 @@ def test_sync_forces_when_skipped(monkeypatch, tmp_path):
     """When step-1 is genuinely Skipped (no schedule match), force-retry."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: "Dev Sync")
     calls = []
@@ -449,6 +451,7 @@ def test_sync_override_skips_detection_and_forces_folder(monkeypatch, tmp_path):
     NOT attempt schedule detection (no plain `sync` call first)."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: None)
     calls = []
@@ -475,6 +478,7 @@ def test_sync_passes_title_to_ensure_session_json(monkeypatch, tmp_path):
     """sync() fetches the job title and forwards it to ensure_session_json."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
     captured = {}
 
     def fake_ensure(session_dir, session_id, title=None):
