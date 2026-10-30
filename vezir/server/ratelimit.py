@@ -135,6 +135,11 @@ _LIMITERS = {
     "upload": _Limiter(capacity=10, window_sec=60.0),
     "login": _Limiter(capacity=20, window_sec=60.0),
     "api": _Limiter(capacity=60, window_sec=60.0),
+    # Consumed only on a FAILED bearer check, keyed strictly by IP (audit
+    # L-3).  The api/upload buckets key on the sha256 of the *unvalidated*
+    # bearer, so a sprayer gets a fresh bucket per random token; this one
+    # bounds the spray itself.  Legitimate clients never touch it.
+    "auth-fail": _Limiter(capacity=30, window_sec=60.0),
 }
 
 
@@ -232,3 +237,16 @@ def _reset_for_tests() -> None:
     """Clear all bucket state. Tests only."""
     for lim in _LIMITERS.values():
         lim._reset_for_tests()
+
+
+def note_auth_failure(request: Request | None) -> None:
+    """Charge one failed bearer authentication to the client IP.
+
+    Called by the auth dependencies right before they raise 401.  Once the
+    per-IP budget is spent the response becomes 429 instead, so a bearer
+    spray against ``/api/*`` / ``/upload`` is bounded even though every
+    attempt carries a different (hence differently-bucketed) token.
+    """
+    if request is None or _disabled():
+        return
+    _enforce("auth-fail", request, ip_only=True)

@@ -51,7 +51,7 @@ import logging
 import secrets
 import time
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
 from . import queue
 
@@ -420,15 +420,20 @@ def _token_from_authorization(authorization: str | None) -> str | None:
 
 def require_bearer(
     authorization: str | None = Header(default=None),
+    request: Request = None,  # type: ignore[assignment]  # injected by FastAPI; None in direct calls
 ) -> tuple[str, bool]:
     """FastAPI dependency: bearer auth returning ``(github, is_admin)``.
 
     Use this for routes that don't need a team context (``/api/me``,
     ``/health``).  For team-scoped routes use
-    ``require_team_context``.
+    ``require_team_context``.  Every failure is charged to the client IP
+    (``ratelimit.note_auth_failure``, audit L-3) before the 401.
     """
+    from . import ratelimit  # lazy: ratelimit is import-light but keep auth standalone
+
     token = _token_from_authorization(authorization)
     if not token:
+        ratelimit.note_auth_failure(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing bearer token",
@@ -436,6 +441,7 @@ def require_bearer(
         )
     resolved = lookup_identity(token)
     if resolved is None:
+        ratelimit.note_auth_failure(request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid bearer token",
@@ -449,6 +455,7 @@ def require_bearer(
 def require_team_context(
     authorization: str | None = Header(default=None),
     x_team_id: str | None = Header(default=None),
+    request: Request = None,  # type: ignore[assignment]
 ) -> tuple[str, str, bool]:
     """FastAPI dependency: bearer + X-Team-Id, returns ``(github, team_id, is_admin)``.
 
@@ -467,7 +474,7 @@ def require_team_context(
     Use ``queue.get_role(github, team_id)`` if a handler needs the
     per-team role.
     """
-    github, admin = require_bearer(authorization)
+    github, admin = require_bearer(authorization, request)
     if not x_team_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -502,12 +509,13 @@ def require_team_context(
 
 def require_admin(
     authorization: str | None = Header(default=None),
+    request: Request = None,  # type: ignore[assignment]
 ) -> str:
     """FastAPI dependency: bearer-only, requires ``is_admin=True`` on the token.
 
     Gates ``/admin/*`` routes.  Returns the github handle.
     """
-    github, admin = require_bearer(authorization)
+    github, admin = require_bearer(authorization, request)
     if admin:
         return github
 

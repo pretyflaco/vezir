@@ -279,3 +279,58 @@ def test_millet_env_drops_vezir_secrets_but_keeps_pipeline_vars(tmp_data, monkey
     assert env["HOME"] == "/tmp/shim"
     assert env["HF_HUB_OFFLINE"] == "1"
     assert "XDG_CONFIG_HOME" not in env
+
+
+# ── L-3 (0.27.0): bearer spraying is bounded per IP ──────────────────────────
+
+
+def test_bearer_spray_hits_per_ip_auth_fail_bucket(tmp_data, monkeypatch):
+    """Each random bearer used to get its own api bucket (keyed on the token
+    hash), so a spray was unmetered.  Failed auths are now charged to the
+    IP: after the budget the answer is 429, and a VALID token from the same
+    IP keeps working (the bucket is only consumed on failure)."""
+    from fastapi.testclient import TestClient
+
+    from vezir.server import auth, ratelimit
+    from vezir.server.app import create_app
+
+    monkeypatch.delenv("VEZIR_DISABLE_RATELIMIT", raising=False)
+    monkeypatch.setattr(ratelimit, "_LIMITERS", {
+        **ratelimit._LIMITERS,
+        "auth-fail": ratelimit._Limiter(capacity=5, window_sec=60.0),
+        "api": ratelimit._Limiter(capacity=1000, window_sec=60.0),
+    })
+    client = TestClient(create_app(), follow_redirects=False)
+    good = auth.issue("alice")
+
+    codes = [
+        client.get("/api/me", headers={"Authorization": f"Bearer vzr_{i:040d}"}).status_code
+        for i in range(8)
+    ]
+    assert codes[:5] == [401] * 5
+    assert codes[5:] == [429] * 3
+    # A valid token from the same IP is unaffected.
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {good}"}).status_code == 200
+    # Same for team-scoped and admin routes.
+    bad = {"Authorization": "Bearer vzr_x", "X-Team-Id": "blink"}
+    assert client.get("/api/sessions", headers=bad).status_code == 429
+    assert client.get("/admin/teams", headers={"Authorization": "Bearer vzr_x"}).status_code == 429
+
+
+def test_auth_fail_bucket_not_consumed_by_successful_auth(tmp_data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from vezir.server import auth, ratelimit
+    from vezir.server.app import create_app
+
+    monkeypatch.delenv("VEZIR_DISABLE_RATELIMIT", raising=False)
+    monkeypatch.setattr(ratelimit, "_LIMITERS", {
+        **ratelimit._LIMITERS,
+        "auth-fail": ratelimit._Limiter(capacity=2, window_sec=60.0),
+        "api": ratelimit._Limiter(capacity=1000, window_sec=60.0),
+    })
+    client = TestClient(create_app(), follow_redirects=False)
+    good = auth.issue("alice")
+    for _ in range(10):
+        assert client.get("/api/me", headers={"Authorization": f"Bearer {good}"}).status_code == 200
+    assert client.get("/api/me", headers={"Authorization": "Bearer vzr_bad"}).status_code == 401
