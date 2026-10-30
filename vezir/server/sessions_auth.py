@@ -223,6 +223,20 @@ def _find_by_hash(
     return None
 
 
+def _find_in_history(c: sqlite3.Connection, token_hash: str) -> sqlite3.Row | None:
+    """Return the session whose *history* holds ``token_hash`` (any
+    generation), else None (audit M-11)."""
+    hit = c.execute(
+        "SELECT sid FROM session_refresh_history WHERE token_hash = ?", (token_hash,),
+    ).fetchone()
+    if hit is None:
+        return None
+    row: sqlite3.Row | None = c.execute(
+        "SELECT * FROM sessions WHERE sid = ?", (hit["sid"],),
+    ).fetchone()
+    return row
+
+
 def _find_by_prev_hash(
     c: sqlite3.Connection, token_hash: str
 ) -> sqlite3.Row | None:
@@ -236,6 +250,14 @@ def _find_by_prev_hash(
     return None
 
 
+# One rotation at a time (audit L-1).  The DB update and the grace-cache
+# write must be atomic with respect to a second refresh of the SAME token:
+# otherwise the second request sees prev_hash match, finds no cache entry
+# yet, and revokes the family — the 0.24.0 client fans one session pair out
+# to several teams.json entries, which makes that race plausible.
+_ROTATE_LOCK = threading.Lock()
+
+
 def rotate(refresh_token: str) -> dict:
     """Consume ``refresh_token``, rotate the family, return a new pair.
 
@@ -244,6 +266,11 @@ def rotate(refresh_token: str) -> dict:
     reuse.  On confirmed reuse the whole family is revoked as a
     side-effect.
     """
+    with _ROTATE_LOCK:
+        return _rotate_locked(refresh_token)
+
+
+def _rotate_locked(refresh_token: str) -> dict:
     if not refresh_token or not refresh_token.startswith(_REFRESH_PREFIX):
         raise SessionError("not a refresh token")
 
@@ -262,6 +289,23 @@ def rotate(refresh_token: str) -> dict:
             # generation) it is confirmed reuse → revoke the family
             # (RFC 9700 reuse detection).
             stale = _find_by_prev_hash(c, token_hash)
+            older = None if stale is not None else _find_in_history(c, token_hash)
+            if older is not None:
+                # Two or more generations old: never a lost-response retry
+                # (the grace window only ever covers the previous
+                # generation), so this is confirmed reuse — a token lifted
+                # from a backup, a log, or an old device (audit M-11).
+                c.execute(
+                    "UPDATE sessions SET revoked = 1 WHERE sid = ?", (older["sid"],),
+                )
+                c.commit()
+                _note_revoked(older["sid"])
+                log.warning(
+                    "refresh token REUSE detected (historic generation) for "
+                    "sid=%s github=%s; revoking session family",
+                    older["sid"], older["github"],
+                )
+                raise SessionError("refresh token reuse detected", reuse=True)
             if stale is not None:
                 grace = config.refresh_grace_seconds()
                 last_rotated = _parse_iso(stale["last_rotated_at"])
@@ -344,6 +388,13 @@ def rotate(refresh_token: str) -> dict:
                 _iso(new_idle), _iso(now), sid,
             ),
         )
+        # Remember the consumed token for the family's whole lifetime
+        # (audit M-11) — same transaction as the rotation.
+        c.execute(
+            "INSERT OR IGNORE INTO session_refresh_history "
+            "(token_hash, sid, consumed_at) VALUES (?, ?, ?)",
+            (token_hash, sid, _iso(now)),
+        )
         github = row["github"]
         npub = row["npub"] or ""
         auth_method = row["auth_method"] or ("nostr" if npub else "google")
@@ -373,7 +424,8 @@ def rotate(refresh_token: str) -> dict:
     pair = _access_pair(github, npub, is_admin, sid, new_refresh)
     # Cache keyed by the token we just consumed, so a lost-response retry of
     # THAT token replays this exact pair (grace path above) instead of
-    # forking the family.
+    # forking the family.  Runs under _ROTATE_LOCK (audit L-1), so a
+    # concurrent refresh of the same token finds this entry.
     _grace_store(token_hash, pair)
     return pair
 

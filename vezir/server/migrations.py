@@ -993,12 +993,40 @@ def migrate_0_20_0() -> dict:
     }
 
 
+def migrate_0_27_0() -> dict:
+    """Create ``session_refresh_history`` (refresh-token reuse memory).
+
+    Security audit 2026-10-30, M-11: reuse detection remembered only the
+    previous generation (``sessions.prev_refresh_hash``), so a refresh
+    token two or more rotations old was indistinguishable from a random
+    one — a quiet 401, no family revocation, no security log.  RFC 9700
+    §4.14.2 expects *any* previously issued token of the family to trip
+    revocation.  Purely additive DDL; no data is read or rewritten.
+    Idempotent — the table is also part of the queue schema bring-up.
+    """
+    version = "0.27.0-refresh-history"
+    if _already_applied(version):
+        log.info("migration %s already applied; nothing to do", version)
+        return {"already_applied": True}
+
+    config.ensure_dirs()
+    with _conn() as c:
+        from . import queue as _queue
+        c.executescript(_queue.SCHEMA)
+        c.commit()
+
+    _mark_applied(version)
+    log.info("migration %s complete; session_refresh_history ready", version)
+    return {"version": version, "session_refresh_history": "ready"}
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 
 ALL_MIGRATIONS = [
     migrate_0_6_0, migrate_0_6_2, migrate_0_7_0, migrate_0_7_2, migrate_0_7_4,
     migrate_0_10_0, migrate_0_14_0, migrate_0_18_0, migrate_0_20_0,
+    migrate_0_27_0,
 ]
 
 

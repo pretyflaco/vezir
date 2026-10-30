@@ -179,7 +179,8 @@ def test_backfill_survives_a_corrupt_sidecar(tmp_data, team):
 
 
 def test_migration_registered_last(tmp_data):
-    assert migrations.ALL_MIGRATIONS[-1] is migrations.migrate_0_20_0
+    assert migrations.migrate_0_20_0 in migrations.ALL_MIGRATIONS
+    assert migrations.ALL_MIGRATIONS[-1] is migrations.migrate_0_27_0
 
 
 # ── client-side attestation semantics ──

@@ -193,10 +193,11 @@ def test_grace_does_not_slide_window(tmp_data, monkeypatch):
     second = sessions_auth.rotate(first["refresh_token"])
 
     base = sessions_auth._now()
-    # Replay repeatedly, always inside a 60s window measured from each
-    # previous replay — the OLD code would keep re-anchoring and never
-    # expire.  Here it must expire relative to the single real rotation.
-    monkeypatch.setattr(sessions_auth, "_now", lambda: base + 30)
+    # Replay repeatedly, always inside the (15 s, since 0.27.0) window
+    # measured from each previous replay — the OLD code would keep
+    # re-anchoring and never expire.  Here it must expire relative to the
+    # single real rotation.
+    monkeypatch.setattr(sessions_auth, "_now", lambda: base + 8)
     sessions_auth.rotate(first["refresh_token"])  # still cached → replay
     monkeypatch.setattr(sessions_auth, "_now", lambda: base + 3600)
     with pytest.raises(sessions_auth.SessionError) as exc:
@@ -464,3 +465,85 @@ def test_rotation_fails_closed_when_lookup_errors(tmp_data, monkeypatch):
     monkeypatch.setattr(nostr_members, "lookup_npub", boom)
     with pytest.raises(sessions_auth.SessionError):
         sessions_auth.rotate(pair["refresh_token"])
+
+
+# ── M-11 / L-1 (0.27.0): reuse memory across generations; concurrent grace ──
+
+
+def test_token_two_generations_old_revokes_family(tmp_data, monkeypatch):
+    """Before 0.27.0 only prev_refresh_hash was remembered: a token >= 2
+    rotations old was a quiet 401 with no revocation."""
+    from vezir.server import sessions_auth
+
+    monkeypatch.setattr(config_mod(), "refresh_grace_seconds", lambda: 0)
+    g1 = sessions_auth.create_session("alice", "", False, "nostr")
+    g2 = sessions_auth.rotate(g1["refresh_token"])
+    g3 = sessions_auth.rotate(g2["refresh_token"])
+    g4 = sessions_auth.rotate(g3["refresh_token"])
+
+    with pytest.raises(sessions_auth.SessionError) as exc:
+        sessions_auth.rotate(g1["refresh_token"])  # three generations old
+    assert exc.value.reuse is True
+    assert sessions_auth.is_sid_revoked(g1["sid"])
+    with pytest.raises(sessions_auth.SessionError):
+        sessions_auth.rotate(g4["refresh_token"])  # live token dies with the family
+
+
+def test_unknown_random_token_does_not_revoke_anything(tmp_data):
+    from vezir.server import sessions_auth
+
+    g1 = sessions_auth.create_session("alice", "", False, "nostr")
+    with pytest.raises(sessions_auth.SessionError) as exc:
+        sessions_auth.rotate("vzrt_" + "z" * 43)
+    assert exc.value.reuse is False
+    assert sessions_auth.rotate(g1["refresh_token"])["sid"] == g1["sid"]
+
+
+def test_history_rows_follow_the_family(tmp_data):
+    from vezir.server import queue, sessions_auth
+
+    g1 = sessions_auth.create_session("alice", "", False, "nostr")
+    g2 = sessions_auth.rotate(g1["refresh_token"])
+    sessions_auth.rotate(g2["refresh_token"])
+    with queue._conn() as c:
+        n = c.execute(
+            "SELECT COUNT(*) FROM session_refresh_history WHERE sid = ?", (g1["sid"],),
+        ).fetchone()[0]
+    assert n == 2
+
+
+def test_concurrent_refresh_of_same_token_does_not_self_revoke(tmp_data):
+    """L-1: two simultaneous refreshes of one token (the 0.24.0 fan-out
+    shape) must both succeed with the SAME pair, not revoke the family."""
+    import threading
+
+    from vezir.server import sessions_auth
+
+    first = sessions_auth.create_session("alice", "", False, "nostr")
+    results: list = []
+    errors: list = []
+    barrier = threading.Barrier(4)
+
+    def go():
+        barrier.wait()
+        try:
+            results.append(sessions_auth.rotate(first["refresh_token"]))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    ts = [threading.Thread(target=go) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors, errors
+    assert len({r["refresh_token"] for r in results}) == 1
+    assert not sessions_auth.is_sid_revoked(first["sid"])
+    # The family keeps working afterwards.
+    assert sessions_auth.rotate(results[0]["refresh_token"])["sid"] == first["sid"]
+
+
+def config_mod():
+    from vezir import config
+
+    return config

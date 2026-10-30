@@ -60,7 +60,7 @@ Environment variables:
                         family; a full re-login (signer prompt / Google
                         grant) is forced once exceeded.
     VEZIR_REFRESH_GRACE  Lost-response grace window (seconds) after a refresh
-                        rotation (default 60).  The one-generation-old
+                        rotation (default 15; was 60 before 0.27.0).  The one-generation-old
                         refresh token presented within this window replays
                         the SAME pair the rotation minted (idempotent
                         lost-response retry) instead of revoking the family;
@@ -1118,7 +1118,11 @@ def refresh_grace_seconds() -> int:
     raw = os.environ.get("VEZIR_REFRESH_GRACE", "")
     if raw.strip() == "0":
         return 0
-    return _positive_env_int("VEZIR_REFRESH_GRACE", 60)
+    # 60 s until 0.27.0.  The cached pair IS a live credential (a stale
+    # token holder who replays inside the window obtains the new refresh
+    # token), so the window is as short as a lost-response retry needs
+    # (security audit 2026-10-30, L-2).
+    return _positive_env_int("VEZIR_REFRESH_GRACE", 15)
 
 
 def secure_mkdir(path: Path) -> Path:

@@ -183,6 +183,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     revoked             INTEGER NOT NULL DEFAULT 0
 );
 
+-- Every refresh token a family has ever consumed (0.27.0, audit M-11).
+-- ``sessions.prev_refresh_hash`` remembers ONE generation; a token two or
+-- more rotations old looked like garbage (quiet 401, no revocation).  Rows
+-- are dropped with the family (absolute cap / revoke sweep).
+CREATE TABLE IF NOT EXISTS session_refresh_history (
+    token_hash   TEXT PRIMARY KEY,   -- sha256(refresh token)
+    sid          TEXT NOT NULL,
+    consumed_at  TEXT NOT NULL       -- ISO8601 UTC
+);
+CREATE INDEX IF NOT EXISTS idx_session_refresh_history_sid
+    ON session_refresh_history(sid);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_github ON sessions(github);
 CREATE INDEX IF NOT EXISTS idx_sessions_refresh_hash ON sessions(refresh_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_prev_refresh_hash
