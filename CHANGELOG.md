@@ -3,6 +3,98 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.27.0 — security audit 2026-10-30, part two
+
+The design items from the audit.  Companion: millet-pipeline 0.22.0 (now
+the floor).  One additive DB migration (`0.27.0-refresh-history`: tables
+`session_refresh_history`, `enroll_codes`).  Three behaviour changes
+operators should know about: the enrollment QR no longer embeds a bearer
+(`--legacy` for older Android builds), the client no longer honours an
+internal CA (`SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` only warn),
+and the refresh grace window is 15 s (was 60).
+
+### Security
+
+- **NIP-46: an `"ack"` connect reply binds the signer only provisionally.**
+  Anyone on the relay who sees our client pubkey could encrypt
+  `{"result":"ack"}` to it and be bound as the signer — the genuine signer's
+  reply was then filtered out forever (login hung) and the hijacker's HTTPS
+  `auth_url` was shown as "approve here".  Worse, *pre-bind* `auth_url`s
+  from any author were surfaced, because nsec.app legitimately sends one
+  before answering `connect`.  Now: a secret echo from a different author
+  upgrades a provisional bind (and an in-flight request is re-issued to the
+  real signer); `auth_url` from a verified signer is surfaced for any
+  HTTPS host, from a provisional or pre-bind author only for known signer
+  hosts (nsec.app family; `VEZIR_NIP46_AUTH_HOSTS` extends).  A `ws://`
+  relay is refused unless `VEZIR_NIP46_ALLOW_INSECURE_RELAY=1`, and relay
+  TLS uses vezir's own trust context.
+- **Enrollment QR carries a 10-minute single-use code, not the bearer.**
+  `vezir token enroll` used to embed the freshly issued 90-day (or
+  `never`) token and echo it as `VEZIR_TOKEN=`; a photo or scrollback was
+  an account.  The v3 payload carries `enroll_code`; the device POSTs it to
+  `/api/enroll/exchange` (login-bucket rate-limited) and the bearer is
+  issued *then* — an unscanned QR leaves no credential.  Consumption is a
+  conditional UPDATE (concurrent exchanges cannot both win); reuse is
+  logged with the first use's time and IP.  `--legacy` keeps the old shape
+  for vezir-android builds that predate the exchange (`--print-token` now
+  required to echo the plaintext).  Desktop: `vezir team config add
+  --enroll-code`.
+- **Removed or demoted identities lose their sessions on every refresh**
+  was 0.26.5; this release adds the rest of the refresh story:
+  refresh-token **reuse is remembered across generations**
+  (`session_refresh_history`) — a token two or more rotations old used to
+  be a quiet 401, now it revokes the family and warns; the grace-cache
+  write happens under the rotation lock so two concurrent refreshes of one
+  token (the 0.24.0 fan-out shape) no longer self-revoke; and the grace
+  window default drops to 15 s (the cached pair is a live credential).
+- **Failed bearer auth is charged to the client IP.**  The `/api/*` and
+  `/upload` buckets key on the sha256 of the *unvalidated* bearer, so a
+  sprayer got a fresh bucket per random token.  A new per-IP `auth-fail`
+  budget (30/min) is consumed before every 401; past it the answer is 429.
+  Meaningful now that real client IPs reach the server (infra change of
+  0.26.5: no VPS masquerade, policy routing on the server).
+- **Client trust is public roots only.**  The former union with an
+  internal CA named by `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` was
+  used for *every* host — a leaked Caddy root key would have forged the
+  public front for each opted-in client, and a group-writable CA file was
+  accepted.  Nobody is on the nvpn/internal-CA path any more, so the
+  client verifies against certifi + the OS store, independent of
+  `$SSL_CERT_FILE`.  The env vars warn for one release.
+- **The millet subprocess no longer inherits vezir's secrets** or the
+  opt-in provider keys: `VEZIR_*` (except `VEZIR_MILLET_BIN`), anything
+  with `SECRET`/`PASSWORD` in its name, `VENICE_API_KEY`, `NEAR_AI_API_KEY`.
+  Everything the pipeline uses (PATH, locale, CUDA, `HF_*`,
+  `TINFOIL_API_KEY`, `MILLET_*`, `GIT_*`) passes through unchanged.
+- `POST /api/sessions/{id}/move` holds the session's HOME-shim lock
+  (409 under contention), so a move can no longer land between a label
+  apply and its millet run.
+- `recovery.stop_orphaned` re-checks `/proc/<pid>/cmdline` immediately
+  before SIGINT — a pid from a stale marker that now belongs to an
+  unrelated process is left alone.
+- Imported frontmatter dates are parsed and re-rendered as UTC ISO
+  instead of stored verbatim; retitle caps at 256 like upload.
+- Team-level `role=admin` is documented as informational only (every
+  check uses the token's server-wide bit).
+
+### Changed
+
+- `millet-pipeline>=0.22.0`: NRAS EAT signatures are verified against
+  NVIDIA's JWKS, and NEAR completions are signature-bound to the attested
+  enclave key.  Such sessions show `· signed, not transport-bound` in the
+  list and the full explanation in the detail view — proven origin and
+  integrity of the output, gateway hop still unproven, so not the Tinfoil
+  badge.
+- `_SHIM_LOCKS` entries are pruned once free; dead `VEZIR_COOKIE_SECURE`
+  references removed; `vezir.service` comments brought up to date.
+
+### Tests
+
+1458 (+22 net; test_client_trust.py was rewritten).  Suite additions: NIP-46 provisional-bind cases
+(`test_nip46_client.py`), enrollment-code lifecycle incl. concurrent
+exchange (`test_enroll.py`), refresh history + concurrent grace
+(`test_session_refresh.py`), auth-fail bucket, env denylist, trust
+context (`test_client_trust.py` rewritten), orphan pid reuse.
+
 ## 0.26.5 — security audit 2026-10-30
 
 Fixes from a full review of vezir, millet-pipeline and millet-record

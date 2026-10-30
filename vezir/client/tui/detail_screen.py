@@ -1126,9 +1126,12 @@ class DetailScreen(Screen):
         # Detail view states provenance in full (the list only badges the
         # exception).  Unknown provenance says nothing rather than guessing.
         if s.summary_provenance:
-            suffix = (
-                "hardware-attested TEE" if s.is_attested else "not attested"
-            )
+            if s.is_attested:
+                suffix = "hardware-attested TEE"
+            elif s.is_response_signed:
+                suffix = "TEE, response signed by the attested enclave; gateway hop unproven"
+            else:
+                suffix = "not attested"
             meta_lines.append(f"  summary: {s.summary_provenance} ({suffix})")
         if s.client_agent:
             meta_lines.append(f"  client: {s.client_agent}")

@@ -362,6 +362,17 @@ class Session:
         return prov.split("/", 1)[0] in self._ATTESTED_BACKENDS
 
     @property
+    def is_response_signed(self) -> bool:
+        """True for millet >= 0.22.0 NEAR summaries whose completion was
+        signature-verified against the attested enclave key
+        (``"(TEE, response-signed)"``).  Origin and integrity of the output
+        are proven; the gateway hop's confidentiality is not — so this is
+        neither :attr:`is_attested` nor silently lumped in with the
+        unattested cloud backends.
+        """
+        return "(TEE, response-signed)" in (self.summary_provenance or "")
+
+    @property
     def is_unattested(self) -> bool:
         """True only when we positively know the summary was NOT attested.
 

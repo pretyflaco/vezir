@@ -255,3 +255,14 @@ def test_column_present_in_fresh_schema(tmp_data, team):
     queue.enqueue("01JOB", github="alice", team_id=team)
     row = queue.get("01JOB")
     assert "summary_provenance" in row
+
+
+def test_response_signed_is_neither_attested_nor_plain_unattested():
+    """millet 0.22.0 NEAR: output origin proven, gateway hop not."""
+    s = Session(id="x", status="done",
+                summary_provenance="near/z-ai/glm-5.3-flash (TEE, response-signed)")
+    assert s.is_attested is False
+    assert s.is_response_signed is True
+    assert s.is_unattested is True  # still not Tinfoil-grade
+    s2 = Session(id="y", status="done", summary_provenance="tinfoil/deepseek-v4-1-flash (TEE)")
+    assert s2.is_response_signed is False

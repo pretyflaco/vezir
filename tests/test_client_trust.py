@@ -121,13 +121,16 @@ def test_internal_ca_env_is_no_longer_trusted(monkeypatch, ca_pem):
     assert _subjects(ctx) == public_subjects
 
 
-def test_legacy_env_warns_once(monkeypatch, ca_pem, caplog):
+def test_legacy_env_warns_once(monkeypatch, ca_pem):
+    """Patched on the logger itself: other tests' create_app() resets the
+    root handlers, which would blind caplog depending on test order."""
+    seen: list[str] = []
+    monkeypatch.setattr(trust.log, "warning", lambda msg, *a, **k: seen.append(msg % a))
     monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca_pem))
     monkeypatch.setattr(trust, "_warned_legacy", False)
-    with caplog.at_level("WARNING", logger="vezir.trust"):
-        trust.resolve_verify()
-        trust.resolve_verify()
-    assert caplog.text.count("no longer used for vezir client TLS") == 1
+    trust.resolve_verify()
+    trust.resolve_verify()
+    assert sum("no longer used for vezir client TLS" in m for m in seen) == 1
 
 
 def test_ssl_cert_file_pointing_at_only_the_caddy_ca_does_not_blind_public_trust(
