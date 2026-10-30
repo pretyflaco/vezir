@@ -56,7 +56,7 @@ dependencies = [
     # recording lock, .recorder.json markers, and
     # find_interrupted_sessions()/recover_session().  Older millet-record
     # would leave crashed recordings invisible again (2026-09-28 incident).
-    "millet-record>=0.6.0",
+    "millet-record>=0.6.1",
 ]
 
 [project.scripts]
@@ -155,7 +155,7 @@ server = [
     # 0.21.8: venice/near out of the default summary chain, sync origin check,
     # session.json path validation (security audit 2026-10-30).  0.22.0:
     # NRAS EAT signature verification + NEAR provider-key response signatures.
-    "millet-pipeline>=0.22.0",
+    "millet-pipeline>=0.22.1",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

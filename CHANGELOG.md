@@ -3,7 +3,7 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.27.1 — security audit validation follow-up
 
 ### Security
 
@@ -29,6 +29,11 @@ Notable changes per release. Format loosely follows
 - Correct NEAR provenance to `(response-signed, provider-key)`: a response
   signature under a self-consistent provider key does not prove enclave origin.
   Blank Google domain configuration now fails device start cleanly.
+
+### Tests
+
+- Full local suite: **1522 passed**.  Independent combined-diff review completed
+  with no remaining actionable defects.
 
 ## 0.27.0 — security audit 2026-10-30, part two
 
