@@ -128,9 +128,39 @@ def _find_wav(session_dir: Path) -> Path | None:
 
 
 def _get_speakers(session_id: str):
-    """Fetch SpeakerInfo list from millet for the given session."""
+    """Fetch SpeakerInfo list, caching the expensive audio-channel analysis."""
+    from dataclasses import asdict
+
+    from millet.label import SpeakerInfo
     from millet.label import get_speakers as meet_get_speakers
-    return meet_get_speakers(_session_dir(session_id))
+
+    session_dir = _session_dir(session_id)
+    sources = [session_dir / f"{session_id}.json"]
+    audio = _find_wav(session_dir)
+    if audio is not None:
+        sources.append(audio)
+    try:
+        signature = [[p.name, p.stat().st_size, p.stat().st_mtime_ns] for p in sources]
+    except FileNotFoundError:
+        signature = []
+
+    cache = session_dir / "clips" / ".speakers.json"
+    if signature and cache.is_file():
+        try:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            if data["signature"] == signature:
+                return [SpeakerInfo(**item) for item in data["speakers"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    speakers = meet_get_speakers(session_dir)
+    if signature:
+        _ensure_clips_dir(session_id)
+        config.secure_write_text(
+            cache,
+            json.dumps({"signature": signature, "speakers": [asdict(s) for s in speakers]}),
+        )
+    return speakers
 
 
 def _load_autoid_suggestions(session_dir: Path) -> dict[str, dict]:
