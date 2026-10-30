@@ -57,7 +57,7 @@ def _status_cell(s: Session) -> str:
     # TEE-attested, so a positive badge would appear on every row and stop
     # being read; what's worth surfacing is a summary that is *not*.
     if s.is_response_signed:
-        parts.append("[yellow]· signed, not transport-bound[/yellow]")
+        parts.append("[yellow]· signed, provider key[/yellow]")
     elif s.is_unattested:
         parts.append("[yellow]· unattested[/yellow]")
     if s.sync_error:

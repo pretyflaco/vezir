@@ -257,12 +257,20 @@ def test_column_present_in_fresh_schema(tmp_data, team):
     assert "summary_provenance" in row
 
 
-def test_response_signed_is_neither_attested_nor_plain_unattested():
-    """millet 0.22.0 NEAR: output origin proven, gateway hop not."""
-    s = Session(id="x", status="done",
-                summary_provenance="near/z-ai/glm-5.3-flash (TEE, response-signed)")
+@pytest.mark.parametrize("prov", [
+    "near/z-ai/glm-5.3-flash (response-signed, provider-key)",
+    "near/z-ai/glm-5.3-flash (TEE, response-signed)",  # legacy metadata
+])
+def test_response_signed_uses_provider_key_without_attested_badge(prov):
+    s = Session(id="x", status="done", summary_provenance=prov)
     assert s.is_attested is False
     assert s.is_response_signed is True
-    assert s.is_unattested is True  # still not Tinfoil-grade
-    s2 = Session(id="y", status="done", summary_provenance="tinfoil/deepseek-v4-1-flash (TEE)")
-    assert s2.is_response_signed is False
+    assert s.is_unattested is True
+    badge = _status_cell(summary_provenance=prov)
+    assert "signed, provider key" in badge
+    assert "unattested" not in badge
+
+
+def test_tinfoil_is_not_misclassified_as_response_signed():
+    s = Session(id="x", status="done", summary_provenance="tinfoil/deepseek-v4-1-flash (TEE)")
+    assert s.is_response_signed is False

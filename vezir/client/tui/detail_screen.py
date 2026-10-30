@@ -1129,7 +1129,7 @@ class DetailScreen(Screen):
             if s.is_attested:
                 suffix = "hardware-attested TEE"
             elif s.is_response_signed:
-                suffix = "TEE, response signed by the attested enclave; gateway hop unproven"
+                suffix = "response integrity/origin under a provider key; enclave origin unproven"
             else:
                 suffix = "not attested"
             meta_lines.append(f"  summary: {s.summary_provenance} ({suffix})")

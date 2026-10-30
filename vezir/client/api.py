@@ -337,16 +337,9 @@ class Session:
     def is_video(self) -> bool:
         return bool(self.video)
 
-    # Backends whose inference runs inside a hardware-attested enclave.
-    # venice/near are the millet 0.21.0 TEE fallbacks (Intel TDX + NVIDIA CC);
-    # millet verifies each enclave's NVIDIA NRAS evidence + a freshness nonce
-    # itself before recording the provenance, so a summary tagged with one of
-    # these was produced on attested hardware, same contract as tinfoil.
-    # venice/near dropped in 0.26.5 (security audit M-2): millet verifies
-    # their NRAS evidence + nonce but nothing binds that attestation to the
-    # TLS peer that receives the transcript, so they do not earn the badge.
-    # millet >= 0.21.8 records them as "(TEE, transport unbound)" and keeps
-    # them out of the default chain.
+    # Only Tinfoil's SDK binds the HTTPS channel to verified enclave evidence.
+    # venice/near do not earn this badge: their provider documents and response
+    # signing keys are not bound to a verified channel/TDX quote by millet.
     _ATTESTED_BACKENDS = ("tinfoil", "tinfoil-tee")
 
     @property
@@ -363,14 +356,15 @@ class Session:
 
     @property
     def is_response_signed(self) -> bool:
-        """True for millet >= 0.22.0 NEAR summaries whose completion was
-        signature-verified against the attested enclave key
-        (``"(TEE, response-signed)"``).  Origin and integrity of the output
-        are proven; the gateway hop's confidentiality is not — so this is
-        neither :attr:`is_attested` nor silently lumped in with the
-        unattested cloud backends.
+        """True when a response signature matched a provider-supplied key.
+
+        Supports millet's current ``"(response-signed, provider-key)"`` label
+        and the legacy ``"(TEE, response-signed)"`` label.  Only response
+        integrity and origin under that self-consistent key are established;
+        enclave origin is not, so this is never :attr:`is_attested`.
         """
-        return "(TEE, response-signed)" in (self.summary_provenance or "")
+        prov = self.summary_provenance or ""
+        return "(response-signed, provider-key)" in prov or "(TEE, response-signed)" in prov
 
     @property
     def is_unattested(self) -> bool:
