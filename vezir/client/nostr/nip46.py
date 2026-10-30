@@ -108,8 +108,41 @@ DEFAULT_RELAY = DEFAULT_RELAYS[0]
 DEFAULT_PERMS = "sign_event:27235,get_public_key"
 
 
+class _Rebound(Exception):
+    """Internal: the bound signer changed while a request was in flight.
+
+    The request was encrypted for the previous author, so the caller must
+    rebuild and resend it to the new signer (audit M-7)."""
+
+
 class Nip46Error(Exception):
     """Raised on connection/signing failures from the remote signer."""
+
+
+# Web signers that legitimately send an ``auth_url`` BEFORE answering
+# ``connect`` (the user approves the pairing in the signer's web UI).  Only
+# these hosts may be surfaced before the signer has echoed our secret.
+DEFAULT_AUTH_URL_HOSTS: frozenset[str] = frozenset({"nsec.app", "use.nsec.app"})
+
+
+def _auth_url_hosts() -> frozenset[str]:
+    import os
+
+    extra = {
+        h.strip().lower().lstrip(".")
+        for h in os.environ.get("VEZIR_NIP46_AUTH_HOSTS", "").split(",")
+        if h.strip()
+    }
+    return DEFAULT_AUTH_URL_HOSTS | frozenset(extra)
+
+
+def _url_host(url: object) -> str:
+    from urllib.parse import urlsplit
+
+    try:
+        return (urlsplit(url).hostname or "?") if isinstance(url, str) else "?"
+    except ValueError:
+        return "?"
 
 
 def _is_event_frame(msg: object) -> bool:
@@ -231,6 +264,13 @@ class Nip46Client:
         self._handled: set[str] = set()
         # Track which request ids have already surfaced an auth_url.
         self._auth_url_seen: set[str] = set()
+        # True once the bound signer has proven it read our nostrconnect://
+        # URI by echoing the secret.  An ``"ack"`` bind is provisional: any
+        # relay user who sees our client pubkey can send one (security audit
+        # 2026-10-30, M-7), so until verified we neither trust its auth_url
+        # challenges beyond the known-signer host list nor let it block a
+        # later genuine secret echo from a different author.
+        self._bind_verified: bool = False
         # Clock-skew correction.  Amber subscribes for OUR requests with a
         # relay-side filter `since = now` (the signer's clock).  If our
         # clock is behind the signer's, every request we stamp with
@@ -249,6 +289,66 @@ class Nip46Client:
         self._cancelled = threading.Event()
 
     # ── connection token ─────────────────────────────────────────────────────
+
+    def _bind(self, author: str, *, verified: bool) -> None:
+        """Bind ``author`` as the remote signer; a verified bind never
+        downgrades, a verified echo upgrades/replaces a provisional one."""
+        if self.remote_signer_pubkey == author:
+            self._bind_verified = self._bind_verified or verified
+            return
+        if self.remote_signer_pubkey is not None and self._bind_verified and not verified:
+            return  # already verified with someone else: ignore the ack
+        if self.remote_signer_pubkey is not None:
+            log.warning(
+                "nip46: rebinding signer %s -> %s (%s)",
+                self.remote_signer_pubkey[:8], author[:8],
+                "secret echoed" if verified else "ack",
+            )
+        self.remote_signer_pubkey = author
+        self._bind_verified = verified
+
+    def _auth_url_allowed(self, url: object, author: str | None) -> bool:
+        """Decide whether an ``auth_url`` challenge may be shown to the user.
+
+        The URL is opened by a human and told "approve here" — a phishing
+        vector if an attacker on the relay can get one in front of them.
+        Rules (audit M-7):
+
+        * must be ``https://``;
+        * from a *verified* bound signer (echoed our secret): any host —
+          the signer is authenticated;
+        * otherwise (pre-bind, which nsec.app legitimately needs, or a
+          provisional ``"ack"`` bind): only hosts on the known-signer list
+          (:data:`DEFAULT_AUTH_URL_HOSTS` plus ``$VEZIR_NIP46_AUTH_HOSTS``).
+        """
+        if not isinstance(url, str) or not url.lower().startswith("https://"):
+            return False
+        bound = self.remote_signer_pubkey
+        if bound is not None and author != bound:
+            return False
+        if bound is not None and self._bind_verified:
+            return True
+        from urllib.parse import urlsplit
+
+        try:
+            host = (urlsplit(url).hostname or "").lower()
+        except ValueError:
+            return False
+        return bool(host) and (
+            host in _auth_url_hosts() or any(host.endswith("." + h) for h in _auth_url_hosts())
+        )
+
+    def _try_upgrade_bind(self, ev: dict, author: str) -> bool:
+        """If ``ev`` (from a non-bound author) is a secret echo, rebind."""
+        try:
+            plaintext, _scheme = self._decrypt_any(ev.get("content", ""), author)
+            resp = json.loads(plaintext)
+        except Exception:
+            return False
+        if isinstance(resp, dict) and self._is_secret_echo(resp.get("result")):
+            self._bind(author, verified=True)
+            return True
+        return False
 
     def _is_secret_echo(self, result: object) -> bool:
         """Constant-time check that ``result`` echoes our connect secret.
@@ -673,6 +773,10 @@ class Nip46Client:
             # double-check and always decrypt with the SIGNER's key (the
             # fixed conversation peer), exactly like nostr-tools.
             if self.remote_signer_pubkey and author != self.remote_signer_pubkey:
+                # Provisional ("ack") bind: a genuine signer that echoes our
+                # secret later must still be able to take over (audit M-7).
+                if not self._bind_verified and self._try_upgrade_bind(ev, author):
+                    raise _Rebound()
                 log.debug("skip event from %s: not the signer", (author or "?")[:8])
                 continue
             peer = self.remote_signer_pubkey or author
@@ -698,18 +802,11 @@ class Nip46Client:
             # Auth challenge: result == "auth_url", error == URL to open.
             # (Handle before id-matching: Amber may use a fresh id here.)
             if result == "auth_url":
-                # Only honor HTTPS auth_urls from our bound signer (see the
-                # phishing note in wait_for_connection).
-                bound = self.remote_signer_pubkey
-                ok = (
-                    isinstance(error, str)
-                    and error.lower().startswith("https://")
-                    and (bound is None or author == bound)
-                )
-                if not ok:
+                # See _auth_url_allowed (audit M-7).
+                if not self._auth_url_allowed(error, author):
                     log.warning(
-                        "nip46: ignoring untrusted auth_url from %s",
-                        (author or "?")[:8],
+                        "nip46: ignoring untrusted auth_url from %s (host %s)",
+                        (author or "?")[:8], _url_host(error),
                     )
                     continue
                 if rid not in self._auth_url_seen:
@@ -816,8 +913,19 @@ class Nip46Client:
             # non-allowlisted key yields a 403, so winning the connect race
             # has no payoff against vezir.
             if self._is_secret_echo(result) or result == "ack":
-                self.remote_signer_pubkey = author
-                log.info("nip46: connected to signer %s", author[:12])
+                verified = self._is_secret_echo(result)
+                if (
+                    self.remote_signer_pubkey is not None
+                    and self.remote_signer_pubkey != author
+                    and self._bind_verified
+                ):
+                    continue  # verified with someone else; this is noise
+                self._bind(author, verified=verified)
+                log.info(
+                    "nip46: connected to signer %s (%s)", author[:12],
+                    "secret echoed" if verified else
+                    "ack only — auth_url challenges limited to known signer hosts",
+                )
                 # Learn the clock offset from the signer's connect event:
                 # its `created_at` is stamped by the signer's (NTP-correct)
                 # clock, which is also what its `since` request-subscription
@@ -850,7 +958,8 @@ class Nip46Client:
                         "from the signed event instead", exc,
                     )
                     self.user_pubkey = None
-                    return author
+                    # The signer may have been rebound meanwhile (audit M-7).
+                    return self.remote_signer_pubkey or author
             if result == "auth_url":
                 # SECURITY: before a signer is bound, ANY author who can
                 # encrypt to our (relay-visible) client pubkey can inject an
@@ -861,17 +970,12 @@ class Nip46Client:
                 # author is bound).  A mismatched/pre-bind/non-HTTPS auth_url
                 # is logged and dropped.
                 url = resp.get("error")
-                bound = self.remote_signer_pubkey
-                if not (isinstance(url, str) and url.lower().startswith("https://")):
+                if not self._auth_url_allowed(url, author):
                     log.warning(
-                        "nip46: ignoring non-HTTPS auth_url from %s",
-                        (author or "?")[:8],
-                    )
-                    continue
-                if bound is not None and author != bound:
-                    log.warning(
-                        "nip46: ignoring auth_url from non-signer author %s",
-                        (author or "?")[:8],
+                        "nip46: ignoring untrusted auth_url from %s (host %s); "
+                        "a signer that has not echoed our secret may only send "
+                        "one for a known signer host (VEZIR_NIP46_AUTH_HOSTS)",
+                        (author or "?")[:8], _url_host(url),
                     )
                     continue
                 if self.on_auth_url and resp.get("id") not in self._auth_url_seen:
@@ -895,7 +999,10 @@ class Nip46Client:
         if not self.remote_signer_pubkey:
             raise Nip46Error("not connected; cannot get_public_key")
         last_exc: Exception | None = None
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        rebinds = 0
+        while attempt < attempts:
+            attempt += 1
             if self._cancelled.is_set():
                 raise Nip46Error("cancelled")
             remaining = deadline - time.time()
@@ -917,6 +1024,12 @@ class Nip46Client:
                 result = self._read_response(
                     rid, timeout=budget, accept_any=True, event_msg=event_msg
                 )
+            except _Rebound:
+                log.info("nip46: signer rebound during get_public_key; resending")
+                rebinds += 1
+                if rebinds <= 3:
+                    attempt -= 1  # a rebind does not consume an attempt
+                continue
             except Nip46Error as exc:
                 last_exc = exc
                 log.debug("get_public_key attempt %d failed: %s", attempt, exc)
@@ -941,19 +1054,29 @@ class Nip46Client:
         """
         if not self.remote_signer_pubkey:
             raise Nip46Error("not connected; call wait_for_connection() first")
-        rid, event_msg = self._build_request_event(
-            "sign_event", [json.dumps(unsigned)], self.remote_signer_pubkey
-        )
-        if self._publish(event_msg) == 0:
-            raise Nip46Error("failed to publish sign_event to any relay")
-        log.info("nip46: sign_event request published (rid=%s)", rid)
-        # accept_any: defensive fallback for signers that don't echo the
-        # request id (real Amber does); take the signer's first
-        # signed-event reply by provenance.  event_msg: re-publish while
-        # waiting so a dropped/mis-routed request self-heals.
-        result = self._read_response(
-            rid, timeout=timeout, accept_any=True, event_msg=event_msg
-        )
+        deadline = time.time() + timeout
+        for _ in range(3):  # a rebind (audit M-7) re-issues the request
+            rid, event_msg = self._build_request_event(
+                "sign_event", [json.dumps(unsigned)], self.remote_signer_pubkey
+            )
+            if self._publish(event_msg) == 0:
+                raise Nip46Error("failed to publish sign_event to any relay")
+            log.info("nip46: sign_event request published (rid=%s)", rid)
+            # accept_any: defensive fallback for signers that don't echo the
+            # request id (real Amber does); take the signer's first
+            # signed-event reply by provenance.  event_msg: re-publish while
+            # waiting so a dropped/mis-routed request self-heals.
+            try:
+                result = self._read_response(
+                    rid, timeout=max(1.0, deadline - time.time()),
+                    accept_any=True, event_msg=event_msg,
+                )
+                break
+            except _Rebound:
+                log.info("nip46: signer rebound during sign_event; resending")
+                continue
+        else:
+            raise Nip46Error("signer kept changing; giving up")
         try:
             signed = json.loads(result)
         except Exception as exc:

@@ -241,9 +241,14 @@ class FakeWS:
         msg = json.loads(raw)
         if msg[0] == "EVENT":
             ev = msg[1]
-            resp = self._signer.handle_request(
-                self._client.client_pubkey, ev["content"]
-            )
+            try:
+                resp = self._signer.handle_request(
+                    self._client.client_pubkey, ev["content"]
+                )
+            except Exception:
+                # A relay delivers blindly; a request encrypted for some
+                # OTHER pubkey simply never gets an answer from this signer.
+                return
             if self._inject_noise:
                 self._outbox.append(self._noise_event())
             self._outbox.append(["EVENT", self._client._sub_id, resp])
@@ -957,3 +962,126 @@ def test_cancel_is_idempotent_and_sets_flag():
     # A second cancel (and a plain close) must not raise.
     client.cancel()
     client.close()
+
+
+# ── M-7 (security audit 2026-10-30): "ack" binds are provisional ─────────────
+
+
+def _attacker_event(client, priv: PrivateKey, body: dict) -> str:
+    ct = nip44.encrypt_for(json.dumps(body), priv.to_hex(), client.client_pubkey)
+    return json.dumps(["EVENT", client._sub_id, {
+        "pubkey": priv.public_key_xonly.format().hex(),
+        "kind": 24133, "content": ct,
+        "tags": [["p", client.client_pubkey]],
+        "created_at": int(time.time())}])
+
+
+class _InjectWS(FakeWS):
+    """FakeWS that delivers a list of pre-built raw frames first."""
+
+    def __init__(self, *a, inject: list[str], **k):
+        super().__init__(*a, **k)
+        self._inject = list(inject)
+
+    def recv(self):
+        if self._inject:
+            return self._inject.pop(0)
+        return super().recv()
+
+
+def test_attacker_ack_cannot_block_the_genuine_signer():
+    """A relay-position attacker races an encrypted {"result":"ack"} in
+    before the real signer.  Before M-7 that bound the attacker and the
+    genuine signer's connect reply was filtered out forever (login hung).
+    Now the ack bind is provisional and the real secret echo takes over."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    attacker = PrivateKey()
+    client._ws = _InjectWS(
+        client, signer, connect_result="secret",
+        inject=[_attacker_event(client, attacker, {"id": "c", "result": "ack"})],
+    )
+    user_pubkey = client.wait_for_connection(timeout=5)
+    assert user_pubkey == signer.pubkey
+    assert client.remote_signer_pubkey == signer.pubkey
+    assert client._bind_verified is True
+
+
+def test_provisional_ack_bind_cannot_push_arbitrary_auth_url():
+    """An ack-bound author (attacker or an ack-only signer) may not put an
+    arbitrary HTTPS "approve here" link in front of the user."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    seen: list[str] = []
+    client.on_auth_url = seen.append
+    attacker = PrivateKey()
+    client._ws = _InjectWS(
+        client, signer, send_connect=False,
+        inject=[
+            _attacker_event(client, attacker, {"id": "c", "result": "ack"}),
+            _attacker_event(client, attacker, {
+                "id": "p", "result": "auth_url", "error": "https://evil.example/approve",
+            }),
+        ],
+    )
+    # The ack author is bound only provisionally, the phishing link is
+    # dropped, and get_public_key never gets an answer from the real signer
+    # (the request was encrypted for the attacker) -> fallback to the
+    # provisional author, which the server would then reject (403).
+    client.wait_for_connection(timeout=2)
+    assert seen == []
+    assert client._bind_verified is False
+
+
+def test_prebind_auth_url_only_from_known_signer_hosts(monkeypatch):
+    """nsec.app legitimately sends auth_url BEFORE answering connect; an
+    unknown host in that position is phishing and is dropped."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    seen: list[str] = []
+    client.on_auth_url = seen.append
+    other = PrivateKey()
+    client._ws = _InjectWS(
+        client, signer, connect_result="secret",
+        inject=[
+            _attacker_event(client, other, {
+                "id": "1", "result": "auth_url", "error": "https://evil.example/approve",
+            }),
+            _attacker_event(client, other, {
+                "id": "2", "result": "auth_url", "error": "https://use.nsec.app/confirm/abc",
+            }),
+        ],
+    )
+    client.wait_for_connection(timeout=5)
+    assert seen == ["https://use.nsec.app/confirm/abc"]
+
+    # Operator-extended host list.
+    monkeypatch.setenv("VEZIR_NIP46_AUTH_HOSTS", "signer.example.org")
+    c2 = nip46.Nip46Client(relay="wss://relay.example")
+    other_hex = other.public_key_xonly.format().hex()
+    assert c2._auth_url_allowed("https://signer.example.org/ok", other_hex)
+    assert c2._auth_url_allowed("https://sub.signer.example.org/ok", "x")
+    assert not c2._auth_url_allowed("https://signer.example.org.evil/ok", "x")
+    assert not c2._auth_url_allowed("http://use.nsec.app/x", "x")
+
+
+def test_verified_signer_auth_url_any_host():
+    """After a secret-echo bind, the signer is authenticated: any HTTPS
+    auth_url from it is surfaced (unchanged behaviour)."""
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="secret")
+    client.wait_for_connection(timeout=5)
+    assert client._bind_verified
+    assert client._auth_url_allowed("https://any.example/approve", signer.pubkey)
+    assert not client._auth_url_allowed("https://any.example/approve", "ff" * 32)
+
+
+def test_verified_bind_is_never_downgraded_by_a_later_ack():
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="secret")
+    client.wait_for_connection(timeout=5)
+    client._bind("ab" * 32, verified=False)
+    assert client.remote_signer_pubkey == signer.pubkey
+    assert client._bind_verified
