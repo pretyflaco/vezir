@@ -53,7 +53,7 @@ def _load_manifest(output_dir: Path) -> dict:
 
 def _save_manifest(output_dir: Path, manifest: dict) -> None:
     path = output_dir / _MANIFEST_NAME
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    config.secure_write_text(path, json.dumps(manifest, indent=2))
 
 
 def record_uploaded_session(
@@ -93,9 +93,7 @@ def record_uploaded_session(
             "team_id": team_id,
             "created_by": "vezir-upload",
         }
-        meta_path.write_text(
-            json.dumps(meta, indent=2, default=str), encoding="utf-8",
-        )
+        config.secure_write_text(meta_path, json.dumps(meta, indent=2, default=str))
 
 
 def _dir_has_artifacts(session_dir: Path) -> bool:

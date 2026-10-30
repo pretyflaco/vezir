@@ -219,7 +219,7 @@ def move_session_dir(session_dir: Path, team: str) -> Path:
         if isinstance(out, str) and out:
             meta["output_file"] = str(dest / Path(out).name)
         try:
-            meta_path.write_text(json.dumps(meta, indent=2))
+            _config.secure_write_text(meta_path, json.dumps(meta, indent=2))
         except OSError as exc:
             log.warning("could not update %s: %s", meta_path, exc)
     return dest

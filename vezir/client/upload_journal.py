@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import config as _config
+
 _JOURNAL_NAME = ".upload.json"
 
 # States that mean "the user wanted this uploaded but it isn't".
@@ -57,7 +59,7 @@ def read(session_dir: Path) -> dict:
 
 def _write(session_dir: Path, state: dict) -> None:
     try:
-        (Path(session_dir) / _JOURNAL_NAME).write_text(json.dumps(state, indent=2))
+        _config.secure_write_text(Path(session_dir) / _JOURNAL_NAME, json.dumps(state, indent=2))
     except OSError:
         pass
 

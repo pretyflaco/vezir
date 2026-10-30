@@ -90,14 +90,19 @@ def _download_attachments(
     adir = dest_dir / "attachments"
     saved: list[Path] = []
     for item in items:
-        name = str(item.get("name") or "")
+        name = item.get("name")
         # The server sanitizes names before storing, but this writes to the
         # user's filesystem: never trust a name from the wire with a path in
         # it.
-        if not name or "/" in name or "\\" in name or name in (".", ".."):
+        if cfg.safe_path_component(name) is None:
             log.warning("skipping attachment with unusable name %r", name)
             continue
         dest = adir / name
+        try:
+            cfg.assert_within(dest, adir, "attachment")
+        except ValueError as exc:
+            log.warning("%s", exc)
+            continue
         if dest.exists() and not overwrite:
             saved.append(dest)
             continue
@@ -132,8 +137,23 @@ def download_session_artifacts(
     saved: list[Path] = []
 
     for _key, server_name in session.artifacts.items():
+        # ``session.artifacts`` is a dict straight off the wire, and
+        # ``_friendly_name`` returns unknown names verbatim (that branch is
+        # live: language summaries go through it).  Never let a server-
+        # supplied name carry a path (audit H-1).
+        if cfg.safe_path_component(server_name) is None:
+            log.warning("skipping artifact with unusable name %r", server_name)
+            continue
         friendly = _friendly_name(session, server_name)
+        if cfg.safe_path_component(friendly) is None:
+            log.warning("skipping artifact with unusable local name %r", friendly)
+            continue
         dest = dest_dir / friendly
+        try:
+            cfg.assert_within(dest, dest_dir, "artifact")
+        except ValueError as exc:
+            log.warning("%s", exc)
+            continue
         if dest.exists() and not overwrite:
             log.debug("skip existing %s", dest)
             saved.append(dest)
@@ -176,10 +196,7 @@ def download_session_artifacts(
             "pulled_by": "vezir",
         }
         try:
-            meta_path.write_text(
-                json.dumps(meta, indent=2, default=str),
-                encoding="utf-8",
-            )
+            cfg.secure_write_text(meta_path, json.dumps(meta, indent=2, default=str))
             saved.append(meta_path)
         except OSError as exc:
             log.warning("could not write session.json: %s", exc)

@@ -1147,6 +1147,75 @@ def secure_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
         raise
 
 
+def secure_write_bytes(path: Path, data: bytes) -> None:
+    """Write a private (0600) file atomically via same-dir temp + replace.
+
+    Client-side artifacts, attachments, clips and journals go through here
+    so meeting content pulled to a multi-user laptop is never world-readable
+    (security audit 2026-10-30, L-14), and a half-written file is never
+    observable.  ``replace`` also means a pre-existing *symlink* at ``path``
+    is replaced, not followed.
+    """
+    secure_mkdir(path.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        tmp.chmod(0o600)
+        tmp.replace(path)
+        secure_chmod_file(path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+# ── server-supplied names that become local paths ───────────────────────────
+#
+# The server validates these on its side, but the client writes to the
+# user's filesystem and must not trust the wire (security audit 2026-10-30,
+# H-1 / M-12): a compromised server or a MITM against a rogue-but-trusted CA
+# could otherwise name an artifact ``../../.ssh/authorized_keys`` or a team
+# ``../../tmp/x`` and get an arbitrary file write / directory move.
+
+_SAFE_COMPONENT_RE = re.compile(r"\A[^/\\\x00-\x1f\x7f]{1,255}\Z")
+_TEAM_DIR_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9._-]{0,63}\Z")
+
+
+def safe_path_component(name: object) -> str | None:
+    """Return ``name`` if it is one plain filename component, else ``None``.
+
+    Rejects anything containing a path separator (either flavour), control
+    characters, the empty string, ``.`` and ``..``.  Does not sanitize: a
+    bad name is refused, never silently rewritten into something that could
+    collide with a legitimate file.
+    """
+    if not isinstance(name, str):
+        return None
+    if name in (".", "..") or not _SAFE_COMPONENT_RE.match(name):
+        return None
+    return name
+
+
+def safe_team_dir(team_id: object) -> str | None:
+    """Return ``team_id`` if it is usable as a recordings subdirectory."""
+    if not isinstance(team_id, str) or team_id in (".", ".."):
+        return None
+    return team_id if _TEAM_DIR_RE.match(team_id) else None
+
+
+def assert_within(path: Path, root: Path, what: str = "path") -> Path:
+    """Raise ``ValueError`` unless ``path`` resolves inside ``root``."""
+    r = root.resolve()
+    p = path.resolve()
+    if p != r and r not in p.parents:
+        raise ValueError(f"refusing to write {what} outside {r}: {p}")
+    return p
+
+
 def harden_umask() -> None:
     """Ensure newly created runtime files default to private permissions."""
     os.umask(0o077)
@@ -1173,6 +1242,11 @@ def recordings_dir(team_id: str | None = None) -> Path:
             team_id = tid or "default"
         except Exception:
             team_id = "default"
+
+    # The slug may have come from the server (/api/me, a move response);
+    # it must stay one directory component beneath the root (audit M-12).
+    if safe_team_dir(team_id) is None:
+        raise ValueError(f"invalid team id for a recordings directory: {team_id!r}")
 
     root = Path(
         os.environ.get("VEZIR_RECORD_DIR", str(Path.home() / "vezir-meetings"))

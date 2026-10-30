@@ -55,6 +55,8 @@ from urllib.parse import quote
 
 import httpx
 
+from ..config import secure_write_bytes as _secure_write_bytes
+
 log = logging.getLogger("vezir.client.api")
 
 
@@ -791,15 +793,16 @@ class VezirClient:
     ) -> ApiResult:
         """Download an artifact and write it to ``dest``.
 
-        ``dest``'s parent is created with mkdir(parents=True, exist_ok=True).
-        Returns ApiResult whose .ok is the dest Path on success.
+        Written privately (0600) and atomically; ``dest``'s parent is
+        created if needed.  Returns ApiResult whose .ok is the dest Path on
+        success.  Callers decide ``dest`` — validate server-supplied names
+        with ``config.safe_path_component`` before building it.
         """
         result = self.download_artifact(session_id, name)
         if not result.is_ok():
             return result
         dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(result.ok)
+        _secure_write_bytes(dest, result.ok)
         return ApiResult.success(dest)
 
     # ── attachments (issue #16) ──
@@ -841,8 +844,7 @@ class VezirClient:
         if not result.is_ok():
             return result
         dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(result.ok)
+        _secure_write_bytes(dest, result.ok)
         return ApiResult.success(dest)
 
     # ── labeling ──
@@ -914,8 +916,7 @@ class VezirClient:
         if not result.is_ok():
             return result
         dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(result.ok)
+        _secure_write_bytes(dest, result.ok)
         return ApiResult.success(dest)
 
     # ── health ──

@@ -30,6 +30,7 @@ import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .. import config as _config
 from . import recovery, upload_journal
 
 # Display / sort order.
@@ -288,7 +289,7 @@ def rehome_uploaded(session_id: str, team: str) -> list[Path]:
         try:
             meta = json.loads(stub.read_text())
             meta["team_id"] = team
-            stub.write_text(json.dumps(meta, indent=2))
+            _config.secure_write_text(stub, json.dumps(meta, indent=2))
         except (OSError, ValueError):
             pass
         moved.append(new_dir)
