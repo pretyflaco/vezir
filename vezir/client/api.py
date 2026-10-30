@@ -159,6 +159,30 @@ def refresh_active_session(
     return refresh_session(base_url, verify)
 
 
+def exchange_enroll_code(
+    base_url: str, code: str, verify: bool | str | None = None
+) -> ApiResult:
+    """Trade an enrollment code (``vezir token enroll``, 0.27.0) for the
+    bearer: ``POST /api/enroll/exchange``.  Unauthenticated; the code is
+    the credential and is consumed by this call."""
+    resolved_verify = VezirClient._resolve_verify(verify)
+    url = f"{base_url.rstrip('/')}/api/enroll/exchange"
+    try:
+        with httpx.Client(timeout=_DEFAULT_TIMEOUT, verify=resolved_verify) as c:
+            r = c.post(url, json={"code": code.strip()})
+    except httpx.HTTPError as exc:
+        return ApiResult.network(exc)
+    if r.status_code != 200:
+        return ApiResult.http(r.status_code, r.text[:200])
+    try:
+        data = r.json()
+    except ValueError:
+        return ApiResult.http(r.status_code, "server returned non-JSON")
+    if not isinstance(data, dict) or not data.get("token"):
+        return ApiResult.http(r.status_code, "server response lacks a token")
+    return ApiResult.success(data)
+
+
 def refresh_session(
     base_url: str,
     verify: bool | str | None = None,

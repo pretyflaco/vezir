@@ -1080,55 +1080,80 @@ def token_revoke(github, label, token_id_prefix, skip_confirm):
     "--label", default=None,
     help="Free-text annotation (e.g. 'android-phone').",
 )
-def token_enroll(github, server_url, expires_in, label):
-    """Issue a token and print a terminal QR for a mobile device to scan.
+@click.option(
+    "--legacy", is_flag=True, default=False,
+    help="Emit the pre-0.27.0 QR that embeds the bearer token itself "
+         "(for vezir-android builds that do not support enrollment codes).",
+)
+@click.option(
+    "--print-token", is_flag=True, default=False,
+    help="With --legacy: also echo the plaintext token for manual entry.",
+)
+def token_enroll(github, server_url, expires_in, label, legacy, print_token):
+    """Print a terminal QR that enrolls a device for GITHUB.
 
-    v0.7.0: the HTML enrollment page was removed; this command now
-    renders the QR payload directly in the terminal using half-block
-    characters.  Tokens are no longer team-scoped -- the device sends
-    ``X-Team-Id`` per-request -- so ``--team`` is gone.  The user
-    must already be a member of every team they intend to use; if not,
-    run ``vezir team add-member`` first.
+    Default (0.27.0, security audit M-8): the QR carries a 10-minute,
+    single-use *enrollment code*.  The device POSTs it to
+    ``/api/enroll/exchange`` and receives the real bearer; the token does
+    not exist until then, so a QR left on a screen, in a photo or in
+    terminal scrollback is worth nothing after ten minutes or one scan.
+
+    ``--legacy`` emits the old payload with the bearer embedded, for
+    Android builds that predate code exchange.  Tokens are not
+    team-scoped -- the device sends ``X-Team-Id`` per request -- so the
+    user must already be a member of every team they intend to use
+    (``vezir team add-member``).
     """
     from .server import auth
-    from .server.enroll import _load_caddy_root_cert, build_payload, render_qr_terminal
-
-    seconds = _parse_duration(expires_in)
-    plaintext = auth.issue(
-        github,
-        expires_in_seconds=seconds if seconds > 0 else None,
-        is_admin=False,
-        label=label,
+    from .server.enroll import (
+        ENROLL_CODE_TTL_SECONDS,
+        _load_caddy_root_cert,
+        build_payload,
+        create_code,
+        render_qr_terminal,
     )
 
-    # Best-effort server URL.  --server wins, then $VEZIR_URL, then
-    # config.server_url()'s default.
+    seconds = _parse_duration(expires_in)
+    ttl = seconds if seconds > 0 else None
     base = (server_url or config.server_url()).rstrip("/")
-
-    # Build the QR payload.  When VEZIR_CADDY_ROOT_CERT_PATH points at
-    # a readable PEM, _load_caddy_root_cert returns it and build_payload
-    # emits a v2 payload with ca_pem embedded -- which the Android app's
-    # CaTrustManager pins so TLS to the self-signed Caddy cert works.
-    # When the env var is unset (or the file unreadable), ca_pem is None
-    # and we fall back to a v1 payload that relies on the system trust
-    # store.
+    # Internal CA for Android pinning, when configured (v2/v3 ``ca_pem``).
     ca_pem = _load_caddy_root_cert()
-    payload = build_payload(base, plaintext, ca_pem=ca_pem)
-    qr_art = render_qr_terminal(payload)
 
-    click.echo(f"Token issued for github={github}")
+    if legacy:
+        plaintext = auth.issue(github, expires_in_seconds=ttl, is_admin=False, label=label)
+        payload = build_payload(base, plaintext, ca_pem=ca_pem)
+        click.echo(f"Token issued for github={github}  (legacy QR: bearer embedded)")
+        click.echo(f"  server:   {base}")
+        if label:
+            click.echo(f"  label:    {label}")
+        click.echo()
+        click.echo("Scan this QR with the Vezir Android app:")
+        click.echo()
+        click.echo(render_qr_terminal(payload))
+        click.echo()
+        if print_token:
+            click.echo(f"  VEZIR_TOKEN={plaintext}")
+            click.echo()
+        click.echo("This QR IS the credential until the token expires or is revoked;")
+        click.echo("do not leave it on screen.  (--print-token echoes it for manual entry.)")
+        return
+
+    code, expires = create_code(github, label=label, token_ttl_seconds=ttl)
+    payload = build_payload(base, ca_pem=ca_pem, enroll_code=code)
+    click.echo(f"Enrollment code issued for github={github}")
     click.echo(f"  server:   {base}")
     if label:
         click.echo(f"  label:    {label}")
+    click.echo(f"  valid:    {ENROLL_CODE_TTL_SECONDS // 60} minutes, single use "
+               f"(until {expires.strftime('%H:%M:%S')} UTC)")
+    click.echo(f"  token:    {expires_in} lifetime, issued at exchange")
     click.echo()
-    click.echo("Scan this QR with the Vezir Android app:")
+    click.echo("Scan this QR with the Vezir Android app, or on a desktop run:")
+    click.echo(f"  vezir team config add --id <team> --url {base} --enroll-code {code}")
     click.echo()
-    click.echo(qr_art)
+    click.echo(render_qr_terminal(payload))
     click.echo()
-    click.echo(f"  VEZIR_TOKEN={plaintext}")
-    click.echo()
-    click.echo("(token also printed above for manual entry / desktop joiners)")
-    click.echo("This token is not recoverable; revoke and re-issue if lost.")
+    click.echo("The code is useless after one exchange or ten minutes; re-run to issue another.")
 
 
 @token.command("list")
@@ -1895,17 +1920,35 @@ def team_config():
 @click.option("--url", required=True,
               help="Server URL for this team (typically the same vezir "
                    "server, just different team slug).")
-@click.option("--token", required=True,
-              help="Bearer token issued by `vezir token issue --team <id>`.")
+@click.option("--token", default=None,
+              help="Bearer token issued by `vezir token issue` (machine/CI "
+                   "use; lands in shell history -- prefer --enroll-code).")
+@click.option("--enroll-code", default=None,
+              help="Enrollment code from `vezir token enroll` (0.27.0): "
+                   "exchanged once with the server for the bearer.")
 @click.option("--label", default=None,
               help="Human display name shown in the TUI title bar "
                    "(defaults to team id).")
 @click.option("--activate/--no-activate", "activate", default=False,
               help="Make this the active team immediately.  Implicit "
                    "for the first team added.")
-def team_config_add(team_id, url, token, label, activate):
+def team_config_add(team_id, url, token, enroll_code, label, activate):
     """Add or update a team in the client-side credentials store."""
     from .client.config import add_team_credentials
+
+    if bool(token) == bool(enroll_code):
+        raise click.UsageError("pass exactly one of --token or --enroll-code")
+    if enroll_code:
+        from .client.api import exchange_enroll_code
+
+        result = exchange_enroll_code(url, enroll_code)
+        if not result.is_ok():
+            click.echo(f"error: enrollment failed: {result.error_message()}", err=True)
+            sys.exit(1)
+        token = result.ok["token"]
+        click.echo(f"enrolled as github={result.ok.get('github')}"
+                   + (f" (token expires {result.ok['expires_at']})"
+                      if result.ok.get("expires_at") else ""))
     cfg = add_team_credentials(
         team_id, url, token, label=label, activate=activate,
     )

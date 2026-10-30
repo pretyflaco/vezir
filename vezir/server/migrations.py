@@ -994,7 +994,11 @@ def migrate_0_20_0() -> dict:
 
 
 def migrate_0_27_0() -> dict:
-    """Create ``session_refresh_history`` (refresh-token reuse memory).
+    """Create ``session_refresh_history`` and ``enroll_codes`` (0.27.0).
+
+    * ``session_refresh_history`` — refresh-token reuse memory (M-11).
+    * ``enroll_codes`` — short-lived single-use enrollment codes so the QR
+      no longer embeds a 90-day bearer (M-8).
 
     Security audit 2026-10-30, M-11: reuse detection remembered only the
     previous generation (``sessions.prev_refresh_hash``), so a refresh
@@ -1016,8 +1020,8 @@ def migrate_0_27_0() -> dict:
         c.commit()
 
     _mark_applied(version)
-    log.info("migration %s complete; session_refresh_history ready", version)
-    return {"version": version, "session_refresh_history": "ready"}
+    log.info("migration %s complete; session_refresh_history + enroll_codes ready", version)
+    return {"version": version, "session_refresh_history": "ready", "enroll_codes": "ready"}
 
 
 # ── registry ────────────────────────────────────────────────────────────────

@@ -195,6 +195,20 @@ CREATE TABLE IF NOT EXISTS session_refresh_history (
 CREATE INDEX IF NOT EXISTS idx_session_refresh_history_sid
     ON session_refresh_history(sid);
 
+-- Short-lived, single-use enrollment codes (0.27.0, audit M-8).  The QR
+-- used to embed the long-lived bearer itself; now it carries a code that
+-- the device exchanges once for the real token.
+CREATE TABLE IF NOT EXISTS enroll_codes (
+    code_hash         TEXT PRIMARY KEY,   -- sha256(code)
+    github            TEXT NOT NULL,
+    label             TEXT,
+    token_ttl_seconds INTEGER,            -- NULL = never expires
+    created_at        TEXT NOT NULL,
+    expires_at        TEXT NOT NULL,      -- created_at + ENROLL_CODE_TTL
+    consumed_at       TEXT,
+    consumed_from     TEXT                -- client IP that exchanged it
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_github ON sessions(github);
 CREATE INDEX IF NOT EXISTS idx_sessions_refresh_hash ON sessions(refresh_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_prev_refresh_hash
