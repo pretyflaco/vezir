@@ -556,7 +556,7 @@ def test_connect_ws_tolerates_partial_relay_failure(monkeypatch):
 
     fake_ws_mod = types.ModuleType("websocket")
 
-    def _create_connection(url, timeout=30):
+    def _create_connection(url, timeout=30, sslopt=None):
         if "bad" in url:
             raise OSError("relay down")
         return _FakeConn()
@@ -576,7 +576,7 @@ def test_connect_ws_raises_when_all_relays_fail(monkeypatch):
 
     fake_ws_mod = types.ModuleType("websocket")
 
-    def _create_connection(url, timeout=30):
+    def _create_connection(url, timeout=30, sslopt=None):
         raise OSError("relay down")
 
     fake_ws_mod.create_connection = _create_connection
@@ -1085,3 +1085,35 @@ def test_verified_bind_is_never_downgraded_by_a_later_ack():
     client._bind("ab" * 32, verified=False)
     assert client.remote_signer_pubkey == signer.pubkey
     assert client._bind_verified
+
+
+# ── L-21 (0.27.0): relay TLS uses vezir's public trust; ws:// refused ─────────
+
+
+def test_plaintext_relay_is_refused_unless_opted_in(monkeypatch):
+    monkeypatch.delenv("VEZIR_NIP46_ALLOW_INSECURE_RELAY", raising=False)
+    client = nip46.Nip46Client(relays=["ws://relay.local"])
+    with pytest.raises(nip46.Nip46Error, match="plaintext relay"):
+        client._open_relay("ws://relay.local")
+
+
+def test_relay_websocket_gets_public_trust_context(monkeypatch):
+    import ssl
+    import sys
+    import types
+
+    seen = {}
+
+    def _create_connection(url, timeout=30, sslopt=None):
+        seen["sslopt"] = sslopt
+        raise OSError("no network in tests")
+
+    fake = types.ModuleType("websocket")
+    fake.create_connection = _create_connection
+    monkeypatch.setitem(sys.modules, "websocket", fake)
+    client = nip46.Nip46Client(relays=["wss://relay.example"])
+    with pytest.raises(OSError):
+        client._open_relay("wss://relay.example")
+    ctx = seen["sslopt"]["context"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.check_hostname and ctx.verify_mode == ssl.CERT_REQUIRED

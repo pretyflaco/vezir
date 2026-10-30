@@ -68,12 +68,15 @@ def test_401_message_generic_for_bearer(monkeypatch, tmp_path):
 # ─── CA / verify resolution ──────────────────────────────────────────────────
 
 
-def test_resolve_verify_defaults_to_true_with_no_env(monkeypatch):
-    """No CA env vars -> httpx's certifi-backed default (verify=True)."""
+def test_resolve_verify_defaults_to_public_context(monkeypatch):
+    """No CA env vars -> a public-roots-only SSLContext (0.27.0: never
+    httpx's bare True, which would honour $SSL_CERT_FILE)."""
+    import ssl
+
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
     from vezir.client.api import VezirClient
-    assert VezirClient._resolve_verify(None) is True
+    assert isinstance(VezirClient._resolve_verify(None), ssl.SSLContext)
 
 
 def _write_test_ca(path):
@@ -141,12 +144,14 @@ def test_resolve_verify_explicit_overrides_env(monkeypatch, tmp_path):
 
 
 def test_resolve_verify_ignores_nonexistent_file(monkeypatch):
-    """SSL_CERT_FILE pointing at a missing file -> fall through to True
-    rather than crash with a confusing httpx error later."""
+    """SSL_CERT_FILE pointing at a missing file is simply ignored (0.27.0:
+    the variable is no longer consulted for client trust at all)."""
+    import ssl
+
     monkeypatch.setenv("SSL_CERT_FILE", "/tmp/definitely-not-here.crt")
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
     from vezir.client.api import VezirClient
-    assert VezirClient._resolve_verify(None) is True
+    assert isinstance(VezirClient._resolve_verify(None), ssl.SSLContext)
 
 
 def test_vezir_client_uses_resolved_verify(monkeypatch, tmp_path):

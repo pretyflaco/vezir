@@ -95,59 +95,46 @@ def test_explicit_context_wins(monkeypatch, ca_pem):
 # ── no extra CA -> default True ──────────────────────────────────────────────
 
 
-def test_no_env_returns_true(monkeypatch):
+def test_no_env_returns_public_context(monkeypatch):
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
-    assert trust.resolve_verify() is True
-
-
-def test_env_points_at_missing_file_returns_true(monkeypatch, tmp_path):
-    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "nope.crt"))
-    monkeypatch.delenv("VEZIR_CADDY_ROOT_CERT_PATH", raising=False)
-    assert trust.resolve_verify() is True
-
-
-# ── the core regression: APPEND, don't replace ───────────────────────────────
-
-
-def test_internal_ca_is_appended_not_replacing(monkeypatch, ca_pem):
-    """Context must contain the default roots PLUS the internal CA.
-
-    Asserted as a *delta* over the default store (see _subjects docstring):
-    the resolver's enumerable subjects == default enumerable subjects ∪
-    {our test CA}.  This holds whether or not the platform's default store
-    is itself enumerable.
-    """
-    public_subjects = _public_subjects()
-    monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
-
     ctx = trust.resolve_verify()
     assert isinstance(ctx, ssl.SSLContext)
-    # The internal CA was added ...
-    assert "vezir-test-ca" in _subjects(ctx)
-    # ... on top of the default store (nothing dropped).
-    assert public_subjects <= _subjects(ctx)
-    assert _subjects(ctx) == public_subjects | {"vezir-test-ca"}
+    assert ctx.check_hostname and ctx.verify_mode == ssl.CERT_REQUIRED
+    assert _subjects(ctx) == _public_subjects()
 
 
-def test_both_env_vars_deduped(monkeypatch, ca_pem):
-    """Same path in both env vars is loaded once, not twice."""
+# ── 0.27.0 (audit L-20): the internal-CA union is gone ───────────────────────
+
+
+def test_internal_ca_env_is_no_longer_trusted(monkeypatch, ca_pem):
+    """A CA named by SSL_CERT_FILE / VEZIR_CADDY_ROOT_CERT_PATH used to be
+    appended to the context used for EVERY host — a leaked Caddy root key
+    could then forge the public front for any opted-in client.  Public
+    roots only now; the env vars merely warn."""
     public_subjects = _public_subjects()
     monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
     monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca_pem))
     ctx = trust.resolve_verify()
     assert isinstance(ctx, ssl.SSLContext)
-    # Loaded exactly once -> the delta is a single new subject.
-    assert _subjects(ctx) == public_subjects | {"vezir-test-ca"}
-
-
-def test_malformed_ca_skipped_keeps_default_store(monkeypatch, tmp_path):
-    """A garbage 'CA' file must not blind us to the default store."""
-    public_subjects = _public_subjects()
-    bad = tmp_path / "bad.crt"
-    bad.write_text("not a certificate\n")
-    monkeypatch.setenv("SSL_CERT_FILE", str(bad))
-    ctx = trust.resolve_verify()
-    assert isinstance(ctx, ssl.SSLContext)
-    # Default roots intact; malformed extra simply skipped (no delta).
+    assert "vezir-test-ca" not in _subjects(ctx)
     assert _subjects(ctx) == public_subjects
+
+
+def test_legacy_env_warns_once(monkeypatch, ca_pem, caplog):
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca_pem))
+    monkeypatch.setattr(trust, "_warned_legacy", False)
+    with caplog.at_level("WARNING", logger="vezir.trust"):
+        trust.resolve_verify()
+        trust.resolve_verify()
+    assert caplog.text.count("no longer used for vezir client TLS") == 1
+
+
+def test_ssl_cert_file_pointing_at_only_the_caddy_ca_does_not_blind_public_trust(
+    monkeypatch, ca_pem,
+):
+    """The muscle incident: SSL_CERT_FILE naming ONLY the Caddy CA made
+    tools that honour it fail every public host.  vezir must not."""
+    public_subjects = _public_subjects()
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
+    assert public_subjects <= _subjects(trust.resolve_verify())

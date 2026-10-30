@@ -433,24 +433,17 @@ class VezirClient:
         self.team_id = team_id
         self._timeout = timeout or _DEFAULT_TIMEOUT
         # httpx's default verify=True uses certifi.where() -- the bundled
-        # public CA list -- which does NOT include our internal Caddy CA.
-        # _resolve_verify builds an SSLContext that trusts the default store
-        # *and* any configured internal CA (SSL_CERT_FILE /
-        # VEZIR_CADDY_ROOT_CERT_PATH), so both the public Let's Encrypt
-        # front and internal `tls internal` hosts validate.  Falls back to
-        # True (certifi) when no internal CA is configured.
+        # public CA list.  Since 0.27.0 _resolve_verify builds a
+        # public-roots-only SSLContext (certifi + OS capath), independent of
+        # $SSL_CERT_FILE; the former internal-CA union is gone (audit L-20).
         self._verify = self._resolve_verify(verify)
 
     @staticmethod
     def _resolve_verify(explicit: bool | str | None):
         """Pick the right ``verify`` value for httpx.Client.
 
-        Delegates to :func:`vezir.client.trust.resolve_verify`, which trusts
-        the public/default store AND any configured internal Caddy CA
-        (``SSL_CERT_FILE`` / ``VEZIR_CADDY_ROOT_CERT_PATH``) by *appending*
-        the internal CA rather than replacing the store.  This keeps both
-        the public Let's Encrypt front and internal ``tls internal`` hosts
-        validating from a single client.
+        Delegates to :func:`vezir.client.trust.resolve_verify`: public roots
+        only (certifi + OS capath), never ``$SSL_CERT_FILE``.
         """
         from .trust import resolve_verify
         return resolve_verify(explicit)

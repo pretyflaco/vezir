@@ -54,6 +54,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -408,7 +409,23 @@ class Nip46Client:
         """
         import websocket  # websocket-client
 
-        return websocket.create_connection(url, timeout=10)
+        if url.lower().startswith("ws://") and not os.environ.get(
+            "VEZIR_NIP46_ALLOW_INSECURE_RELAY"
+        ):
+            raise Nip46Error(
+                f"refusing plaintext relay {url}: NIP-46 traffic is encrypted, but "
+                "a cleartext relay lets anyone on the path see our client pubkey "
+                "and inject frames; use wss:// (or set "
+                "VEZIR_NIP46_ALLOW_INSECURE_RELAY=1 for local testing)"
+            )
+        # Same trust as every other vezir TLS connection (audit L-21):
+        # public roots via certifi/OS capath, never $SSL_CERT_FILE — the
+        # websocket-client default would honour that variable.
+        from ..trust import public_context
+
+        return websocket.create_connection(
+            url, timeout=10, sslopt={"context": public_context()},
+        )
 
     def _register_relay(self, url: str, ws) -> None:
         """Register a freshly opened relay socket and subscribe it.

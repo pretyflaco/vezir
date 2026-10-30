@@ -1,89 +1,72 @@
-"""TLS trust resolution for vezir clients.
+"""TLS trust resolution for vezir clients: public roots only.
 
-The vezir deployment mixes two TLS regimes:
+Until 0.27.0 ``resolve_verify`` built a context that trusted the public
+roots *plus* any CA named by ``SSL_CERT_FILE`` or
+``VEZIR_CADDY_ROOT_CERT_PATH`` — for the nvpn-era deployment where internal
+hosts were served by Caddy's ``tls internal``.  That context was then used
+for **every** host, including the public front: if the Caddy root key ever
+leaked, each client that had the env var set would accept a forged
+``vezir.twentyone.ist`` certificate (security audit 2026-10-30, L-20).  And
+``SSL_CERT_FILE`` is honoured by other tools as the *only* store, which mid
+CA-incident looked like an attack (see AGENTS.md).
 
-  * The **public** front (e.g. ``vezir.twentyone.ist``) terminates TLS with
-    a publicly-trusted certificate (Let's Encrypt) that validates against
-    the system / certifi trust store.
-  * **Internal** hosts served with Caddy's ``tls internal`` present a
-    Caddy-local-CA certificate that is NOT in any public store.
-
-A single client may talk to either, so the historical approach of pointing
-``SSL_CERT_FILE`` at *only* the Caddy CA is wrong: it makes httpx trust the
-internal CA while breaking validation of the public Let's Encrypt cert
-(``unable to get local issuer certificate``).
-
-``resolve_verify`` instead returns a value suitable for httpx's ``verify=``
-that trusts BOTH: it starts from the default trust store and *appends* any
-configured internal CA, rather than replacing the store.
+Nobody is on the internal-CA path any more, so the union is gone: the
+client verifies against certifi + the OS trust directory, independent of
+``SSL_CERT_FILE``.  The env vars are still *read* for one release only to
+warn that they are no longer honoured.
 
 Resolution:
   1. If ``explicit`` is given (not None), it wins (a bool, a path, or an
-     already-built ``ssl.SSLContext``).
-  2. Otherwise build an ``ssl.SSLContext`` from the system/certifi defaults
-     and additionally load any CA file named by ``SSL_CERT_FILE`` or
-     ``VEZIR_CADDY_ROOT_CERT_PATH`` (so internal hosts keep working).
-  3. If no extra CA is configured, return ``True`` (httpx default), avoiding
-     the overhead of building a context.
+     already-built ``ssl.SSLContext``) — tests and the operator's own
+     ``--ca`` style overrides.
+  2. Otherwise an ``ssl.SSLContext`` seeded from certifi and the OS capath.
+     (Never ``True``: httpx's default would consult OpenSSL's default
+     paths, which honour ``SSL_CERT_FILE``.)
 """
+
 from __future__ import annotations
 
+import logging
 import os
 import ssl
-from collections.abc import Iterable
 
-# Env vars that may name an *additional* CA to trust (in priority order).
-_CA_ENV_VARS = ("SSL_CERT_FILE", "VEZIR_CADDY_ROOT_CERT_PATH")
+log = logging.getLogger("vezir.trust")
 
-
-def _extra_ca_paths(env_vars: Iterable[str] = _CA_ENV_VARS) -> list[str]:
-    """Return existing CA file paths named by the trust env vars (deduped)."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for var in env_vars:
-        path = os.environ.get(var)
-        if path and os.path.isfile(path) and path not in seen:
-            seen.add(path)
-            out.append(path)
-    return out
+# Read only to warn.  Not honoured since 0.27.0.
+_LEGACY_CA_ENV_VARS = ("SSL_CERT_FILE", "VEZIR_CADDY_ROOT_CERT_PATH")
+_warned_legacy = False
 
 
 def resolve_verify(explicit: bool | str | ssl.SSLContext | None = None):
-    """Resolve an httpx ``verify`` value that trusts public + internal CAs.
-
-    See module docstring for the resolution order.  Returns one of:
-      * the ``explicit`` value, if provided;
-      * an ``ssl.SSLContext`` (default store + extra internal CA(s)); or
-      * ``True`` (no extra CA configured -> plain default trust).
-    """
+    """Resolve an httpx ``verify`` value: ``explicit`` if given, else a
+    public-roots-only ``ssl.SSLContext``."""
     if explicit is not None:
         return explicit
+    _warn_legacy_env_once()
+    return public_context()
 
-    extra = _extra_ca_paths()
-    if not extra:
-        return True
 
-    # Build a context that trusts BOTH the public roots and the internal CA.
-    #
-    # IMPORTANT: ssl.create_default_context() / load_default_certs() consult
-    # OpenSSL's default verify paths, which honor $SSL_CERT_FILE.  On boxes
-    # where SSL_CERT_FILE names the Caddy-only CA (the very misconfiguration
-    # this fixes), that would narrow the "default" store to just Caddy and
-    # break the public Let's Encrypt front.  So we seed the public roots
-    # explicitly from certifi (independent of SSL_CERT_FILE) and add the OS
-    # trust directory, then append the internal CA(s) on top.
+def public_context() -> ssl.SSLContext:
+    """A client context trusting certifi + the OS trust directory only."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
     _load_public_roots(ctx)
-    for path in extra:
-        try:
-            ctx.load_verify_locations(cafile=path)
-        except (ssl.SSLError, OSError):
-            # A malformed/unreadable extra CA must not blind us to the
-            # public roots; skip it and keep public trust intact.
-            continue
     return ctx
+
+
+def _warn_legacy_env_once() -> None:
+    global _warned_legacy
+    if _warned_legacy:
+        return
+    _warned_legacy = True
+    for var in _LEGACY_CA_ENV_VARS:
+        if os.environ.get(var):
+            log.warning(
+                "%s is set but no longer used for vezir client TLS (since "
+                "0.27.0 the client trusts public roots only); unset it",
+                var,
+            )
 
 
 def _load_public_roots(ctx: ssl.SSLContext) -> None:
@@ -118,6 +101,6 @@ def _load_public_roots(ctx: ssl.SSLContext) -> None:
         # Last resort: fall back to OpenSSL defaults (may honor SSL_CERT_FILE,
         # but better than an empty store).
         try:
-            ctx.load_default_certs()
+            ctx.load_default_certs(ssl.Purpose.SERVER_AUTH)
         except (ssl.SSLError, OSError):
             pass
