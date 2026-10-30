@@ -3,6 +3,33 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Security
+
+- Complete the streaming-upload boundary: multipart must reach its terminal
+  boundary, resumable metadata no longer uses spooling `Form(...)` parsing,
+  resumable staging has per-user reservations and free-space checks, and the
+  Caddy ceiling covers the largest legal import bundle.
+- Validate imported transcript segment/speaker/word schemas before storage;
+  cache speaker channel analysis with transcript/audio invalidation instead of
+  decoding the whole recording on every label request.
+- Confine TUI artifact exports and make TUI/MCP/log writes private and atomic,
+  including after log rotation and for large binary exports.
+- Verify every inbound NIP-46 event, compare every returned signed-event field,
+  reject malformed decrypted responses, and redact connect secrets.  Bare
+  `ack` binds require the explicit `VEZIR_NIP46_ALLOW_LEGACY_ACK=1`
+  compatibility opt-in.  Ambient `SSL_CERT_DIR` trust and default-store
+  fallback are removed; plaintext-relay opt-ins parse strict truthy values.
+- Strip millet configuration-path overrides from the worker environment and
+  refuse teamless sync for legacy invalid slugs.  millet also rejects
+  symlinked sync-root escapes and forces noninteractive, bounded network work.
+- Bind refresh-grace replay to User-Agent, consume only freshly extracted cue
+  frames, and add hidden-prompt/`--token-stdin` credential entry.
+- Correct NEAR provenance to `(response-signed, provider-key)`: a response
+  signature under a self-consistent provider key does not prove enclave origin.
+  Blank Google domain configuration now fails device start cleanly.
+
 ## 0.27.0 — security audit 2026-10-30, part two
 
 The design items from the audit.  Companion: millet-pipeline 0.22.0 (now
