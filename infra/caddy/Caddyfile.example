@@ -112,8 +112,9 @@
 # --- public listener (VPS front + WireGuard + nftables DNAT) --------
 # This is the clearnet entry point (see infra/vps/). The flow is:
 #
-#   client ──HTTPS──▶ VPS:443 ──nftables DNAT──▶ 10.99.0.2:443 (this box,
-#   over WireGuard) ──▶ Caddy terminates TLS ──▶ 127.0.0.1:8000
+#   client ──HTTPS──▶ VPS:443 ──nftables DNAT──▶ 10.99.0.2:443 or
+#   [fd99::2]:443 (this box, over WireGuard) ──▶ Caddy terminates TLS
+#   ──▶ 127.0.0.1:8000
 #
 # TLS is TERMINATED HERE on muscle, not on the VPS: the VPS only L4-
 # forwards ciphertext, so it never sees plaintext or bearer/session

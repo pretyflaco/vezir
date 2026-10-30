@@ -9,28 +9,28 @@
 #   <VPS_PUBLIC_KEY>      contents of the VPS's /etc/wireguard/vps.pub
 
 [Interface]
-Address = 10.99.0.2/24
+Address = 10.99.0.2/24, fd99::2/64
 PrivateKey = <MUSCLE_PRIVATE_KEY>
 # Real client IPs (security audit 2026-10-30, M-1).  The VPS no longer
 # masquerades, so forwarded packets arrive here with the CLIENT's source
 # address; that is what gives vezir per-client rate limits and log
 # attribution instead of one bucket for the whole internet.  Two things
 # make that work:
-#   * AllowedIPs = 0.0.0.0/0 below, so WireGuard accepts any source from
-#     the VPS peer — and Table = off so wg-quick does NOT turn that into a
-#     default route through the VPS (which would hijack all egress).
-#   * Replies to tunnel traffic carry src 10.99.0.2: a policy rule sends
-#     exactly those back via wg0.  The same rule satisfies rp_filter for
-#     the inbound packets.  Everything else keeps the normal default route.
+#   * AllowedIPs = 0.0.0.0/0, ::/0 below, so WireGuard accepts any source
+#     from the VPS peer — and Table = off so wg-quick does NOT turn those
+#     into default routes through the VPS (which would hijack all egress).
+#   * Replies to tunnel traffic carry src 10.99.0.2 or fd99::2: policy
+#     rules send exactly those back via wg0. The IPv4 rule also satisfies
+#     rp_filter for inbound packets. Everything else keeps normal routes.
 Table = off
-PostUp = ip rule add from 10.99.0.2 lookup 100 priority 100; ip route replace default dev wg0 table 100
-PostDown = ip rule del from 10.99.0.2 lookup 100 priority 100 || true; ip route flush table 100 || true
+PostUp = ip rule add from 10.99.0.2 lookup 100 priority 100; ip route replace default dev wg0 table 100; ip -6 rule add from fd99::2 lookup 100 priority 100; ip -6 route replace default dev wg0 table 100
+PostDown = ip rule del from 10.99.0.2 lookup 100 priority 100 || true; ip route flush table 100 || true; ip -6 rule del from fd99::2 lookup 100 priority 100 || true; ip -6 route flush table 100 || true
 
 [Peer]
 # The VPS front (public IP).
 PublicKey = <VPS_PUBLIC_KEY>
 Endpoint = <VPS_PUBLIC_IP>:51820
-# Any source address may arrive from the VPS (see Table = off above).
-AllowedIPs = 0.0.0.0/0
+# Any IPv4 or IPv6 source may arrive from the VPS (see Table = off above).
+AllowedIPs = 0.0.0.0/0, ::/0
 # Keep the outbound NAT mapping alive so the VPS can reach us at any time.
 PersistentKeepalive = 25

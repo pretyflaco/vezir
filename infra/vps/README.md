@@ -22,35 +22,30 @@ tunnel.
 ## Architecture
 
 ```
-                      public internet
-                            │  HTTPS (TLS to vezir.example.com)
-                            ▼
-                 ┌──────────────────────┐
-                 │  VPS  <VPS_PUBLIC_IP>   │   any small cloud VPS, Ubuntu 24.04
-                 │                       │
-                 │  nftables DNAT :443   │   L4 forward ONLY — sees ciphertext
-                 │        │              │
-                 │        ▼              │
-                 │  wg0  10.99.0.1 ──────┼───┐ WireGuard (muscle dials out,
-                 └──────────────────────┘   │ PersistentKeepalive=25)
-                            ▲                │
-                  outbound WG (UDP 51820)    │
-                            │                ▼
-                 ┌──────────────────────────────────┐
-                 │  muscle  wg0 10.99.0.2            │  home, double-NAT
-                 │                                   │
-                 │  Caddy :443  ── TERMINATES TLS    │  real LE cert (Gandi DNS-01)
-                 │        │                          │
-                 │        ▼                          │
-                 │  vezir uvicorn 127.0.0.1:8000     │
-                 └──────────────────────────────────┘
+                         public internet
+                              │ HTTPS (TLS to vezir.example.com)
+                              ▼
+        ┌─────────────────────────────────────────────┐
+        │ VPS <VPS_PUBLIC_IP> / <VPS_PUBLIC_IPV6>     │
+        │ nftables DNAT tcp/443 (IPv4 + IPv6)         │ L4 only: ciphertext
+        │ wg0 10.99.0.1 / fd99::1                     │
+        └──────────────────────┬──────────────────────┘
+                               │ WireGuard (muscle dials out,
+                               │ UDP 51820, PersistentKeepalive=25)
+                              ▼
+        ┌─────────────────────────────────────────────┐
+        │ muscle wg0 10.99.0.2 / fd99::2              │ home, double-NAT
+        │ Caddy :443 ── TERMINATES TLS                │ real LE cert (DNS-01)
+        │ vezir uvicorn 127.0.0.1:8000                │
+        └─────────────────────────────────────────────┘
 ```
 
 ### Key property: the VPS never sees plaintext
 
-TLS is **terminated on muscle**, not on the VPS. The VPS runs an
-nftables DNAT rule that forwards the raw TCP stream of `:443` into the
-WireGuard tunnel to `10.99.0.2:443`. Everything the VPS handles is
+TLS is **terminated on muscle**, not on the VPS. The VPS runs
+nftables DNAT rules that forward the raw TCP stream of `:443` into the
+WireGuard tunnel to `10.99.0.2:443` (IPv4) or `[fd99::2]:443` (IPv6).
+Everything the VPS handles is
 already-encrypted TLS records. A compromised or subpoenaed VPS yields
 ciphertext only — never bearer tokens, session JWTs, audio, or
 transcripts. This is the "TLS passthrough" choice (vs. terminating TLS
@@ -66,13 +61,14 @@ muscle has no inbound :80/:443, it must use the **DNS-01** challenge
 | Thing            | Value                                   |
 |------------------|-----------------------------------------|
 | VPS provider     | any small cloud VPS (1GB RAM is plenty; ~$3.50/mo)|
-| VPS public IP    | `<VPS_PUBLIC_IP>`                         |
+| VPS public IPv4  | `<VPS_PUBLIC_IP>`                         |
+| VPS public IPv6  | `<VPS_PUBLIC_IPV6>`                       |
 | VPS OS           | Ubuntu 24.04                            |
 | VPS hostname     | `<vps-hostname>`                           |
 | Public hostname  | `vezir.example.com` (DNS at Gandi)    |
-| WireGuard subnet | `10.99.0.0/24`                          |
-| VPS WG IP        | `10.99.0.1`                             |
-| muscle WG IP     | `10.99.0.2`                             |
+| WireGuard subnets| `10.99.0.0/24`, ULA `fd99::/64`       |
+| VPS WG IPs       | `10.99.0.1`, `fd99::1`                |
+| muscle WG IPs    | `10.99.0.2`, `fd99::2`                |
 | WG UDP port      | `51820`                                 |
 | Public TCP port  | `443` (HTTPS)                           |
 | SSH              | `22`, **key-only** (no passwords)       |
@@ -83,7 +79,7 @@ muscle has no inbound :80/:443, it must use the **DNS-01** challenge
 |--------------------------|---------------|---------|
 | `wg-vps.conf.example`    | VPS           | WireGuard interface for the VPS end |
 | `wg-muscle.conf.example` | muscle        | WireGuard interface for the muscle end |
-| `nftables-dnat.conf`     | VPS           | DNAT `:443` → `10.99.0.2:443` + forward rules |
+| `nftables-dnat.conf`     | VPS           | IPv4/IPv6 DNAT `:443` to muscle + forward rules |
 | `harden-vps.sh`          | VPS           | ufw, fail2ban, unattended-upgrades, sshd key-only |
 
 ---
@@ -143,6 +139,24 @@ It installs `ufw` (allow 22/tcp, 443/tcp, 51820/udp; deny the rest),
 sshd. **Confirm your key login works in a second terminal before closing
 your session.**
 
+For dual stack, UFW must have `IPV6=yes` in `/etc/default/ufw`. If it
+does not, set it and recreate the allows so both families are covered:
+
+```bash
+sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
+sudo ufw allow 22/tcp comment 'ssh'
+sudo ufw allow 443/tcp comment 'https (DNAT to muscle)'
+sudo ufw allow 51820/udp comment 'wireguard'
+sudo ufw reload
+sudo ufw status verbose   # each allow must show both (v4) and (v6)
+```
+
+Also configure the **provider/cloud firewall** (it runs outside UFW):
+allow inbound TCP 443 to the VPS public IPv4 and IPv6 addresses and UDP
+51820 to the WireGuard endpoint; restrict SSH to trusted sources where
+possible. The public IPv6 address is the provider-assigned global address,
+never the tunnel's ULA `fd99::1`.
+
 ---
 
 ## Step 2 — WireGuard tunnel
@@ -161,6 +175,12 @@ Fill in the templates with the matching **public** keys:
 * `wg-vps.conf.example`    → `/etc/wireguard/wg0.conf` on the VPS
 * `wg-muscle.conf.example` → `/etc/wireguard/wg0.conf` on muscle
 
+The IPv6 addresses are ULA and exist only inside WireGuard. The VPS peer
+allows only muscle's two tunnel addresses; muscle's peer allows
+`0.0.0.0/0, ::/0` so real public client sources can traverse the tunnel.
+`Table = off` plus source-specific policy routes keeps those broad peer
+AllowedIPs from hijacking muscle's normal egress.
+
 Bring them up:
 
 ```bash
@@ -174,8 +194,15 @@ Verify the tunnel:
 
 ```bash
 # from muscle
-ping -c3 10.99.0.1     # VPS WG IP
-sudo wg show           # should show a recent handshake + rx/tx counters
+ping -c3 10.99.0.1       # VPS WG IPv4
+ping -6 -c3 fd99::1      # VPS WG IPv6
+sudo wg show             # recent handshake + rx/tx counters
+ip rule show; ip route show table 100
+ip -6 rule show; ip -6 route show table 100
+ip route get 203.0.113.1 from 10.99.0.2   # must use wg0, table 100
+ip -6 route get 2001:db8::1 from fd99::2  # must use wg0, table 100
+ip route get 203.0.113.1                  # normal egress, not wg0
+ip -6 route get 2001:db8::1               # normal egress (or unreachable), not wg0
 ```
 
 > muscle is the dialer because it's the one behind NAT. `Endpoint` is set
@@ -187,29 +214,39 @@ sudo wg show           # should show a recent handshake + rx/tx counters
 
 ## Step 3 — nftables DNAT on the VPS
 
-Forward public `:443` into the tunnel. Copy `nftables-dnat.conf` to the
-VPS and load it:
+Forward public TCP `:443` into the tunnel. Copy `nftables-dnat.conf` to
+the VPS, then enable both forwarding families:
 
 ```bash
 scp infra/vps/nftables-dnat.conf ubuntu@<VPS_PUBLIC_IP>:/tmp/
 ssh ubuntu@<VPS_PUBLIC_IP> 'sudo cp /tmp/nftables-dnat.conf /etc/nftables.d/vezir-dnat.conf'
-# enable IP forwarding (persisted)
-ssh ubuntu@<VPS_PUBLIC_IP> 'echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-vezir-forward.conf && sudo sysctl --system'
-ssh ubuntu@<VPS_PUBLIC_IP> 'sudo systemctl enable --now nftables && sudo nft -f /etc/nftables.d/vezir-dnat.conf'
+ssh ubuntu@<VPS_PUBLIC_IP> 'printf "%s\n" "net.ipv4.ip_forward=1" "net.ipv6.conf.all.forwarding=1" | sudo tee /etc/sysctl.d/99-vezir-forward.conf'
 ```
 
-This DNATs `tcp dport 443` to `10.99.0.2:443`.  It does **not**
-masquerade: the packets reach muscle with the real client's source
-address, which is what gives vezir per-client rate limits and honest log
-attribution (with masquerade every public client was `10.99.0.1` — one
-rate-limit bucket for the whole internet; security audit 2026-10-30,
-M-1).  The return path works because muscle policy-routes replies with
-src `10.99.0.2` back via `wg0` and its peer `AllowedIPs` is `0.0.0.0/0`
-with `Table = off` — see `wg-muscle.conf.example`.  Order of operations
-when applying this to a running setup: muscle first (its change is
-harmless while the VPS still masquerades), then drop the masquerade on
-the VPS.  Rollback is one rule:
-`nft add rule ip vezir_nat postrouting ip daddr 10.99.0.2 tcp dport 443 oifname "wg0" masquerade`.
+> **IPv6 router-advertisement caveat:** Linux normally stops accepting
+> RAs when IPv6 forwarding is enabled. If the VPS learns its public IPv6
+> address or default route by SLAAC/RA on `ens3`, add
+> `net.ipv6.conf.ens3.accept_ra=2` to the same sysctl file **before**
+> applying it, or IPv6 default routing may disappear. Check with
+> `ip -6 addr show dev ens3` and `ip -6 route show default`. A statically
+> configured provider address/default route does not need `accept_ra=2`.
+
+Validate and load without changing anything until the parse succeeds:
+
+```bash
+ssh ubuntu@<VPS_PUBLIC_IP> 'sudo nft -c -f /etc/nftables.d/vezir-dnat.conf && sudo sysctl --system && sudo systemctl enable --now nftables && sudo nft -f /etc/nftables.d/vezir-dnat.conf'
+```
+
+IPv4 DNATs to `10.99.0.2:443`; IPv6 DNATs only WAN TCP 443 to
+`[fd99::2]:443`. Established return traffic is accepted in each family.
+There is **no IPv4 masquerade and no NAT66**, so packets reach muscle with
+the real client's source address. That preserves per-client rate limits
+and log attribution; masquerading would collapse each family into one VPS
+source/bucket (security audit 2026-10-30, M-1). Return packets work because
+muscle policy-routes sources `10.99.0.2` and `fd99::2` through table 100
+and `wg0`, while broad peer AllowedIPs accept every public client source.
+Never add a masquerade rule to "fix" return routing; fix the policy route
+instead.
 
 > **Gotcha (must do): ufw forward policy.** ufw ships with
 > `DEFAULT_FORWARD_POLICY="DROP"`, and its `FORWARD` chain runs at the
@@ -245,8 +282,12 @@ the VPS.  Rollback is one rule:
 
 ## Step 4 — DNS + public cert (Gandi DNS-01)
 
-1. **A record:** in the Gandi LiveDNS panel for `example.com`, add
-   `vezir A <VPS_PUBLIC_IP>` (the VPS public IP).
+1. **A record:** in the Gandi LiveDNS panel for `example.com`, add or keep
+   `vezir A <VPS_PUBLIC_IP>` (the VPS public IPv4). Add
+   `vezir AAAA <VPS_PUBLIC_IPV6>` **only after** the direct IPv6 tests in
+   Step 5 pass. AAAA is always last during rollout and first to be removed
+   during rollback, leaving IPv4 service untouched. Never publish the ULA
+   `fd99::1` as AAAA.
 
 2. **Caddy with the Gandi plugin** on muscle. We use the **DNS-01**
    challenge: the public hostname resolves to the VPS, but TLS terminates
@@ -289,6 +330,8 @@ the VPS.  Rollback is one rule:
    ```
    Caddy will solve the DNS-01 challenge via Gandi and obtain a real
    Let's Encrypt cert. The existing nvpn/Tailscale listeners stay as-is.
+   No separate IPv6 site block is needed; confirm Caddy's `:443` listener
+   accepts IPv6 with `sudo ss -ltnp | grep ':443'`.
 
    > **Gotcha (cost us several retries): Gandi LiveDNS propagation lag.**
    > New TXT records take **~2 minutes** to appear on Gandi's
@@ -311,15 +354,95 @@ the VPS.  Rollback is one rule:
 
 ---
 
+## Rolling upgrade of an existing IPv4 path
+
+Apply in **server → VPS → tunnel/direct tests → AAAA** order. Merge the
+template changes into the live files; do not overwrite live private keys or
+endpoints with placeholders.
+
+1. **Server (muscle) first.** Back up and add the ULA address, IPv6 policy
+   rule/route and teardown, and `::/0` peer AllowedIPs:
+
+   ```bash
+   sudo cp -a /etc/wireguard/wg0.conf /etc/wireguard/wg0.conf.pre-dual-stack
+   sudoedit /etc/wireguard/wg0.conf
+   sudo systemctl restart wg-quick@wg0
+   ping -c3 10.99.0.1
+   # From an external host, IPv4 must still work before continuing:
+   curl -4 -fsS https://vezir.example.com/health
+   ```
+
+2. **VPS second.** Back up, merge its ULA/peer changes and the new nftables
+   file, and set both forwarding sysctls. Add the WAN `accept_ra=2` setting
+   first if the provider uses RA as described in Step 3:
+
+   ```bash
+   sudo cp -a /etc/wireguard/wg0.conf /etc/wireguard/wg0.conf.pre-dual-stack
+   sudo cp -a /etc/nftables.d/vezir-dnat.conf /etc/nftables.d/vezir-dnat.conf.pre-dual-stack
+   sudo cp -a /etc/sysctl.d/99-vezir-forward.conf /etc/sysctl.d/99-vezir-forward.conf.pre-dual-stack
+   # Save the previous runtime values too; restoring a config file cannot
+   # unset values that are absent from it. Replace ens3 if the WAN differs.
+   sudo sysctl net.ipv6.conf.all.forwarding net.ipv6.conf.ens3.accept_ra | \
+     sudo tee /root/vezir-dual-stack-sysctl.pre
+   sudoedit /etc/wireguard/wg0.conf
+   sudoedit /etc/nftables.d/vezir-dnat.conf
+   sudoedit /etc/sysctl.d/99-vezir-forward.conf
+   sudo nft -c -f /etc/nftables.d/vezir-dnat.conf
+   sudo sysctl --system
+   sudo systemctl restart wg-quick@wg0
+   sudo nft -f /etc/nftables.d/vezir-dnat.conf
+   # From an external host, again prove IPv4 before any IPv6 DNS change:
+   curl -4 -fsS https://vezir.example.com/health
+   ```
+
+3. Run both tunnel pings, the policy-route checks, and the direct IPv4/IPv6
+   health tests in Steps 2 and 5. Check UFW and the provider firewall if
+   IPv6 alone fails.
+4. **AAAA last:** publish `vezir AAAA <VPS_PUBLIC_IPV6>` only after all
+   checks pass, then run the forced `curl -4` and `curl -6` tests again.
+
+---
+
 ## Step 5 — Verify end to end
 
-```bash
-# From any external network (e.g. your phone on cellular):
-curl -sS https://vezir.example.com/health
-# => {"status":"ok","version":"0.7.x","data_dir":"..."}
+Before publishing AAAA, test both data paths directly from an external
+dual-stack host. `--resolve` keeps the correct hostname/SNI without DNS:
 
-# Public CA chain (no -k needed: it's a real Let's Encrypt cert)
-curl -sSI https://vezir.example.com/health | head -1   # HTTP/2 200
+```bash
+curl -4 -fsS --resolve vezir.example.com:443:<VPS_PUBLIC_IP> \
+  https://vezir.example.com/health
+curl -6 -fsS --resolve vezir.example.com:443:<VPS_PUBLIC_IPV6> \
+  https://vezir.example.com/health
+# Both return {"status":"ok",...}; no -k: the public CA chain must verify.
+```
+
+While running those curls, watch the forwarded packets on both ends:
+
+```bash
+# VPS: SYN arrives on WAN and leaves wg0 with the original client source.
+sudo tcpdump -ni ens3 'tcp port 443'
+sudo tcpdump -ni wg0 'tcp port 443'
+# muscle: the same original client source arrives; replies use fd99::2
+# (or 10.99.0.2 for IPv4), never a VPS masquerade address.
+sudo tcpdump -ni wg0 'tcp port 443'
+# On rate-limit events, keys must likewise contain real client IPs:
+journalctl --user -u vezir --since '15 min ago' | grep 'ratelimit'
+```
+
+For an explicit per-IP limiter check in a maintenance window, use two
+external hosts: exhaust a lightweight unauthenticated API bucket on one
+and confirm it receives 429 while the other still receives 200. Do not
+spray authentication failures or run this against production traffic.
+
+Only after both direct tests pass, publish AAAA. Then verify normal DNS
+selection and forced address families:
+
+```bash
+dig +short A vezir.example.com
+dig +short AAAA vezir.example.com
+curl -4 -fsS https://vezir.example.com/health
+curl -6 -fsS https://vezir.example.com/health
+curl -fsSI https://vezir.example.com/health | head -1   # HTTP/2 200
 ```
 
 Then a real nostr login over clearnet:
@@ -333,7 +456,11 @@ vezir scribe --help         # any authenticated call confirms the JWT works
 ## Security checklist
 
 - [ ] VPS sshd is key-only (`PasswordAuthentication no`).
-- [ ] ufw denies everything except 22/tcp, 443/tcp, 51820/udp.
+- [ ] UFW has `IPV6=yes` and denies everything except 22/tcp, 443/tcp,
+      51820/udp in both families; the provider firewall allows the same
+      required public paths.
+- [ ] `nft list ruleset` has no masquerade/NAT66; IPv6 DNAT is only WAN
+      TCP 443 to `[fd99::2]:443`.
 - [ ] WireGuard private keys never left the box they were generated on.
 - [ ] `ss -ltn` on muscle shows vezir on `127.0.0.1:8000` only (never
       `0.0.0.0:8000`). Caddy is the sole ingress.
@@ -345,10 +472,49 @@ vezir scribe --help         # any authenticated call confirms the JWT works
 
 ## Rollback
 
-The VPS path is additive. To fall back to nvpn/Tailscale, just point
-`VEZIR_URL` back at the tunnel IP. Stopping `wg-quick@wg0` on the VPS or
-removing the DNAT rule takes the public endpoint offline without
-touching the server.
+For an IPv6 problem, **remove AAAA first** in Gandi LiveDNS and leave the A
+record untouched. Wait for caches to expire, then confirm clients no longer
+receive an IPv6 answer and IPv4 remains healthy:
+
+```bash
+dig +short AAAA vezir.example.com   # eventually empty
+dig +short A vezir.example.com      # still <VPS_PUBLIC_IP>
+curl -4 -fsS https://vezir.example.com/health
 ```
-sudo systemctl stop wg-quick@wg0     # on the VPS — kills the public path
+
+That is the normal, lowest-risk rollback; the dormant IPv6 tunnel rules can
+stay in place. To remove them completely after DNS rollback, stop each tunnel
+while its dual-stack config is still active so the IPv6 `PostDown` teardown
+runs. Then restore the VPS backups first, explicitly delete the two IPv6
+tables (restoring an old IPv4-only file does not delete them), and start the
+old configuration. Do the same stop → restore → start sequence on the server;
+a restart after restoring would run the old teardown and leave the IPv6 rule
+behind. Finally restore the captured runtime sysctls: `sysctl --system` cannot
+unset forwarding or `accept_ra` values that are absent from the old file.
+
+```bash
+# VPS: stop before restoring so the dual-stack teardown is used
+sudo systemctl stop wg-quick@wg0
+sudo cp -a /etc/wireguard/wg0.conf.pre-dual-stack /etc/wireguard/wg0.conf
+sudo cp -a /etc/nftables.d/vezir-dnat.conf.pre-dual-stack /etc/nftables.d/vezir-dnat.conf
+sudo cp -a /etc/sysctl.d/99-vezir-forward.conf.pre-dual-stack /etc/sysctl.d/99-vezir-forward.conf
+sudo nft delete table ip6 vezir_nat
+sudo nft delete table ip6 vezir_filter
+sudo nft -c -f /etc/nftables.d/vezir-dnat.conf
+sudo sysctl --system
+sudo sysctl -p /root/vezir-dual-stack-sysctl.pre
+sudo systemctl start wg-quick@wg0
+sudo nft -f /etc/nftables.d/vezir-dnat.conf
+# Server, only after the VPS is back on its previous configuration
+sudo systemctl stop wg-quick@wg0
+sudo cp -a /etc/wireguard/wg0.conf.pre-dual-stack /etc/wireguard/wg0.conf
+sudo systemctl start wg-quick@wg0
+# The dual-stack PostDown must have removed these on the server:
+ip -6 rule show | grep 'from fd99::2'   # no output
+ip -6 route show table 100              # no IPv6 default via wg0
+# From an external host
+curl -4 -fsS https://vezir.example.com/health
 ```
+
+Do not stop the whole tunnel or add masquerade for an IPv6-only rollback;
+either would needlessly disrupt or weaken the working IPv4 path.

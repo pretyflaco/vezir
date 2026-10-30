@@ -9,12 +9,13 @@
 # learned from the incoming handshake.
 
 [Interface]
-Address = 10.99.0.1/24
+Address = 10.99.0.1/24, fd99::1/64
 ListenPort = 51820
 PrivateKey = <VPS_PRIVATE_KEY>
 
 [Peer]
 # muscle (the vezir server, behind double-NAT)
 PublicKey = <MUSCLE_PUBLIC_KEY>
-# Only route the single muscle host through the tunnel.
-AllowedIPs = 10.99.0.2/32
+# Route only muscle's tunnel addresses. Do NOT add public prefixes or
+# 0.0.0.0/0 / ::/0 here: the VPS keeps its normal internet default routes.
+AllowedIPs = 10.99.0.2/32, fd99::2/128
