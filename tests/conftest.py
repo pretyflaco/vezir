@@ -25,7 +25,6 @@ def pytest_configure(config):  # noqa: ARG001 - pytest hook signature
     # sign-in configured would otherwise make the "unconfigured" auth tests
     # (test_google_auth.py) fail spuriously.
     for var in (
-        "VEZIR_COOKIE_SECURE",
         "VEZIR_CADDY_ROOT_CERT_PATH",
         "VEZIR_PUBLIC_URL",
         "VEZIR_GOOGLE_CLIENT_ID",

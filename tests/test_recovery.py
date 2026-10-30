@@ -188,9 +188,36 @@ def test_legacy_dir_with_reparented_recorder_is_orphaned(roots, monkeypatch):
 # ── stop_orphaned / recover ───────────────────────────────────────────────────
 
 
+def _fake_recorder(session_dir) -> subprocess.Popen:
+    """A process whose cmdline looks like a recorder for ``session_dir``
+    (argv[0] mentions ffmpeg, the session path appears) — what the L-26
+    identity re-check requires before it will signal a pid."""
+    import shutil
+    import sys
+
+    python = shutil.which("python3") or sys.executable
+    loop = "import time\nwhile True: time.sleep(1)"
+    proc = subprocess.Popen(
+        ["bash", "-c", f'exec -a ffmpeg {python} -c "{loop}" {session_dir}/x.wav'],
+    )
+    # Wait until bash has exec'd: before that the cmdline is still
+    # "bash -c ..." and the identity check (rightly) refuses to signal it.
+    import time
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            if open(f"/proc/{proc.pid}/cmdline", "rb").read().startswith(b"ffmpeg\0"):
+                break
+        except OSError:
+            break
+        time.sleep(0.02)
+    return proc
+
+
 def test_stop_orphaned_sigints_and_flips_state(roots):
     d = _chunk_dir(roots["startups"], "meeting-20260928-135948")
-    proc = subprocess.Popen(["sleep", "30"])
+    proc = _fake_recorder(d)
     rec = recovery.RecoverableSession(
         session_dir=d, team_id="startups", kind="orphaned",
         started_at=None, total_bytes=2048, recorder_pid=proc.pid,
@@ -323,3 +350,22 @@ def test_salvage_refuses_move_before_stopping_orphan(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="did not exit"):
         recovery.salvage(rec, server_url="https://srv", token="t", team="twentyone")
     assert src.exists()
+
+
+def test_stop_orphaned_refuses_a_reused_pid(roots):
+    """Audit L-26: the pid in the marker belongs to some other program now
+    (pid reuse); it must NOT be signalled."""
+    d = _chunk_dir(roots["startups"], "meeting-20260928-135948")
+    proc = subprocess.Popen(["sleep", "30"])
+    rec = recovery.RecoverableSession(
+        session_dir=d, team_id="startups", kind="orphaned",
+        started_at=None, total_bytes=2048, recorder_pid=proc.pid,
+        audio_path=None, title_hint=None, detail="recorder still running",
+    )
+    try:
+        assert recovery.stop_orphaned(rec, timeout=2.0) is True
+        assert proc.poll() is None, "unrelated process must still be alive"
+        assert rec.recorder_pid is None
+    finally:
+        proc.kill()
+        proc.wait()

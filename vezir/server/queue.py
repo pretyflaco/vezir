@@ -611,7 +611,7 @@ def set_title(job_id: str, title: str | None) -> None:
     An empty/blank title is normalized to NULL (falls back to the id in
     every display surface).
     """
-    normalized = (title or "").strip() or None
+    normalized = (title or "").strip()[:256] or None  # same cap as enqueue (L-12)
     with _conn() as c:
         c.execute(
             "UPDATE jobs SET title = ?, updated_at = ? WHERE id = ?",

@@ -147,6 +147,30 @@ def _legacy_live_recorder(
     return None
 
 
+def _pid_still_our_recorder(pid: int, session_dir: Path, proc_root: str = "/proc") -> bool:
+    """True unless /proc proves ``pid`` is NOT a recorder for ``session_dir``.
+
+    Conservative in the direction of *not* killing: a pid that is gone
+    returns True (nothing to signal), an unreadable /proc (non-Linux)
+    returns True (liveness check only), a pid whose cmdline is some other
+    program returns False.
+    """
+    try:
+        with open(os.path.join(proc_root, str(pid), "cmdline"), "rb") as f:
+            cmdline = f.read()
+    except FileNotFoundError:
+        return True  # already gone; os.kill will report ProcessLookupError
+    except OSError:
+        return True  # no /proc: can't disprove, fall back to liveness
+    if not cmdline:
+        return False  # zombie / kernel thread
+    parts = cmdline.split(b"\0")
+    looks_like_recorder = bool(parts) and any(
+        tag in parts[0] for tag in (b"ffmpeg", b"millet", b"meet-record")
+    )
+    return looks_like_recorder and os.fsencode(str(session_dir)) in cmdline
+
+
 def _millet_meta_path(session_dir: Path) -> Path | None:
     """millet-record's ``<stem>.session.json`` (not vezir's ``session.json``)."""
     try:
@@ -448,6 +472,18 @@ def stop_orphaned(rec: RecoverableSession, timeout: float = _STOP_TIMEOUT) -> bo
     """
     pid = rec.recorder_pid
     if pid is None:
+        return True
+    # Re-check identity immediately before signalling (audit L-26): the pid
+    # came from a JSON marker written at recording start; between the scan
+    # and now it may have been reused by an unrelated process.  On Linux
+    # require that /proc/<pid>/cmdline still looks like a recorder for THIS
+    # session; elsewhere fall back to the liveness check only.
+    if not _pid_still_our_recorder(pid, rec.session_dir):
+        log.warning(
+            "not signalling pid %s: it is no longer a recorder for %s",
+            pid, rec.session_dir,
+        )
+        rec.recorder_pid = None
         return True
     try:
         os.kill(pid, signal.SIGINT)

@@ -917,9 +917,18 @@ def _frontmatter_meta(sdir: Path, session_id: str) -> dict:
         out["title"] = title
     date = data.get("date")
     if isinstance(date, str) and date.strip():
-        # millet frontmatter dates are ISO 8601; store as-is (workers and
-        # clients parse both naive and Z-suffixed forms).
-        out["created_at"] = date.strip()
+        # millet frontmatter dates are ISO 8601.  Parse and re-render (audit
+        # L-12): the value is user-supplied, drives ORDER BY and the
+        # since/until comparisons, and used to be stored verbatim.
+        from datetime import datetime, timezone
+
+        try:
+            dt = datetime.fromisoformat(date.strip().replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            out["created_at"] = dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            log.warning("import: ignoring unparseable frontmatter date %r", date[:40])
     return out
 
 

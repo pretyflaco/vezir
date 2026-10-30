@@ -307,6 +307,22 @@ def cleanup_home_shim(job_id: str) -> None:
     shim_root = config.jobs_dir() / job_id
     if shim_root.exists():
         shutil.rmtree(shim_root, ignore_errors=True)
+    _prune_shim_lock(job_id)
+
+
+def _prune_shim_lock(session_id: str) -> None:
+    """Drop the per-session lock entry once nobody holds or waits on it.
+
+    ``_SHIM_LOCKS`` grew by one entry per session forever (audit info
+    item).  The caller still holds the lock while cleaning up, so we only
+    remove entries that are currently free — a waiter that acquires it a
+    moment later gets a fresh lock from ``session_shim_lock``, and since
+    the shim is already gone there is nothing left for them to race on.
+    """
+    with _SHIM_LOCKS_GUARD:
+        lock = _SHIM_LOCKS.get(session_id)
+        if lock is not None and not lock.locked():
+            del _SHIM_LOCKS[session_id]
 
 
 # ── Per-session shim lock (v0.12.1) ─────────────────────────────────────────

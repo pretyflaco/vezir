@@ -148,7 +148,11 @@ def admin_update_team(
 
 class _AddMemberBody(BaseModel):
     github: str
-    role: str = "scribe"  # 'admin' or 'scribe'
+    # 'admin' or 'scribe'.  INFORMATIONAL ONLY: every authorization check
+    # uses the token's server-wide is_admin bit; a per-team 'admin' grants
+    # nothing (audit L-6).  Kept so rosters can record intent; a real
+    # per-team admin role is tracked as a feature, not implied here.
+    role: str = "scribe"
 
 
 @router.get("/admin/teams/{team_id}/members", dependencies=[Depends(ratelimit.limit_api)])
@@ -177,6 +181,8 @@ def admin_add_member(
     """
     if queue.get_team(team_id) is None:
         raise HTTPException(404, f"team {team_id!r} not found")
+    if not body.github.strip():
+        raise HTTPException(400, "github must be non-empty")
     if body.role not in ("admin", "scribe"):
         raise HTTPException(
             400, f"invalid role {body.role!r}; must be 'admin' or 'scribe'",

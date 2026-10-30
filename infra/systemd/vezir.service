@@ -18,11 +18,14 @@ Environment=VEZIR_DATA=%h/vezir-data
 # Caddy is in place (see infra/caddy/README.md).
 Environment=VEZIR_HOST=127.0.0.1
 Environment=VEZIR_PORT=8000
-# PATH includes ~/.local/bin (for `meet`), and the standard system
+# PATH includes ~/.local/bin (for `millet`), and the standard system
 # locations for ffmpeg, git, etc.
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# Secrets (HF_TOKEN, OPENROUTER_API_KEY, MEETSCRIBE_SUMMARY_BACKEND).
-# File is mode 0600. Leading '-' means it is optional.
+# Secrets and service config (HF_TOKEN, TINFOIL_API_KEY, the Google OAuth
+# client id + VEZIR_GOOGLE_CLIENT_SECRET_FILE, VEZIR_PUBLIC_URL, MILLET_*).
+# File is mode 0600. Leading '-' means it is optional.  vezir strips its
+# own VEZIR_* and anything *SECRET*/*PASSWORD* from the environment it
+# hands to millet (0.27.0).
 EnvironmentFile=-%h/.config/environment.d/vezir.conf
 UMask=0077
 Restart=on-failure

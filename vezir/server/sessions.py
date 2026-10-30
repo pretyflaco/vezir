@@ -706,7 +706,20 @@ def move_session(
         raise HTTPException(403, f"you are not a member of team {dest['slug']!r}")
     if worker.has_active_task(session_id):
         raise HTTPException(409, "a follow-up task is running for this session; try again shortly")
-    if not queue.move_job_team(session_id, src["id"], dest["id"]):
+    # A synchronous label apply / re-auto-label runs millet under this
+    # session's HOME shim WITHOUT a busy status, so the conditional UPDATE
+    # alone could move the row mid-run and the job would label against the
+    # old team's voiceprints (audit L-23).  Take the shim lock, non-blocking:
+    # the move is instant, so "try again" is the right answer under
+    # contention.
+    shim_lock = meet_runner.session_shim_lock(session_id)
+    if not shim_lock.acquire(blocking=False):
+        raise HTTPException(409, "this session is being processed; try again shortly")
+    try:
+        moved = queue.move_job_team(session_id, src["id"], dest["id"])
+    finally:
+        shim_lock.release()
+    if not moved:
         status = (queue.get(session_id) or row).get("status")
         raise HTTPException(
             409, f"session is being processed ({status}); try again when it is done",

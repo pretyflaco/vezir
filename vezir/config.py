@@ -11,8 +11,6 @@ Environment variables:
                         configured; previously 0.0.0.0). Set explicitly to
                         0.0.0.0 to opt back into the old behavior.
     VEZIR_PORT          Port for `vezir serve` (default 8000)
-    VEZIR_COOKIE_SECURE Set to 1 to add ``Secure`` to the session cookie
-                        (recommended when serving over HTTPS via Caddy).
     VEZIR_DISABLE_RATELIMIT  Set to 1 to disable the in-process rate
                              limiter. Tests use this; do not set in prod.
     VEZIR_MILLET_BIN    Path to millet (formerly `meet`) binary (default:
