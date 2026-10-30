@@ -315,7 +315,12 @@ class Session:
     # millet verifies each enclave's NVIDIA NRAS evidence + a freshness nonce
     # itself before recording the provenance, so a summary tagged with one of
     # these was produced on attested hardware, same contract as tinfoil.
-    _ATTESTED_BACKENDS = ("tinfoil", "tinfoil-tee", "venice", "near")
+    # venice/near dropped in 0.26.5 (security audit M-2): millet verifies
+    # their NRAS evidence + nonce but nothing binds that attestation to the
+    # TLS peer that receives the transcript, so they do not earn the badge.
+    # millet >= 0.21.8 records them as "(TEE, transport unbound)" and keeps
+    # them out of the default chain.
+    _ATTESTED_BACKENDS = ("tinfoil", "tinfoil-tee")
 
     @property
     def is_attested(self) -> bool:

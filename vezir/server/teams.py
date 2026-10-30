@@ -69,6 +69,7 @@ def admin_create_team(
     """
     try:
         queue.validate_team_id(body.id)
+        queue.validate_sync_remote(body.sync_remote)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:

@@ -74,6 +74,7 @@ Tables
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -894,6 +895,51 @@ def resolve_team_uuid(slug_or_uuid: str) -> str | None:
         return row["id"] if row else None
 
 
+# ── sync_remote policy (security audit 2026-10-30, M-3 / L-11) ──────────────
+#
+# The value ends up as ``repo_url`` in a materialized millet sync config and
+# from there in ``git clone -- <url>``.  Admin-only, but validated at the API
+# boundary anyway: a value starting with ``-`` is argument-injection-shaped,
+# ``ext::`` is remote code execution, ``file://`` / absolute paths let one
+# team's config point at another team's clone on the same box, and
+# ``git://`` is unauthenticated.  Only authenticated network transports are
+# accepted on the server: https://, ssh://, or scp-style user@host:path.
+
+_SYNC_REMOTE_RE = re.compile(
+    r"\A(?:https://[A-Za-z0-9.-]+(?::\d+)?/[^\s@]+"
+    r"|ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.-]+(?::\d+)?/[^\s@]+"
+    r"|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s@/][^\s@]*)\Z"
+)
+
+
+def validate_sync_remote(value: str | None) -> str | None:
+    """Return the normalized ``sync_remote`` or raise ``ValueError``.
+
+    ``None`` / empty clears the remote.  Rejects embedded credentials (use
+    a credential helper), whitespace/control characters, option-shaped
+    values and every non-network transport.
+    """
+    if value is None:
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    if len(v) > 512:
+        raise ValueError("sync_remote is too long")
+    if any(ord(ch) < 0x20 or ch.isspace() for ch in v):
+        raise ValueError("sync_remote must not contain whitespace or control characters")
+    if v.startswith("-"):
+        raise ValueError("sync_remote must not look like a command-line option")
+    if "@" in v.split("://", 1)[-1].split("/", 1)[0] and v.startswith("https://"):
+        raise ValueError("sync_remote must not embed credentials; use a git credential helper")
+    if not _SYNC_REMOTE_RE.match(v):
+        raise ValueError(
+            "sync_remote must be https://host/org/repo(.git), "
+            "ssh://user@host/org/repo(.git) or user@host:org/repo(.git)"
+        )
+    return v
+
+
 def create_team(
     slug: str,
     name: str,
@@ -908,6 +954,7 @@ def create_team(
     ``team_uuid`` only from migrations that need a deterministic id.
     """
     validate_slug(slug)
+    sync_remote = validate_sync_remote(sync_remote)
     team_uuid = team_uuid or _new_team_uuid()
     with _conn() as c:
         existing = c.execute(
@@ -982,7 +1029,7 @@ def update_team_sync(
         params: list = []
         if sync_remote is not ...:
             sets.append("sync_remote = ?")
-            params.append(sync_remote)
+            params.append(validate_sync_remote(sync_remote))
         if sync_meeting_type is not ...:
             if not sync_meeting_type:
                 raise ValueError("sync_meeting_type must be non-empty")

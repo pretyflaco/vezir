@@ -9,12 +9,12 @@ Covers:
   personal placeholder config):
   1. per-team file override (teams/<id>/sync_config.json)
   2. materialized from team.sync_remote
-  3. legacy VEZIR_DATA/sync_config.json
+  3. (legacy VEZIR_DATA/sync_config.json — removed in 0.26.5, audit M-4)
   4. None
 * ``team_has_sync_target`` mirrors that precedence as a bool gate the worker
   uses to skip sync for remote-less teams.
 * ``_materialize_team_sync_config`` writes a minimal JSON with
-  ``remote_url`` and is idempotent across runs.
+  ``repo_url`` (the key millet reads) and is idempotent across runs.
 * ``build_home_shim`` materializes per-team sync_config and symlinks
   it into the shim — DIFFERENT teams get DIFFERENT remote URLs.
 """
@@ -121,7 +121,7 @@ def test_sync_config_materialized_from_team_remote(tmp_data, monkeypatch):
     expected = config.team_materialized_sync_config_path("blink")
     assert resolved == expected
     payload = json.loads(expected.read_text(encoding="utf-8"))
-    assert payload["remote_url"] == "https://git.example/blink.git"
+    assert payload["repo_url"] == "https://git.example/blink.git"
     # The operator-override file does NOT exist.
     assert not config.team_sync_config_path("blink").exists()
 
@@ -139,7 +139,7 @@ def test_sync_config_materialization_is_idempotent(tmp_data):
     p2 = meet_runner._resolve_team_sync_config("blink", Path("/none"))
     assert p1 == p2
     payload = json.loads(p2.read_text(encoding="utf-8"))
-    assert payload["remote_url"] == "https://a.example/x.git"
+    assert payload["repo_url"] == "https://a.example/x.git"
 
 
 def test_sync_config_materialization_rewrites_on_remote_change(tmp_data):
@@ -148,29 +148,33 @@ def test_sync_config_materialization_rewrites_on_remote_change(tmp_data):
     queue.create_team("blink", "Blink", sync_remote="https://old.example/x.git")
     p1 = meet_runner._resolve_team_sync_config("blink", Path("/none"))
     payload1 = json.loads(p1.read_text(encoding="utf-8"))
-    assert payload1["remote_url"] == "https://old.example/x.git"
+    assert payload1["repo_url"] == "https://old.example/x.git"
 
     # Operator updates the remote.
     queue.update_team_sync("blink", sync_remote="https://new.example/x.git")
 
     p2 = meet_runner._resolve_team_sync_config("blink", Path("/none"))
     payload2 = json.loads(p2.read_text(encoding="utf-8"))
-    assert payload2["remote_url"] == "https://new.example/x.git"
+    assert payload2["repo_url"] == "https://new.example/x.git"
 
 
-def test_sync_config_falls_through_to_legacy(tmp_data):
-    """No per-team override, no team.sync_remote: use legacy VEZIR_DATA/sync_config.json."""
+def test_legacy_global_sync_config_is_ignored(tmp_data, caplog):
+    """Audit M-4: a stray VEZIR_DATA/sync_config.json must NOT become every
+    remote-less team's sync target.  It is ignored with a warning."""
     from vezir import config
     from vezir.server import meet_runner, queue
 
     queue.create_team("blink", "Blink")  # no sync_remote
     legacy = config.data_dir() / "sync_config.json"
-    legacy.write_text(json.dumps({"legacy": True}))
+    legacy.write_text(json.dumps({"repo_url": "https://leak.example/x.git"}))
 
-    resolved = meet_runner._resolve_team_sync_config(
-        "blink", Path("/nonexistent/meet"),
-    )
-    assert resolved == legacy
+    meet_runner._LEGACY_WARNED = False
+    with caplog.at_level("WARNING"):
+        resolved = meet_runner._resolve_team_sync_config(
+            "blink", Path("/nonexistent/meet"),
+        )
+    assert resolved is None
+    assert "ignoring legacy global" in caplog.text
 
 
 def test_sync_config_returns_none_when_nothing_configured(tmp_data):
@@ -223,12 +227,114 @@ def test_team_has_sync_target_true_with_per_team_override(tmp_data):
     assert meet_runner.team_has_sync_target("twentyone") is True
 
 
-def test_team_has_sync_target_true_with_legacy_global(tmp_data):
+def test_team_has_sync_target_false_with_only_legacy_global(tmp_data):
     from vezir import config
     from vezir.server import meet_runner, queue
     queue.create_team("twentyone", "Twentyone")  # no sync_remote
     (config.data_dir() / "sync_config.json").write_text(json.dumps({"x": 1}))
-    assert meet_runner.team_has_sync_target("twentyone") is True
+    assert meet_runner.team_has_sync_target("twentyone") is False
+
+
+# ── sync_remote policy (audit M-3 / L-11) ───────────────────────────────────
+
+
+@pytest.mark.parametrize("bad", [
+    "-oProxyCommand=id",
+    "ext::sh -c id",
+    "file:///home/op/.local/share/meet/other-team",
+    "/home/op/.local/share/meet/other-team",
+    "git://github.com/org/repo.git",
+    "https://user:tok@github.com/org/repo.git",
+    "https://github.com/org/repo.git\n--evil",
+    "https://github.com/org/re po.git",
+    "http://github.com/org/repo.git",
+    "ssh://host/org/repo.git",  # no user
+])
+def test_sync_remote_policy_rejects(tmp_data, bad):
+    from vezir.server import queue
+    with pytest.raises(ValueError):
+        queue.validate_sync_remote(bad)
+    with pytest.raises(ValueError):
+        queue.create_team("evil", "Evil", sync_remote=bad)
+    queue.create_team("okteam", "Ok")
+    with pytest.raises(ValueError):
+        queue.update_team_sync("okteam", sync_remote=bad)
+    assert queue.get_team("okteam")["sync_remote"] is None
+
+
+@pytest.mark.parametrize("good", [
+    "https://github.com/org/repo.git",
+    "https://github.com/org/repo",
+    "https://git.example.org:8443/group/sub/repo.git",
+    "ssh://git@github.com/org/repo.git",
+    "ssh://git@github.com:22/org/repo.git",
+    "git@github.com:org/repo.git",
+])
+def test_sync_remote_policy_accepts(tmp_data, good):
+    from vezir.server import queue
+    assert queue.validate_sync_remote(good) == good
+    assert queue.validate_sync_remote("") is None
+    assert queue.validate_sync_remote(None) is None
+
+
+def test_admin_api_rejects_bad_sync_remote_with_400(tmp_data):
+    from fastapi.testclient import TestClient
+
+    from vezir.server import auth
+    from vezir.server.app import create_app
+
+    client = TestClient(create_app())
+    tok = auth.issue("root", is_admin=True)
+    h = {"Authorization": f"Bearer {tok}"}
+    r = client.post("/admin/teams", headers=h, json={
+        "id": "newteam", "name": "New", "sync_remote": "ext::sh -c id",
+    })
+    assert r.status_code == 400, r.text
+    r = client.post("/admin/teams", headers=h, json={
+        "id": "newteam", "name": "New", "sync_remote": "https://github.com/o/r.git",
+    })
+    assert r.status_code == 200, r.text
+    r = client.patch("/admin/teams/newteam", headers=h, json={"sync_remote": "-oX=y"})
+    assert r.status_code == 400
+
+
+# ── --team on every sync invocation (audit H-3, vezir half) ─────────────────
+
+
+def test_sync_passes_team_slug_and_shim_exposes_team_config(tmp_data, monkeypatch):
+    from vezir.server import meet_runner, queue
+
+    queue.create_team("blink", "Blink", sync_remote="https://git.example/blink.git")
+    calls: list[list[str]] = []
+
+    def fake_run_meet(args, *, job_id, team_id, log_path, **kw):
+        calls.append(list(args))
+        return 1  # "failed" so sync() walks both invocations
+
+    monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
+    sdir = tmp_data / "sessions" / "01JOB"
+    sdir.mkdir(parents=True)
+    meet_runner.sync(sdir, "job-1", "blink", tmp_data / "job.log")
+    assert calls, "sync() invoked millet"
+    for args in calls:
+        assert args[:3] == ["sync", "--team", "blink"], args
+
+    shim = meet_runner.build_home_shim("job-1", "blink")
+    team_cfg = shim / ".config" / "meet" / "blink" / "sync_config.json"
+    assert team_cfg.is_symlink()
+    assert os.readlink(team_cfg) == os.readlink(shim / ".config" / "meet" / "sync_config.json")
+
+
+def test_sync_falls_back_to_flat_layout_for_invalid_slug(tmp_data, monkeypatch, caplog):
+    """A legacy slug millet would reject must not break sync — flat layout + warning."""
+    from vezir.server import meet_runner, queue
+
+    uuid = queue.create_team("okslug", "Ok", sync_remote="https://git.example/x.git")
+    with queue._conn() as c:
+        c.execute("UPDATE teams SET slug = ? WHERE id = ?", ("Bad_Slug", uuid))
+    with caplog.at_level("WARNING"):
+        assert meet_runner._sync_base(uuid) == ["sync"]
+    assert "not a valid millet team name" in caplog.text
 
 
 # ── HOME shim symlinks per-team sync_config (integration) ───────────────────
@@ -266,8 +372,8 @@ def test_build_home_shim_symlinks_per_team_sync_config(tmp_data):
     t21_payload = json.loads(
         Path(os.readlink(twentyone_link)).read_text(encoding="utf-8")
     )
-    assert blink_payload["remote_url"] == "https://blink.example/x.git"
-    assert t21_payload["remote_url"] == "https://21.example/y.git"
+    assert blink_payload["repo_url"] == "https://blink.example/x.git"
+    assert t21_payload["repo_url"] == "https://21.example/y.git"
 
 
 # ── worker skips sync for remote-less teams (0.8.10) ────────────────────────

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -124,8 +125,46 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
     sync_source = _resolve_team_sync_config(team_id, real_meet)
     if sync_source is not None:
         (shim_meet / "sync_config.json").symlink_to(sync_source)
+        # ``millet sync --team <slug>`` (audit H-3) reads
+        # ~/.config/meet/<slug>/sync_config.json and keys the clone under
+        # ~/.local/share/meet/<slug>/ — expose the same source there so the
+        # per-team clone namespace works without a second config.
+        slug = team_sync_slug(team_id)
+        if slug:
+            team_cfg_dir = shim_meet / slug
+            config.secure_mkdir(team_cfg_dir)
+            (team_cfg_dir / "sync_config.json").symlink_to(sync_source)
 
     return shim
+
+
+# millet validates ``--team`` with this exact pattern (millet.paths._TEAM_SLUG_RE);
+# vezir's queue.validate_slug enforces the same shape on creation, so every
+# team created through the API qualifies.
+_MILLET_TEAM_RE = re.compile(r"^[a-z][a-z0-9-]{2,31}$")
+
+
+def team_sync_slug(team_id: str) -> str | None:
+    """The team's slug if millet accepts it as ``--team``, else None.
+
+    Keying the sync clone per team is what stops two teams whose remotes
+    share a basename from pushing into each other's repository (security
+    audit 2026-10-30, H-3).  A slug millet would reject (legacy data) falls
+    back to the flat layout, loudly.
+    """
+    from . import queue as _queue
+
+    team = _queue.get_team(team_id)
+    slug = (team or {}).get("slug") or ""
+    if _MILLET_TEAM_RE.match(slug):
+        return slug
+    if slug:
+        log.warning(
+            "team %s: slug %r is not a valid millet team name; sync clone "
+            "will not be namespaced per team",
+            team_id, slug,
+        )
+    return None
 
 
 def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
@@ -170,19 +209,36 @@ def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
         if materialized is not None:
             return materialized
 
-    # 3. Legacy global.
+    # (A legacy global VEZIR_DATA/sync_config.json used to be step 3.  It
+    # made every team WITHOUT its own target push into whatever repo the
+    # pre-0.6.2 global config named — a cross-team leak waiting for one
+    # stray file.  Removed in 0.26.5, security audit M-4: a team syncs only
+    # when it has an explicit target.)
     legacy = config.data_dir() / "sync_config.json"
-    if legacy.exists():
-        return legacy
-
+    if legacy.exists() and not _warned_legacy_global():
+        log.warning(
+            "ignoring legacy global %s: per-team sync targets only (since 0.26.5); "
+            "configure the team with 'vezir team set-sync' or delete the file",
+            legacy,
+        )
     return None
+
+
+_LEGACY_WARNED = False
+
+
+def _warned_legacy_global() -> bool:
+    global _LEGACY_WARNED
+    was = _LEGACY_WARNED
+    _LEGACY_WARNED = True
+    return was
 
 
 def team_has_sync_target(team_id: str) -> bool:
     """True if this team has a real, team-scoped git sync target configured.
 
     Mirrors :func:`_resolve_team_sync_config`'s team-scoped precedence
-    (per-team override file > ``team.sync_remote`` > legacy global), WITHOUT
+    (per-team override file > ``team.sync_remote``), WITHOUT
     materializing anything or touching the operator's personal
     ``~/.config/meet/sync_config.json``.  Callers (the worker) use this to skip
     sync entirely for remote-less teams instead of invoking millet, which would
@@ -197,8 +253,8 @@ def team_has_sync_target(team_id: str) -> bool:
     if team and (team.get("sync_remote") or "").strip():
         return True
 
-    legacy = config.data_dir() / "sync_config.json"
-    return legacy.exists()
+    # No legacy-global fallback (0.26.5, audit M-4) — see _resolve_team_sync_config.
+    return False
 
 
 def _materialize_team_sync_config(team_id: str, team: dict) -> Path | None:
@@ -208,24 +264,28 @@ def _materialize_team_sync_config(team_id: str, team: dict) -> Path | None:
     path) so a future operator-provided sync_config.json can shadow
     this without us trampling it on the next worker pass.
 
-    Idempotent: if the file already exists and its ``remote_url``
+    Idempotent: if the file already exists and its ``repo_url``
     matches the team's current ``sync_remote``, returns the existing
     path untouched.  When the remote changes (e.g. operator runs
     ``vezir team set-sync --remote ...``), the file is rewritten so
     the next job picks up the new URL.
 
     Schema is intentionally minimal (B1 / B2 split): vezir writes only
-    the field millet absolutely needs (``remote_url``) and leaves
+    the field millet absolutely needs (``repo_url``) and leaves
     everything else at millet's defaults.  Ops who need a richer
     config use the per-team override file at
     :func:`config.team_sync_config_path` instead.
+
+    (Until 0.26.5 this wrote ``remote_url`` — a key millet never read, so
+    every team configured through the admin API failed with "No repo_url
+    configured" and landed in ``sync_failed``.  Security audit M-3.)
     """
     target = config.team_materialized_sync_config_path(team_id)
     remote = (team.get("sync_remote") or "").strip()
     if not remote:
         return None
 
-    payload = {"remote_url": remote}
+    payload = {"repo_url": remote}
     desired = json.dumps(payload, indent=2)
 
     # Idempotency check: only rewrite when content drifts.
@@ -990,7 +1050,7 @@ def sync(
             job_id, slug,
         )
         return run_meet(
-            ["sync", "--force", "--meeting-type", slug, str(session_dir)],
+            [*_sync_base(team_id), "--force", "--meeting-type", slug, str(session_dir)],
             job_id=job_id,
             team_id=team_id,
             log_path=log_path,
@@ -998,7 +1058,7 @@ def sync(
 
     # Step 1: try schedule-matched sync.
     rc1 = run_meet(
-        ["sync", str(session_dir)],
+        [*_sync_base(team_id), str(session_dir)],
         job_id=job_id,
         team_id=team_id,
         log_path=log_path,
@@ -1031,7 +1091,7 @@ def sync(
     )
     return run_meet(
         [
-            "sync",
+            *_sync_base(team_id),
             "--force",
             "--meeting-type", fallback_type,
             str(session_dir),
@@ -1040,6 +1100,13 @@ def sync(
         team_id=team_id,
         log_path=log_path,
     )
+
+
+def _sync_base(team_id: str) -> list[str]:
+    """``["sync", "--team", <slug>]`` — or just ``["sync"]`` for a slug millet
+    would reject.  Namespacing the clone per team is the H-3 fix."""
+    slug = team_sync_slug(team_id)
+    return ["sync", "--team", slug] if slug else ["sync"]
 
 
 def _sync_log_shows_push(log_path: Path) -> bool:

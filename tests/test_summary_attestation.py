@@ -188,8 +188,6 @@ def test_migration_registered_last(tmp_data):
 @pytest.mark.parametrize("prov", [
     "tinfoil/glm-5-3-flash",
     "tinfoil-tee/x",
-    "venice/glm-5.3-flash (TEE)",  # millet 0.21.0 attested fallback
-    "near/z-ai/glm-5.3-flash (TEE)",  # note: model id itself contains a slash
 ])
 def test_session_is_attested_for_tee_backends(prov):
     s = Session(id="x", status="done", summary_provenance=prov)
@@ -199,6 +197,12 @@ def test_session_is_attested_for_tee_backends(prov):
 
 @pytest.mark.parametrize("prov", [
     "claudemax/claude-sonnet-4-6", "ollama/qwen3.8:27b", "openrouter/kimi",
+    # venice/near (millet 0.21.0–0.21.7 fallbacks): the attestation is not
+    # bound to the transport, so the badge is withheld (audit M-2).  Both
+    # the old "(TEE)" and the 0.21.8 "(TEE, transport unbound)" spellings.
+    "venice/glm-5.3-flash (TEE)",
+    "near/z-ai/glm-5.3-flash (TEE)",  # note: model id itself contains a slash
+    "venice/e2ee-glm-5-3 (TEE, transport unbound)",
 ])
 def test_session_is_unattested_for_other_backends(prov):
     s = Session(id="x", status="done", summary_provenance=prov)
