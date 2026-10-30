@@ -244,3 +244,38 @@ def test_artifact_route_refuses_dirs_symlinks_dotfiles_and_transients(client, tm
         assert r.status_code in want, (name, r.status_code)
         if name == "link.txt":
             assert b"s3cret" not in r.content
+
+
+# ── L-9 (0.27.0): vezir secrets do not reach the millet subprocess ───────────
+
+
+def test_millet_env_drops_vezir_secrets_but_keeps_pipeline_vars(tmp_data, monkeypatch):
+    from vezir.server import meet_runner
+
+    monkeypatch.setenv("VEZIR_GOOGLE_CLIENT_SECRET_FILE", "/etc/x")
+    monkeypatch.setenv("VEZIR_PUBLIC_URL", "https://v.example")
+    monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", "/etc/ca.pem")
+    monkeypatch.setenv("VEZIR_MILLET_BIN", "/opt/millet")
+    monkeypatch.setenv("VENICE_API_KEY", "v")
+    monkeypatch.setenv("NEAR_AI_API_KEY", "n")
+    monkeypatch.setenv("SOME_APP_SECRET", "s")
+    monkeypatch.setenv("DB_PASSWORD", "p")
+    monkeypatch.setenv("HF_TOKEN", "hf")
+    monkeypatch.setenv("TINFOIL_API_KEY", "tk")
+    monkeypatch.setenv("MILLET_OLLAMA_MODEL", "qwen")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv("LANG", "C.UTF-8")
+
+    env = meet_runner._env_for_meet(Path("/tmp/shim"), "team-uuid")
+
+    for gone in ("VEZIR_GOOGLE_CLIENT_SECRET_FILE", "VEZIR_PUBLIC_URL",
+                 "VEZIR_CADDY_ROOT_CERT_PATH", "VENICE_API_KEY", "NEAR_AI_API_KEY",
+                 "SOME_APP_SECRET", "DB_PASSWORD"):
+        assert gone not in env, gone
+    for kept in ("HF_TOKEN", "TINFOIL_API_KEY", "MILLET_OLLAMA_MODEL", "GIT_TERMINAL_PROMPT",
+                 "CUDA_VISIBLE_DEVICES", "LANG", "PATH", "VEZIR_MILLET_BIN"):
+        assert kept in env, kept
+    assert env["HOME"] == "/tmp/shim"
+    assert env["HF_HUB_OFFLINE"] == "1"
+    assert "XDG_CONFIG_HOME" not in env

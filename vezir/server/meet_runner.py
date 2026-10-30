@@ -341,8 +341,38 @@ def session_shim_lock(session_id: str) -> _threading.Lock:
         return lock
 
 
+# Environment NOT inherited by millet and its children (git, ffmpeg,
+# whisperx, curl…).  millet reads no ``VEZIR_*`` at all, so passing the
+# service's own configuration — Google OAuth secret path, session secret,
+# public URL, internal CA path — into every subprocess only widened the blast
+# radius of any child-process bug (security audit 2026-10-30, L-9).  The
+# Venice/NEAR keys are held back too: summarization through those backends is
+# opt-in per deployment (millet 0.21.8), not something a key in the service
+# environment should switch on ambiently.  Everything else — PATH, locale,
+# CUDA, HF_*, TINFOIL_API_KEY, MILLET_*, GIT_* — passes through unchanged.
+_ENV_DENY_PREFIXES = ("VEZIR_",)
+_ENV_DENY_EXACT = frozenset({"VENICE_API_KEY", "NEAR_AI_API_KEY"})
+_ENV_DENY_SUBSTRINGS = ("SECRET", "PASSWORD", "PASSWD")
+_ENV_ALLOW_DESPITE = frozenset({"VEZIR_MILLET_BIN"})  # harmless, and some ops scripts read it
+
+
+def _subprocess_env_base() -> dict:
+    """``os.environ`` minus the keys millet must not see (L-9)."""
+    out: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k in _ENV_ALLOW_DESPITE:
+            out[k] = v
+            continue
+        if k.startswith(_ENV_DENY_PREFIXES) or k in _ENV_DENY_EXACT:
+            continue
+        if any(sub in k.upper() for sub in _ENV_DENY_SUBSTRINGS):
+            continue
+        out[k] = v
+    return out
+
+
 def _env_for_meet(home: Path, team_id: str) -> dict:
-    env = os.environ.copy()
+    env = _subprocess_env_base()
     env["HOME"] = str(home)
     # Make sure XDG_CONFIG_HOME doesn't override our shim.
     env.pop("XDG_CONFIG_HOME", None)
