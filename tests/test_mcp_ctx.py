@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -205,6 +207,44 @@ def test_get_artifact_source_video_by_name(fake_client, tmp_path):
     out = mcp_server.get_artifact("01AAA", "01AAA.mp4", save_path=str(dest))
     assert out == str(dest)
     assert dest.read_bytes().startswith(b"\x00\x00\x00\x18ftyp")
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("summary", b"# Summary\n\nPhoenix plan.\n"),
+        ("cue_00-01-05.png", b"\x89PNG\r\n\x1a\nFAKEFRAME"),
+    ],
+)
+def test_get_artifact_save_path_is_private(fake_client, tmp_path, name, expected):
+    from vezir.client import mcp_server
+
+    dest = tmp_path / "chosen" / "user-selected.output"
+    old = os.umask(0o022)
+    try:
+        out = mcp_server.get_artifact("01AAA", name, save_path=str(dest))
+    finally:
+        os.umask(old)
+
+    assert out == str(dest)
+    assert dest.read_bytes() == expected
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+    assert stat.S_IMODE(dest.parent.stat().st_mode) == 0o700
+
+
+def test_get_artifact_save_path_replaces_symlink(fake_client, tmp_path):
+    from vezir.client import mcp_server
+
+    target = tmp_path / "victim.txt"
+    target.write_text("original")
+    dest = tmp_path / "summary.txt"
+    dest.symlink_to(target)
+
+    mcp_server.get_artifact("01AAA", "summary", save_path=str(dest))
+
+    assert target.read_text() == "original"
+    assert not dest.is_symlink()
+    assert dest.read_bytes() == b"# Summary\n\nPhoenix plan.\n"
 
 
 def test_get_artifact_missing_session_errors(fake_client):

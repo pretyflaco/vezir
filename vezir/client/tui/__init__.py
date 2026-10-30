@@ -53,7 +53,13 @@ def _install_crash_log() -> Path | None:
         from ... import config as _config
 
         _config.secure_mkdir(log_dir)
-        handler = RotatingFileHandler(
+
+        class _PrivateRotatingFileHandler(RotatingFileHandler):
+            def doRollover(self) -> None:
+                super().doRollover()
+                _config.secure_chmod_file(Path(self.baseFilename))
+
+        handler = _PrivateRotatingFileHandler(
             log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
         )
         _config.secure_chmod_file(log_path)

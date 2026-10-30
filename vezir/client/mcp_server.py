@@ -179,9 +179,10 @@ def get_artifact(session_id: str, name: str, save_path: str | None = None) -> st
     raw: bytes = data.ok
 
     if save_path:
+        from .. import config
+
         dest = Path(save_path).expanduser()
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(raw)
+        config.secure_write_bytes(dest, raw)
         return str(dest)
     try:
         return raw.decode("utf-8")

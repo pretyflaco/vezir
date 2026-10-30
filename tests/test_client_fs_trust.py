@@ -234,6 +234,68 @@ def test_save_artifact_replaces_symlink_instead_of_following(make_client, tmp_pa
     assert link.read_bytes() == b"new"
 
 
+def _tui_save_screen(monkeypatch, tmp_path, name):
+    from vezir.client.tui.artifact_screen import ArtifactScreen
+
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    screen = ArtifactScreen("01S", name)
+    notifications = []
+    monkeypatch.setattr(
+        screen, "notify", lambda *args, **kwargs: notifications.append((args, kwargs))
+    )
+    return screen, downloads, notifications
+
+
+def test_tui_save_rejects_absolute_and_traversal_names(monkeypatch, tmp_path):
+    (tmp_path / "home" / "Downloads").mkdir(parents=True)
+    before = set(tmp_path.rglob("*"))
+    for name in ("../escaped.txt", "nested/escaped.txt", str(tmp_path / "absolute.txt")):
+        screen, _, notifications = _tui_save_screen(monkeypatch, tmp_path, name)
+        screen._body = "secret"
+        screen.action_save_to_disk()
+        assert notifications[0][1]["severity"] == "error"
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_tui_save_never_follows_destination_symlink(monkeypatch, tmp_path):
+    screen, downloads, notifications = _tui_save_screen(monkeypatch, tmp_path, "summary.md")
+    screen._body = "new"
+    target = tmp_path / "victim.txt"
+    target.write_text("original")
+    link = downloads / "summary.md"
+    link.symlink_to(target)
+
+    screen.action_save_to_disk()
+
+    assert notifications[0][1]["severity"] == "error"
+    assert target.read_text() == "original"
+    assert link.is_symlink()
+
+
+@pytest.mark.parametrize(("name", "binary"), [("summary.md", False), ("report.pdf", True)])
+def test_tui_save_text_and_binary_are_private(monkeypatch, tmp_path, name, binary):
+    screen, downloads, notifications = _tui_save_screen(monkeypatch, tmp_path, name)
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"\x00PDF secret")
+    if binary:
+        screen._tmp_path = source
+    else:
+        screen._body = "text secret"
+    old = os.umask(0o022)
+    try:
+        screen.action_save_to_disk()
+    finally:
+        os.umask(old)
+
+    dest = downloads / name
+    assert dest.read_bytes() == (source.read_bytes() if binary else b"text secret")
+    assert _mode(dest) == 0o600
+    assert notifications[0][1]["severity"] == "information"
+
+
 # ── L-14: private, atomic client writes ──────────────────────────────────────
 
 
@@ -387,6 +449,18 @@ def test_tui_log_is_private(tmp_home, monkeypatch):
         assert log_path == tmp_home / "state" / "vezir" / "tui.log"
         assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+        logger = logging.getLogger("vezir")
+        handler = next(
+            h for h in logger.handlers if getattr(h, "baseFilename", "") == str(log_path)
+        )
+        handler.maxBytes = 256
+        logger.info("before rollover")
+        logger.info("x" * 512)
+        handler.flush()
+        rotated = log_path.with_name("tui.log.1")
+        assert rotated.exists()
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(rotated.stat().st_mode) == 0o600
         for h in list(logging.getLogger("vezir").handlers):
             if getattr(h, "baseFilename", "") == str(log_path):
                 logging.getLogger("vezir").removeHandler(h)

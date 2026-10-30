@@ -24,6 +24,8 @@ from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static, TextArea
 
+from ... import config as _config
+
 log = logging.getLogger("vezir.client.tui.artifact")
 
 _TEXT_EXTS = {".md", ".txt", ".json", ".log", ".html", ".csv", ".srt", ".vtt"}
@@ -131,12 +133,15 @@ class ArtifactScreen(Screen):
         default_dir = Path.home() / "Downloads"
         if not default_dir.exists():
             default_dir = Path.home()
-        dest = default_dir / self.artifact_name
         try:
+            if _config.safe_path_component(self.artifact_name) is None:
+                raise ValueError(f"unusable artifact name: {self.artifact_name!r}")
+            dest = default_dir / self.artifact_name
+            _config.assert_within(dest, default_dir, "artifact")
             if self._body is not None:
-                dest.write_text(self._body, encoding="utf-8")
+                _config.secure_write_text(dest, self._body)
             elif self._tmp_path is not None:
-                shutil.copy2(self._tmp_path, dest)
+                _config.secure_write_bytes(dest, self._tmp_path.read_bytes())
             self.notify(f"Saved to {dest}", severity="information")
         except Exception as exc:
             self.notify(f"Save failed: {exc}", severity="error")
