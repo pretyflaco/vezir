@@ -270,6 +270,13 @@ def add_team_credentials(
             t["token"] = token
             if label is not None:
                 t["label"] = label
+            # A vzr_ bearer replaces a nostr/google login outright.  Stale
+            # session fields left behind made identity_key() still see a
+            # nostr identity, so fan_out_session could later overwrite the
+            # bearer with a session JWT and _try_refresh POSTed the dead
+            # refresh token (security audit 2026-10-30, L-18).
+            for stale in ("auth", "npub", "refresh_token", "expires_at", "refresh_expires_at"):
+                t.pop(stale, None)
             found = True
             break
     if not found:
@@ -380,14 +387,41 @@ def active_team_refresh_token() -> str | None:
     return None
 
 
-def team_refresh_token(team: str | None) -> str | None:
+def team_refresh_token(team: str | None, *, for_url: str | None = None) -> str | None:
     """Return *team*'s stored refresh token, or the active team's when
-    *team* is None / not configured locally."""
+    *team* is None / not configured locally.
+
+    With ``for_url`` the token is only returned when the entry's ``url``
+    is the same origin: a refresh token must never be POSTed to a server
+    other than the one that issued it (security audit 2026-10-30, L-19).
+    """
+    cfg = load_teams_config()
+    entry = None
     if team:
-        for t in load_teams_config()["teams"]:
-            if t["id"] == team:
-                return t.get("refresh_token")
-    return active_team_refresh_token()
+        entry = next((t for t in cfg["teams"] if t["id"] == team), None)
+    if entry is None and cfg.get("active"):
+        entry = next((t for t in cfg["teams"] if t["id"] == cfg["active"]), None)
+    if entry is None:
+        return None
+    if for_url is not None and not same_origin(entry.get("url") or "", for_url):
+        return None
+    return entry.get("refresh_token")
+
+
+def same_origin(a: str, b: str) -> bool:
+    """True when two base URLs denote the same server (scheme+host+port)."""
+    from urllib.parse import urlsplit
+
+    try:
+        pa, pb = urlsplit(a.strip()), urlsplit(b.strip())
+    except ValueError:
+        return False
+    return (
+        pa.scheme.lower() == pb.scheme.lower()
+        and (pa.hostname or "").lower() == (pb.hostname or "").lower()
+        and (pa.port or (443 if pa.scheme == "https" else 80))
+        == (pb.port or (443 if pb.scheme == "https" else 80))
+    )
 
 
 # ── 0.24.0: one login identity, many teams ──────────────────────────────────

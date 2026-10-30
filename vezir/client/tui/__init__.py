@@ -47,11 +47,16 @@ def _install_crash_log() -> Path | None:
             os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
         )
         log_dir = state_home / "vezir"
-        log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "tui.log"
+        # Private: tracebacks here carry session ids, titles and server
+        # URLs (audit L-25).  0700 dir, 0600 file, independent of umask.
+        from ... import config as _config
+
+        _config.secure_mkdir(log_dir)
         handler = RotatingFileHandler(
             log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
         )
+        _config.secure_chmod_file(log_path)
         handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )

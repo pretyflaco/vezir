@@ -112,6 +112,21 @@ class Nip46Error(Exception):
     """Raised on connection/signing failures from the remote signer."""
 
 
+def _is_event_frame(msg: object) -> bool:
+    """True for a well-formed relay ``["EVENT", <sub>, {event}]`` frame.
+
+    Anything else — ``[]``, a short list, a non-dict event — is dropped
+    instead of raising inside the receive loop (security audit 2026-10-30,
+    L-17: a single malformed frame from a relay used to crash the login).
+    """
+    return (
+        isinstance(msg, list)
+        and len(msg) >= 3
+        and msg[0] == "EVENT"
+        and isinstance(msg[2], dict)
+    )
+
+
 class Nip46Client:
     """A NIP-46 client fanned out across several relay websockets.
 
@@ -234,6 +249,18 @@ class Nip46Client:
         self._cancelled = threading.Event()
 
     # ── connection token ─────────────────────────────────────────────────────
+
+    def _is_secret_echo(self, result: object) -> bool:
+        """Constant-time check that ``result`` echoes our connect secret.
+
+        Compared as UTF-8 bytes: ``hmac.compare_digest`` on ``str`` raises
+        ``TypeError`` for non-ASCII input, which let one decryptable
+        ``{"result": "é"}`` from any pre-bind author escape the receive loop
+        (security audit 2026-10-30, L-16).
+        """
+        if not isinstance(result, str):
+            return False
+        return hmac.compare_digest(result.encode("utf-8"), self.secret.encode("utf-8"))
 
     def build_connect_uri(self) -> str:
         """Return the ``nostrconnect://`` URI for the user's signer.
@@ -635,10 +662,12 @@ class Nip46Client:
                 msg = json.loads(raw)
             except Exception:
                 continue
-            if not isinstance(msg, list) or msg[0] != "EVENT" or len(msg) < 3:
+            if not _is_event_frame(msg):
                 continue
             ev = msg[2]
             author = ev.get("pubkey")
+            if not isinstance(author, str):
+                continue
             # Only the signer's responses matter here.  The relay is
             # already filtered to authors=[signer] post-connect, but
             # double-check and always decrypt with the SIGNER's key (the
@@ -692,9 +721,7 @@ class Nip46Client:
 
             # Skip the signer's connect echoes ("ack" / our secret) — these
             # are not method results (Amber re-emits them repeatedly).
-            if result == "ack" or (
-                isinstance(result, str) and hmac.compare_digest(result, self.secret)
-            ):
+            if result == "ack" or self._is_secret_echo(result):
                 log.debug("skip connect echo (result=%r) while awaiting reply", result)
                 continue
 
@@ -749,10 +776,12 @@ class Nip46Client:
                 msg = json.loads(raw)
             except Exception:
                 continue
-            if not isinstance(msg, list) or msg[0] != "EVENT" or len(msg) < 3:
+            if not _is_event_frame(msg):
                 continue
             ev = msg[2]
             author = ev.get("pubkey")
+            if not isinstance(author, str):
+                continue
             try:
                 plaintext, scheme = self._decrypt_any(ev.get("content", ""), author)
                 resp = json.loads(plaintext)
@@ -786,11 +815,7 @@ class Nip46Client:
             # server validates against its npub allowlist — a hijacker's
             # non-allowlisted key yields a 403, so winning the connect race
             # has no payoff against vezir.
-            if (
-                (isinstance(result, str)
-                 and hmac.compare_digest(result, self.secret))
-                or result == "ack"
-            ):
+            if self._is_secret_echo(result) or result == "ack":
                 self.remote_signer_pubkey = author
                 log.info("nip46: connected to signer %s", author[:12])
                 # Learn the clock offset from the signer's connect event:

@@ -178,7 +178,10 @@ def refresh_session(
     """
     from .config import fan_out_session, load_teams_config, team_refresh_token
 
-    refresh_token = team_refresh_token(team)
+    # Only the issuing server ever sees the refresh token (L-19): an
+    # entry whose url is a different origin yields nothing here, whatever
+    # the caller passed as base_url.
+    refresh_token = team_refresh_token(team, for_url=base_url)
     if not refresh_token:
         return None
 

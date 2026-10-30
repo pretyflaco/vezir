@@ -287,3 +287,109 @@ def test_upload_journal_is_private(tmp_path):
         assert j.exists() and _mode(j) == 0o600
     finally:
         os.umask(old)
+
+
+# ── L-18 / L-19: credential bookkeeping ─────────────────────────────────────
+
+
+@pytest.fixture
+def tmp_home(monkeypatch):
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setenv("HOME", d)
+        monkeypatch.delenv("VEZIR_URL", raising=False)
+        monkeypatch.delenv("VEZIR_TOKEN", raising=False)
+        yield Path(d)
+
+
+def test_adding_bearer_over_nostr_login_clears_session_identity(tmp_home):
+    """L-18: a vzr_ bearer replacing a login must not leave the entry
+    looking like a nostr identity, or fan-out would swap the bearer for a
+    JWT and _try_refresh would POST the dead refresh token."""
+    from vezir.client import config as ccfg
+
+    ccfg.add_team_credentials("blink", "https://s.example", "eyJ.jwt.x")
+    cfg = ccfg.load_teams_config()
+    entry = next(t for t in cfg["teams"] if t["id"] == "blink")
+    entry.update(auth="nostr", npub="ab" * 32, refresh_token="vzrt_old",
+                 expires_at=1.0, refresh_expires_at=2.0)
+    ccfg.save_teams_config(cfg)
+
+    ccfg.add_team_credentials("blink", "https://s.example", "vzr_machine")
+    entry = next(t for t in ccfg.load_teams_config()["teams"] if t["id"] == "blink")
+    assert entry["token"] == "vzr_machine"
+    for k in ("auth", "npub", "refresh_token", "expires_at", "refresh_expires_at"):
+        assert k not in entry
+    assert ccfg.identity_key(entry) is None
+    assert ccfg.team_refresh_token("blink") is None
+
+
+def test_refresh_token_never_leaves_its_origin(tmp_home, monkeypatch):
+    """L-19: --server X with --team Y must not POST Y's refresh token to X."""
+    import httpx
+
+    import vezir.client.api as api_mod
+    from vezir.client import config as ccfg
+
+    ccfg.add_team_credentials("blink", "https://issuer.example", "eyJ.jwt.x")
+    cfg = ccfg.load_teams_config()
+    entry = next(t for t in cfg["teams"] if t["id"] == "blink")
+    entry.update(auth="nostr", npub="ab" * 32, refresh_token="vzrt_secret")
+    ccfg.save_teams_config(cfg)
+
+    posted: list[tuple[str, bytes]] = []
+
+    def handler(request):
+        posted.append((str(request.url), request.content))
+        return httpx.Response(200, json={"access_jwt": "new", "refresh_token": "vzrt_new"})
+
+    orig = api_mod.httpx.Client
+
+    def factory(*a, **k):
+        k["transport"] = httpx.MockTransport(handler)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(api_mod.httpx, "Client", factory)
+
+    # Different origin: nothing is sent.
+    assert api_mod.refresh_session("https://attacker.example", team="blink") is None
+    assert posted == []
+    # Same origin (trailing slash / case differences are fine): refresh runs.
+    assert api_mod.refresh_session("https://ISSUER.example/", team="blink") == "new"
+    assert posted and b"vzrt_secret" in posted[0][1]
+    assert posted[0][0].lower().startswith("https://issuer.example/")
+
+
+@pytest.mark.parametrize("a, b, same", [
+    ("https://x.example", "https://x.example/", True),
+    ("https://x.example:443", "https://x.example", True),
+    ("https://x.example", "http://x.example", False),
+    ("https://x.example", "https://x.example:8443", False),
+    ("https://x.example", "https://y.example", False),
+    ("https://x.example", "https://x.example.evil", False),
+])
+def test_same_origin(a, b, same):
+    from vezir.client.config import same_origin
+
+    assert same_origin(a, b) is same
+
+
+def test_tui_log_is_private(tmp_home, monkeypatch):
+    import logging
+
+    from vezir.client import tui as tui_pkg
+
+    old = os.umask(0o022)
+    try:
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_home / "state"))
+        log_path = tui_pkg._install_crash_log()
+        assert log_path == tmp_home / "state" / "vezir" / "tui.log"
+        assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+        for h in list(logging.getLogger("vezir").handlers):
+            if getattr(h, "baseFilename", "") == str(log_path):
+                logging.getLogger("vezir").removeHandler(h)
+                h.close()
+    finally:
+        os.umask(old)
