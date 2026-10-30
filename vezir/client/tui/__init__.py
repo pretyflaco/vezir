@@ -55,12 +55,14 @@ def _install_crash_log() -> Path | None:
         _config.secure_mkdir(log_dir)
 
         class _PrivateRotatingFileHandler(RotatingFileHandler):
-            def doRollover(self) -> None:
-                super().doRollover()
-                _config.secure_chmod_file(Path(self.baseFilename))
+            def _open(self):
+                fd = os.open(
+                    self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600,
+                )
+                return open(fd, self.mode, encoding=self.encoding, errors=self.errors)
 
         handler = _PrivateRotatingFileHandler(
-            log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+            log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8",
         )
         _config.secure_chmod_file(log_path)
         handler.setFormatter(

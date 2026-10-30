@@ -639,6 +639,23 @@ def _staging_usage(github: str) -> tuple[int, int]:
     return user_reserved, all_outstanding
 
 
+def _reserve_staging(
+    github: str, upload_id: str, upload_length: int, meta: dict, part: Path,
+) -> None:
+    """Synchronous reservation I/O; called in a thread, never on the event loop."""
+    with _STAGING_RESERVATION_LOCK:
+        user_reserved, all_outstanding = _staging_usage(github)
+        if user_reserved + upload_length > config.resumable_user_quota_bytes():
+            raise HTTPException(status_code=413, detail="resumable staging quota exceeded")
+        free = shutil.disk_usage(config.uploads_tmp_dir()).free
+        required = all_outstanding + upload_length + config.resumable_min_free_bytes()
+        if free < required:
+            raise HTTPException(status_code=507, detail="insufficient free space for upload")
+        part.touch()
+        config.secure_chmod_file(part)
+        _save_meta(upload_id, meta)
+
+
 def sweep_abandoned_uploads(now: float | None = None) -> int:
     """Delete resumable staging files older than RESUMABLE_TTL_SEC.
 
@@ -739,17 +756,9 @@ async def create_resumable_upload(
         "created_at_epoch": time.time(),
     }
     try:
-        with _STAGING_RESERVATION_LOCK:
-            user_reserved, all_outstanding = _staging_usage(github)
-            if user_reserved + upload_length > config.resumable_user_quota_bytes():
-                raise HTTPException(status_code=413, detail="resumable staging quota exceeded")
-            free = shutil.disk_usage(config.uploads_tmp_dir()).free
-            required = all_outstanding + upload_length + config.resumable_min_free_bytes()
-            if free < required:
-                raise HTTPException(status_code=507, detail="insufficient free space for upload")
-            part.touch()
-            config.secure_chmod_file(part)
-            _save_meta(upload_id, meta)
+        await run_in_threadpool(
+            _reserve_staging, github, upload_id, upload_length, meta, part,
+        )
     except BaseException:
         part.unlink(missing_ok=True)
         _meta_path(upload_id).unlink(missing_ok=True)

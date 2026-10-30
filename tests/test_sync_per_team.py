@@ -353,6 +353,20 @@ def test_sync_rejects_invalid_legacy_slug_before_any_write(tmp_data, monkeypatch
     assert not (config.jobs_dir() / "01JOB").exists()
 
 
+def test_invalid_legacy_slug_does_not_block_non_sync_shim(tmp_data):
+    from vezir.server import meet_runner, queue
+
+    uuid = queue.create_team("okslug", "Ok", sync_remote="https://git.example/x.git")
+    with queue._conn() as c:
+        c.execute("UPDATE teams SET slug = ? WHERE id = ?", ("Bad_Slug", uuid))
+
+    shim = meet_runner.build_home_shim("01JOB", uuid)
+
+    assert (shim / ".config" / "meet" / "speaker_profiles.json").is_symlink()
+    assert (shim / ".config" / "meet" / "sync_config.json").is_symlink()
+    assert not (shim / ".config" / "meet" / "Bad_Slug").exists()
+
+
 # ── HOME shim symlinks per-team sync_config (integration) ───────────────────
 
 

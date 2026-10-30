@@ -13,7 +13,10 @@ def _transcript() -> dict:
             "end": 1.0,
             "text": "hello",
             "speaker": "REMOTE",
-            "words": [{"start": 0.0, "end": 1.0, "word": "hello"}],
+            "words": [
+                {"start": 0.0, "end": 1.0, "word": "hello"},
+                {"start": None, "end": None, "word": "untimestamped"},
+            ],
         }],
     }
 

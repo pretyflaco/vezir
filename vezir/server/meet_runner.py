@@ -130,9 +130,10 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
         # ~/.local/share/meet/<slug>/ — expose the same source there so the
         # per-team clone namespace works without a second config.
         slug = team_sync_slug(team_id)
-        team_cfg_dir = shim_meet / slug
-        config.secure_mkdir(team_cfg_dir)
-        (team_cfg_dir / "sync_config.json").symlink_to(sync_source)
+        if slug is not None:
+            team_cfg_dir = shim_meet / slug
+            config.secure_mkdir(team_cfg_dir)
+            (team_cfg_dir / "sync_config.json").symlink_to(sync_source)
 
     return shim
 
@@ -143,18 +144,22 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
 _MILLET_TEAM_RE = re.compile(r"^[a-z][a-z0-9-]{2,31}$")
 
 
-def team_sync_slug(team_id: str) -> str:
-    """Return the team's valid millet slug or refuse to sync teamlessly."""
+def team_sync_slug(team_id: str, *, required: bool = False) -> str | None:
+    """Return a valid millet slug; only sync requires one."""
     from . import queue as _queue
 
     team = _queue.get_team(team_id)
     slug = (team or {}).get("slug") or ""
-    if not _MILLET_TEAM_RE.match(slug):
+    if _MILLET_TEAM_RE.match(slug):
+        return slug
+    if required:
         raise ValueError(
             f"team {team_id}: slug {slug!r} is not a valid millet team name; "
             "refusing teamless sync; repair the legacy team slug before syncing"
         )
-    return slug
+    if slug:
+        log.warning("team %s: legacy slug %r cannot namespace sync", team_id, slug)
+    return None
 
 
 def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
@@ -1146,7 +1151,7 @@ def sync(
 
 def _sync_base(team_id: str) -> list[str]:
     """Every sync invocation is explicitly scoped to its team's clone."""
-    return ["sync", "--team", team_sync_slug(team_id)]
+    return ["sync", "--team", team_sync_slug(team_id, required=True)]
 
 
 def _sync_log_shows_push(log_path: Path) -> bool:

@@ -58,5 +58,5 @@ def validate_transcript(data: object) -> None:
                 raise ValueError(f"invalid segment words at index {i}")
             for word in words:
                 for key in ("start", "end"):
-                    if key in word and not _is_seconds(word[key]):
+                    if word.get(key) is not None and not _is_seconds(word[key]):
                         raise ValueError(f"invalid word timestamp at segment {i}")
