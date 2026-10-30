@@ -79,11 +79,13 @@ and the refresh grace window is 15 s (was 60).
 ### Changed
 
 - `millet-pipeline>=0.22.0`: NRAS EAT signatures are verified against
-  NVIDIA's JWKS, and NEAR completions are signature-bound to the attested
-  enclave key.  Such sessions show `· signed, not transport-bound` in the
-  list and the full explanation in the detail view — proven origin and
-  integrity of the output, gateway hop still unproven, so not the Tinfoil
-  badge.
+  NVIDIA's JWKS.  NEAR completion signatures are checked against a
+  provider-supplied, self-consistent key, proving response integrity and
+  origin under that key but not enclave origin.  Such sessions show
+  `· signed, provider key`, never the Tinfoil attested badge.  Both the new
+  `(response-signed, provider-key)` and legacy `(TEE, response-signed)`
+  metadata are recognized.  Full cryptographic channel and TDX quote/key
+  binding remain open.
 - `_SHIM_LOCKS` entries are pruned once free; dead `VEZIR_COOKIE_SECURE`
   references removed; `vezir.service` comments brought up to date.
 

@@ -154,7 +154,7 @@ server = [
     # an older millet's every summary would hit a retired model.
     # 0.21.8: venice/near out of the default summary chain, sync origin check,
     # session.json path validation (security audit 2026-10-30).  0.22.0:
-    # NRAS EAT signature verification + NEAR response-signature binding.
+    # NRAS EAT signature verification + NEAR provider-key response signatures.
     "millet-pipeline>=0.22.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
