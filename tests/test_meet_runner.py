@@ -12,10 +12,23 @@ def test_env_for_meet_sets_hf_hub_offline(tmp_path, monkeypatch):
         meet_runner.config, "team_speaker_profiles_path",
         lambda team_id: tmp_path / f"{team_id}.json",
     )
+    for key in (
+        "MILLET_CONFIG_DIR",
+        "MEET_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CONFIG_DIRS",
+    ):
+        monkeypatch.setenv(key, str(tmp_path / "operator-config"))
     env = meet_runner._env_for_meet(tmp_path / "HOME", "blink")
     assert env["HF_HUB_OFFLINE"] == "1"
     assert env["HOME"] == str(tmp_path / "HOME")
-    assert "XDG_CONFIG_HOME" not in env
+    for key in (
+        "MILLET_CONFIG_DIR",
+        "MEET_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CONFIG_DIRS",
+    ):
+        assert key not in env
 
 
 def _session_dir(tmp_path: Path) -> Path:

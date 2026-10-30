@@ -325,16 +325,32 @@ def test_sync_passes_team_slug_and_shim_exposes_team_config(tmp_data, monkeypatc
     assert os.readlink(team_cfg) == os.readlink(shim / ".config" / "meet" / "sync_config.json")
 
 
-def test_sync_falls_back_to_flat_layout_for_invalid_slug(tmp_data, monkeypatch, caplog):
-    """A legacy slug millet would reject must not break sync — flat layout + warning."""
+def test_sync_rejects_invalid_legacy_slug_before_any_write(tmp_data, monkeypatch):
+    from vezir import config
     from vezir.server import meet_runner, queue
 
     uuid = queue.create_team("okslug", "Ok", sync_remote="https://git.example/x.git")
     with queue._conn() as c:
         c.execute("UPDATE teams SET slug = ? WHERE id = ?", ("Bad_Slug", uuid))
-    with caplog.at_level("WARNING"):
-        assert meet_runner._sync_base(uuid) == ["sync"]
-    assert "not a valid millet team name" in caplog.text
+
+    sdir = tmp_data / "sessions" / "01JOB"
+    sdir.mkdir(parents=True)
+    before = {p.name: p.read_bytes() for p in sdir.iterdir() if p.is_file()}
+    calls = []
+    monkeypatch.setattr(
+        meet_runner,
+        "run_meet",
+        lambda *a, **k: calls.append((a, k)) or 0,
+    )
+
+    with pytest.raises(ValueError, match="refusing teamless sync"):
+        meet_runner.sync(sdir, "01JOB", uuid, tmp_data / "job.log")
+
+    assert calls == []
+    assert {p.name: p.read_bytes() for p in sdir.iterdir() if p.is_file()} == before
+    assert not (tmp_data / "job.log").exists()
+    assert not config.team_materialized_sync_config_path(uuid).exists()
+    assert not (config.jobs_dir() / "01JOB").exists()
 
 
 # ── HOME shim symlinks per-team sync_config (integration) ───────────────────

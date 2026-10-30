@@ -130,10 +130,9 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
         # ~/.local/share/meet/<slug>/ — expose the same source there so the
         # per-team clone namespace works without a second config.
         slug = team_sync_slug(team_id)
-        if slug:
-            team_cfg_dir = shim_meet / slug
-            config.secure_mkdir(team_cfg_dir)
-            (team_cfg_dir / "sync_config.json").symlink_to(sync_source)
+        team_cfg_dir = shim_meet / slug
+        config.secure_mkdir(team_cfg_dir)
+        (team_cfg_dir / "sync_config.json").symlink_to(sync_source)
 
     return shim
 
@@ -144,27 +143,18 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
 _MILLET_TEAM_RE = re.compile(r"^[a-z][a-z0-9-]{2,31}$")
 
 
-def team_sync_slug(team_id: str) -> str | None:
-    """The team's slug if millet accepts it as ``--team``, else None.
-
-    Keying the sync clone per team is what stops two teams whose remotes
-    share a basename from pushing into each other's repository (security
-    audit 2026-10-30, H-3).  A slug millet would reject (legacy data) falls
-    back to the flat layout, loudly.
-    """
+def team_sync_slug(team_id: str) -> str:
+    """Return the team's valid millet slug or refuse to sync teamlessly."""
     from . import queue as _queue
 
     team = _queue.get_team(team_id)
     slug = (team or {}).get("slug") or ""
-    if _MILLET_TEAM_RE.match(slug):
-        return slug
-    if slug:
-        log.warning(
-            "team %s: slug %r is not a valid millet team name; sync clone "
-            "will not be namespaced per team",
-            team_id, slug,
+    if not _MILLET_TEAM_RE.match(slug):
+        raise ValueError(
+            f"team {team_id}: slug {slug!r} is not a valid millet team name; "
+            "refusing teamless sync; repair the legacy team slug before syncing"
         )
-    return None
+    return slug
 
 
 def _resolve_team_sync_config(team_id: str, real_meet: Path) -> Path | None:
@@ -390,8 +380,13 @@ def _subprocess_env_base() -> dict:
 def _env_for_meet(home: Path, team_id: str) -> dict:
     env = _subprocess_env_base()
     env["HOME"] = str(home)
-    # Make sure XDG_CONFIG_HOME doesn't override our shim.
-    env.pop("XDG_CONFIG_HOME", None)
+    for key in (
+        "MILLET_CONFIG_DIR",
+        "MEET_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CONFIG_DIRS",
+    ):
+        env.pop(key, None)
     # Belt-and-suspenders: explicitly tell millet where the profile DB
     # lives, in addition to the symlink in the HOME shim.  The env var is
     # respected by millet >=0.8.2's _default_profiles_path().
@@ -1085,6 +1080,7 @@ def sync(
     The sync remote is wired through the HOME shim — see
     :func:`_resolve_team_sync_config`.
     """
+    sync_base = _sync_base(team_id)
     title = _get_job_title(job_id)
     ensure_session_json(session_dir, job_id, title=title)
 
@@ -1096,7 +1092,7 @@ def sync(
             job_id, slug,
         )
         return run_meet(
-            [*_sync_base(team_id), "--force", "--meeting-type", slug, str(session_dir)],
+            [*sync_base, "--force", "--meeting-type", slug, str(session_dir)],
             job_id=job_id,
             team_id=team_id,
             log_path=log_path,
@@ -1104,7 +1100,7 @@ def sync(
 
     # Step 1: try schedule-matched sync.
     rc1 = run_meet(
-        [*_sync_base(team_id), str(session_dir)],
+        [*sync_base, str(session_dir)],
         job_id=job_id,
         team_id=team_id,
         log_path=log_path,
@@ -1137,7 +1133,7 @@ def sync(
     )
     return run_meet(
         [
-            *_sync_base(team_id),
+            *sync_base,
             "--force",
             "--meeting-type", fallback_type,
             str(session_dir),
@@ -1149,10 +1145,8 @@ def sync(
 
 
 def _sync_base(team_id: str) -> list[str]:
-    """``["sync", "--team", <slug>]`` — or just ``["sync"]`` for a slug millet
-    would reject.  Namespacing the clone per team is the H-3 fix."""
-    slug = team_sync_slug(team_id)
-    return ["sync", "--team", slug] if slug else ["sync"]
+    """Every sync invocation is explicitly scoped to its team's clone."""
+    return ["sync", "--team", team_sync_slug(team_id)]
 
 
 def _sync_log_shows_push(log_path: Path) -> bool:
