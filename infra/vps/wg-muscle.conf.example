@@ -11,14 +11,26 @@
 [Interface]
 Address = 10.99.0.2/24
 PrivateKey = <MUSCLE_PRIVATE_KEY>
+# Real client IPs (security audit 2026-10-30, M-1).  The VPS no longer
+# masquerades, so forwarded packets arrive here with the CLIENT's source
+# address; that is what gives vezir per-client rate limits and log
+# attribution instead of one bucket for the whole internet.  Two things
+# make that work:
+#   * AllowedIPs = 0.0.0.0/0 below, so WireGuard accepts any source from
+#     the VPS peer — and Table = off so wg-quick does NOT turn that into a
+#     default route through the VPS (which would hijack all egress).
+#   * Replies to tunnel traffic carry src 10.99.0.2: a policy rule sends
+#     exactly those back via wg0.  The same rule satisfies rp_filter for
+#     the inbound packets.  Everything else keeps the normal default route.
+Table = off
+PostUp = ip rule add from 10.99.0.2 lookup 100 priority 100; ip route replace default dev wg0 table 100
+PostDown = ip rule del from 10.99.0.2 lookup 100 priority 100 || true; ip route flush table 100 || true
 
 [Peer]
 # The VPS front (public IP).
 PublicKey = <VPS_PUBLIC_KEY>
 Endpoint = <VPS_PUBLIC_IP>:51820
-# Accept traffic from the VPS WG IP. We do NOT route 0.0.0.0/0 here:
-# muscle keeps its normal default route (nvpn/Tailscale/LAN unaffected);
-# only the 10.99.0.0/24 tunnel subnet goes over wg0.
-AllowedIPs = 10.99.0.1/32
+# Any source address may arrive from the VPS (see Table = off above).
+AllowedIPs = 0.0.0.0/0
 # Keep the outbound NAT mapping alive so the VPS can reach us at any time.
 PersistentKeepalive = 25

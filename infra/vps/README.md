@@ -198,8 +198,18 @@ ssh ubuntu@<VPS_PUBLIC_IP> 'echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.
 ssh ubuntu@<VPS_PUBLIC_IP> 'sudo systemctl enable --now nftables && sudo nft -f /etc/nftables.d/vezir-dnat.conf'
 ```
 
-This DNATs `tcp dport 443` to `10.99.0.2:443` and masquerades the
-return path over `wg0` so muscle's replies route back through the VPS.
+This DNATs `tcp dport 443` to `10.99.0.2:443`.  It does **not**
+masquerade: the packets reach muscle with the real client's source
+address, which is what gives vezir per-client rate limits and honest log
+attribution (with masquerade every public client was `10.99.0.1` — one
+rate-limit bucket for the whole internet; security audit 2026-10-30,
+M-1).  The return path works because muscle policy-routes replies with
+src `10.99.0.2` back via `wg0` and its peer `AllowedIPs` is `0.0.0.0/0`
+with `Table = off` — see `wg-muscle.conf.example`.  Order of operations
+when applying this to a running setup: muscle first (its change is
+harmless while the VPS still masquerades), then drop the masquerade on
+the VPS.  Rollback is one rule:
+`nft add rule ip vezir_nat postrouting ip daddr 10.99.0.2 tcp dport 443 oifname "wg0" masquerade`.
 
 > **Gotcha (must do): ufw forward policy.** ufw ships with
 > `DEFAULT_FORWARD_POLICY="DROP"`, and its `FORWARD` chain runs at the
