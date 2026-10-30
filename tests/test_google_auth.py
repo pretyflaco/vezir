@@ -293,6 +293,24 @@ def test_endpoints_501_when_unconfigured(client):
     assert r2.status_code == 501
 
 
+def test_device_start_blank_domains_is_controlled_disabled_response(
+    client, configured, monkeypatch,
+):
+    from vezir.server import google_auth
+
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " , ")
+    monkeypatch.setattr(
+        google_auth, "_post_with_retry",
+        lambda *a, **k: pytest.fail("blank domains must not contact Google"),
+    )
+    r = client.post("/api/auth/google/device/start")
+    assert r.status_code == 501, r.text
+    assert "disabled" in r.json()["detail"]
+    public = client.get("/api/auth/google/config").json()
+    assert public["configured"] is False
+    assert public["allowed_domains"] == []
+
+
 def test_device_start_surfaces_verification_url_complete(client, configured, monkeypatch):
     # Google's device-code response includes a *complete* URL with the
     # user_code embedded; the server must pass it through so clients can

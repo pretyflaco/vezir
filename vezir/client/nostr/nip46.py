@@ -31,17 +31,13 @@ Best-practice details honored (per nostrconnect.org):
 Security — Mike Dilger attack (see pretyflaco/BBTV2 #3): the
 ``nostrconnect://`` URI is published to a public relay, so an attacker
 monitoring the relay learns our ``client-pubkey`` and could race to send
-an encrypted ``connect`` response from their own key.  BBTV2 #3's
-mitigation is that the *connection token must carry a secret* — and
-``build_connect_uri`` always includes ``secret=``, so we satisfy it.  We
-accept a connect result of our echoed ``secret`` OR ``"ack"``: real Amber
-(observed live, 2026-06-13) actually *echoes the secret*, while NDK /
-nostr-tools-based signers reply ``"ack"`` — accepting both keeps login
-working across signers.  The decisive defense is downstream: the final
-NIP-98 login event is signed by the user-pubkey learned via
-``get_public_key``, and the server validates that pubkey against its
-``nostr_members`` allowlist — a hijacker's non-allowlisted key is
-rejected with a 403, so winning the relay race yields no vezir session.
+an encrypted ``connect`` response from their own key.  A default bind
+therefore requires the signer to echo our secret.  Bare-``"ack"`` signers
+require the explicit ``VEZIR_NIP46_ALLOW_LEGACY_ACK=1`` compatibility
+opt-in, which warns that a relay observer can still win the race and deny
+login.  Downstream, the server validates the signed login pubkey against
+its ``nostr_members`` allowlist, preventing a hijacker from obtaining a
+session even in legacy mode.
 
 Scope: enough for ``vezir login`` (connect + get_public_key + sign_event).
 We fan out across several relays (``DEFAULT_RELAYS``, a probe-verified set)
@@ -68,14 +64,35 @@ from . import nip04, nip44
 
 log = logging.getLogger("vezir.nip46")
 
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def _warn_legacy_ack_once() -> None:
+    global _WARNED_LEGACY_ACK
+    if _WARNED_LEGACY_ACK:
+        return
+    _WARNED_LEGACY_ACK = True
+    log.warning(
+        "%s is enabled: bare 'ack' connect replies do not prove possession "
+        "of the connection secret; a relay observer can race the genuine "
+        "signer and cause denial of service (the server allowlist still "
+        "prevents unauthorized sessions)",
+        ALLOW_LEGACY_ACK_ENV,
+    )
+
+
 NIP46_KIND = 24133
 
 # Max |clock offset| (seconds) we'll learn from the signer's connect event.
-# Real skew between a misconfigured client and an NTP-correct signer is
-# usually seconds-to-minutes; anything beyond this is treated as bogus and
-# ignored (don't let a hostile signer push our event timestamps absurdly
-# far).  5 minutes comfortably covers realistic unsynced-clock drift.
-MAX_CLOCK_OFFSET = 300
+# Keep learned timestamps within the server's NIP-98 freshness window; a
+# hostile signer must not be able to push our login event outside it.
+MAX_CLOCK_OFFSET = 120
+
+ALLOW_LEGACY_ACK_ENV = "VEZIR_NIP46_ALLOW_LEGACY_ACK"
+_WARNED_LEGACY_ACK = False
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 # Relays known to handle NIP-46 ephemeral events well.  Originally blink
 # POS / blink-terminal's set; pruned 2026-08 after relay.nsec.app died
@@ -161,6 +178,17 @@ def _is_event_frame(msg: object) -> bool:
     )
 
 
+def _valid_nip46_event(ev: dict) -> bool:
+    return ev.get("kind") == NIP46_KIND and nostr_event.verify_event(ev)
+
+
+def _response_dict(plaintext: str) -> dict:
+    resp = json.loads(plaintext)
+    if not isinstance(resp, dict):
+        raise ValueError("decrypted NIP-46 response is not a JSON object")
+    return resp
+
+
 class Nip46Client:
     """A NIP-46 client fanned out across several relay websockets.
 
@@ -208,6 +236,9 @@ class Nip46Client:
         # avatar shown next to the app name.
         self.url = url
         self.image = image
+        self._allow_legacy_ack = _env_truthy(ALLOW_LEGACY_ACK_ENV)
+        if self._allow_legacy_ack:
+            _warn_legacy_ack_once()
 
         self._client_priv = PrivateKey()
         self.client_pubkey = self._client_priv.public_key_xonly.format().hex()
@@ -340,13 +371,15 @@ class Nip46Client:
         )
 
     def _try_upgrade_bind(self, ev: dict, author: str) -> bool:
-        """If ``ev`` (from a non-bound author) is a secret echo, rebind."""
+        """If a verified ``ev`` from a non-bound author is a secret echo, rebind."""
+        if not _valid_nip46_event(ev):
+            return False
         try:
             plaintext, _scheme = self._decrypt_any(ev.get("content", ""), author)
-            resp = json.loads(plaintext)
+            resp = _response_dict(plaintext)
         except Exception:
             return False
-        if isinstance(resp, dict) and self._is_secret_echo(resp.get("result")):
+        if self._is_secret_echo(resp.get("result")):
             self._bind(author, verified=True)
             return True
         return False
@@ -409,7 +442,7 @@ class Nip46Client:
         """
         import websocket  # websocket-client
 
-        if url.lower().startswith("ws://") and not os.environ.get(
+        if url.lower().startswith("ws://") and not _env_truthy(
             "VEZIR_NIP46_ALLOW_INSECURE_RELAY"
         ):
             raise Nip46Error(
@@ -705,22 +738,22 @@ class Nip46Client:
                 continue  # timeout/hiccup on this socket — try the next
             if not raw:
                 continue
-            # Drop duplicate EVENTs (same id from another relay) early.
+            # Authenticate before de-dupe or any other event processing.  An
+            # unsigned event must neither be decrypted nor suppress a later
+            # genuine event by poisoning _seen_events.
             try:
                 msg = json.loads(raw)
-                if (
-                    isinstance(msg, list)
-                    and msg[0] == "EVENT"
-                    and len(msg) >= 3
-                    and isinstance(msg[2], dict)
-                ):
-                    eid = msg[2].get("id")
-                    if eid is not None:
-                        if eid in self._seen_events:
-                            continue
-                        self._seen_events.add(eid)
             except Exception:
-                pass
+                return raw
+            if _is_event_frame(msg):
+                ev = msg[2]
+                if not _valid_nip46_event(ev):
+                    continue
+                eid = ev.get("id")
+                if eid is not None:
+                    if eid in self._seen_events:
+                        continue
+                    self._seen_events.add(eid)
             return raw
         return None
 
@@ -782,6 +815,9 @@ class Nip46Client:
             if not _is_event_frame(msg):
                 continue
             ev = msg[2]
+            if not _valid_nip46_event(ev):
+                log.debug("skip kind-24133 event with invalid id/signature")
+                continue
             author = ev.get("pubkey")
             if not isinstance(author, str):
                 continue
@@ -800,7 +836,7 @@ class Nip46Client:
             try:
                 plaintext, scheme = self._decrypt_any(ev.get("content", ""), peer)
                 self._peer_scheme = scheme
-                resp = json.loads(plaintext)
+                resp = _response_dict(plaintext)
             except Exception as exc:
                 # Not for us / undecryptable -- skip (logged for --verbose).
                 log.debug(
@@ -811,10 +847,14 @@ class Nip46Client:
             rid = resp.get("id")
             result = resp.get("result")
             error = resp.get("error")
+            safe_result = (
+                "<redacted connect secret>"
+                if self._is_secret_echo(result)
+                else (result[:40] if isinstance(result, str) else result)
+            )
             log.debug(
                 "recv from %s: id=%s (want %s) result=%r error=%r",
-                (author or "?")[:8], rid, expect_id,
-                (result[:40] if isinstance(result, str) else result), error,
+                (author or "?")[:8], rid, expect_id, safe_result, error,
             )
             # Auth challenge: result == "auth_url", error == URL to open.
             # (Handle before id-matching: Amber may use a fresh id here.)
@@ -836,7 +876,7 @@ class Nip46Client:
             # Skip the signer's connect echoes ("ack" / our secret) — these
             # are not method results (Amber re-emits them repeatedly).
             if result == "ack" or self._is_secret_echo(result):
-                log.debug("skip connect echo (result=%r) while awaiting reply", result)
+                log.debug("skip connect echo while awaiting reply")
                 continue
 
             # Id matching: the spec (and real Amber, observed live) echoes
@@ -876,8 +916,8 @@ class Nip46Client:
         self._connect_ws()
         deadline = time.time() + timeout
 
-        # First inbound message for us should be the connect response whose
-        # result equals our secret (or "ack").  We don't know the signer
+        # First inbound message should echo our secret (or bare "ack" only
+        # in explicitly enabled legacy mode).  We don't know the signer
         # pubkey yet, so read raw until we see a decryptable response.
         while time.time() < deadline:
             if self._cancelled.is_set():
@@ -893,12 +933,15 @@ class Nip46Client:
             if not _is_event_frame(msg):
                 continue
             ev = msg[2]
+            if not _valid_nip46_event(ev):
+                log.debug("connect: skip kind-24133 event with invalid id/signature")
+                continue
             author = ev.get("pubkey")
             if not isinstance(author, str):
                 continue
             try:
                 plaintext, scheme = self._decrypt_any(ev.get("content", ""), author)
-                resp = json.loads(plaintext)
+                resp = _response_dict(plaintext)
             except Exception as exc:
                 log.debug(
                     "connect: skip event from %s: undecryptable (%s)",
@@ -909,28 +952,17 @@ class Nip46Client:
             # requests (get_public_key, sign_event) speak the same one.
             self._peer_scheme = scheme
             log.debug(
-                "connect: decrypted %s response from %s: result=%r",
-                scheme, (author or "?")[:8], resp.get("result"),
+                "connect: decrypted %s response from %s",
+                scheme, (author or "?")[:8],
             )
             result = resp.get("result")
-            # SECURITY — Mike Dilger attack (see pretyflaco/BBTV2 #3):
-            # that mitigation requires the *connection token to carry a
-            # secret*, and ``build_connect_uri`` always includes
-            # ``secret=`` in our nostrconnect:// URI — so we satisfy it.
-            #
-            # We accept the signer's connect response of either our echoed
-            # ``secret`` (spec-ideal) OR ``"ack"``.  Observed live: real
-            # Amber *echoes the secret*; NDK / nostr-tools BunkerSigner
-            # reply ``"ack"`` — accepting both keeps login working across
-            # signers (a strict secret-echo-only requirement would break
-            # the ack signers).  Residual spoofing is neutralized downstream: after
-            # connect we learn the user-pubkey via ``get_public_key`` and
-            # the final NIP-98 login event is signed by that key, which the
-            # server validates against its npub allowlist — a hijacker's
-            # non-allowlisted key yields a 403, so winning the connect race
-            # has no payoff against vezir.
-            if self._is_secret_echo(result) or result == "ack":
-                verified = self._is_secret_echo(result)
+            # SECURITY — Mike Dilger attack (see pretyflaco/BBTV2 #3): a
+            # default bind requires proof that the signer read our secret.
+            # Bare-ack signers work only with the explicit legacy opt-in;
+            # even then the bind stays provisional so a later secret echo
+            # can replace it.  Legacy mode retains a relay-race DoS risk.
+            verified = self._is_secret_echo(result)
+            if verified or (result == "ack" and self._allow_legacy_ack):
                 if (
                     self.remote_signer_pubkey is not None
                     and self.remote_signer_pubkey != author
@@ -1098,8 +1130,20 @@ class Nip46Client:
             signed = json.loads(result)
         except Exception as exc:
             raise Nip46Error(f"signer returned non-JSON signed event: {exc}") from exc
-        if not nostr_event.verify_event(signed):
+        if not isinstance(signed, dict) or not nostr_event.verify_event(signed):
             raise Nip46Error("signed event failed local verification")
+        expected = {
+            "kind": unsigned.get("kind"),
+            "tags": unsigned.get("tags", []),
+            "content": unsigned.get("content", ""),
+            "created_at": unsigned.get("created_at"),
+        }
+        expected_pubkey = unsigned.get("pubkey") or self.user_pubkey
+        if expected_pubkey is not None:
+            expected["pubkey"] = expected_pubkey
+        for field, value in expected.items():
+            if signed.get(field) != value:
+                raise Nip46Error(f"signed event does not match request ({field})")
         # The signed event's pubkey IS the authoritative user pubkey —
         # record it (get_public_key may have been skipped/unreliable).
         self.user_pubkey = signed.get("pubkey") or self.user_pubkey

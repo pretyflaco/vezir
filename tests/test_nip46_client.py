@@ -147,6 +147,21 @@ def test_build_connect_uri_url_is_base_not_endpoint():
 # ── simulated remote signer ──────────────────────────────────────────────────
 
 
+def _nip46_event(priv, client_pubkey, content, created_at=None):
+    return nostr_event.finalize_event(
+        private_key_hex=priv.to_hex(),
+        kind=nip46.NIP46_KIND,
+        tags=[["p", client_pubkey]],
+        content=content,
+        created_at=created_at,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_ack_compatibility(monkeypatch):
+    monkeypatch.setenv(nip46.ALLOW_LEGACY_ACK_ENV, "1")
+
+
 class FakeSigner:
     """Minimal NIP-46 remote signer for the in-process round-trip.
 
@@ -155,7 +170,9 @@ class FakeSigner:
     or "nip04" (Amber).  This lets tests prove interop with each.
     """
 
-    def __init__(self, scheme: str = "nip44", echo_id: bool = True):
+    def __init__(
+        self, scheme: str = "nip44", echo_id: bool = True, mutate_signed=None,
+    ):
         self._priv = PrivateKey()
         self.pubkey = self._priv.public_key_xonly.format().hex()
         # the "user" key the signer controls (same as signer key here)
@@ -164,6 +181,7 @@ class FakeSigner:
         # Some signers (certain Amber versions) mint their own response id
         # instead of echoing the request id.  echo_id=False simulates that.
         self.echo_id = echo_id
+        self.mutate_signed = mutate_signed
 
     def _decrypt(self, ciphertext: str, client_pubkey: str) -> str:
         if self.scheme == "nip04":
@@ -183,23 +201,23 @@ class FakeSigner:
             result = self._user_priv.public_key_xonly.format().hex()
         elif method == "sign_event":
             unsigned = json.loads(req["params"][0])
-            result = json.dumps(
-                nostr_event.finalize_event(
-                    private_key_hex=self._user_priv.to_hex(),
-                    kind=unsigned["kind"],
-                    tags=unsigned["tags"],
-                    content=unsigned.get("content", ""),
-                    created_at=unsigned.get("created_at"),
-                )
+            signed = nostr_event.finalize_event(
+                private_key_hex=self._user_priv.to_hex(),
+                kind=unsigned["kind"],
+                tags=unsigned["tags"],
+                content=unsigned.get("content", ""),
+                created_at=unsigned.get("created_at"),
             )
+            if self.mutate_signed:
+                signed = self.mutate_signed(signed, unsigned)
+            result = json.dumps(signed)
         else:
             result = "ack"
         import uuid as _uuid
         resp_id = req["id"] if self.echo_id else str(_uuid.uuid4())
         resp = json.dumps({"id": resp_id, "result": result})
         ct = self._encrypt(resp, client_pubkey)
-        return {"pubkey": self.pubkey, "kind": 24133, "content": ct,
-                "tags": [["p", client_pubkey]], "created_at": int(time.time())}
+        return _nip46_event(self._priv, client_pubkey, ct)
 
 
 class FakeWS:
@@ -231,11 +249,9 @@ class FakeWS:
         ct = nip44.encrypt_for(
             resp, self._noise_priv.to_hex(), self._client.client_pubkey
         )
-        return ["EVENT", self._client._sub_id, {
-            "pubkey": self._noise_priv.public_key_xonly.format().hex(),
-            "kind": 24133, "content": ct,
-            "tags": [["p", self._client.client_pubkey]],
-            "created_at": int(time.time())}]
+        return ["EVENT", self._client._sub_id, _nip46_event(
+            self._noise_priv, self._client.client_pubkey, ct,
+        )]
 
     def send(self, raw):
         msg = json.loads(raw)
@@ -263,10 +279,9 @@ class FakeWS:
             )
             resp = json.dumps({"id": "connect", "result": result})
             ct = self._signer._encrypt(resp, self._client.client_pubkey)
-            return json.dumps(["EVENT", self._client._sub_id, {
-                "pubkey": self._signer.pubkey, "kind": 24133, "content": ct,
-                "tags": [["p", self._client.client_pubkey]],
-                "created_at": int(time.time())}])
+            return json.dumps(["EVENT", self._client._sub_id, _nip46_event(
+                self._signer._priv, self._client.client_pubkey, ct,
+            )])
         if self._outbox:
             return json.dumps(self._outbox.pop(0))
         raise TimeoutError("no message")
@@ -305,6 +320,39 @@ def test_full_connect_and_sign_roundtrip():
     assert pubkey == signer.pubkey
 
 
+def test_connect_secret_is_redacted_from_debug_logs(caplog):
+    caplog.set_level(10, logger="vezir.nip46")
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="secret")
+    client.wait_for_connection(timeout=5)
+    assert client.secret not in caplog.text
+
+
+@pytest.mark.parametrize("field", ["pubkey", "kind", "tags", "content", "created_at"])
+def test_sign_event_rejects_validly_signed_changed_fields(field):
+    def mutate(_signed, unsigned):
+        priv = PrivateKey() if field == "pubkey" else signer._user_priv
+        return nostr_event.finalize_event(
+            private_key_hex=priv.to_hex(),
+            kind=unsigned["kind"] + (field == "kind"),
+            tags=unsigned["tags"] + ([["injected", "tag"]] if field == "tags" else []),
+            content=unsigned["content"] + ("tampered" if field == "content" else ""),
+            created_at=unsigned["created_at"] + (field == "created_at"),
+        )
+
+    signer = FakeSigner(mutate_signed=mutate)
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="secret")
+    client.wait_for_connection(timeout=5)
+    unsigned = {
+        "kind": 27235, "created_at": int(time.time()),
+        "tags": [["u", "https://x/login"], ["method", "POST"]], "content": "",
+    }
+    with pytest.raises(nip46.Nip46Error, match=rf"does not match request \({field}\)"):
+        client.sign_event(unsigned, timeout=5)
+
+
 def test_connect_rejects_wrong_secret():
     signer = FakeSigner()
     client = nip46.Nip46Client(relay="wss://relay.example")
@@ -317,10 +365,9 @@ def test_connect_rejects_wrong_secret():
                 ct = nip44.encrypt_for(
                     resp, self._signer._priv.to_hex(), self._client.client_pubkey
                 )
-                return json.dumps(["EVENT", self._client._sub_id, {
-                    "pubkey": self._signer.pubkey, "kind": 24133, "content": ct,
-                    "tags": [["p", self._client.client_pubkey]],
-                    "created_at": int(time.time())}])
+                return json.dumps(["EVENT", self._client._sub_id, _nip46_event(
+                    self._signer._priv, self._client.client_pubkey, ct,
+                )])
             raise TimeoutError("no message")
 
     client._ws = BadSecretWS(client, signer)
@@ -328,11 +375,9 @@ def test_connect_rejects_wrong_secret():
         client.wait_for_connection(timeout=2)
 
 
-def test_connect_accepts_ack():
-    """Amber (and NDK/nostr-tools) reply to ``connect`` with ``"ack"`` and do
-    NOT echo the secret. We MUST accept ``"ack"`` or login is impossible
-    with the primary signer. The Dilger mitigation lives downstream (the
-    server's npub allowlist rejects a non-authorized signed login event)."""
+def test_connect_accepts_ack_with_legacy_opt_in():
+    """Bare-ack signers retain compatibility only with the explicit legacy
+    environment opt-in installed by the autouse fixture."""
     signer = FakeSigner()
     client = nip46.Nip46Client(relay="wss://relay.example")
     client._ws = FakeWS(client, signer, connect_result="ack")
@@ -348,6 +393,30 @@ def test_connect_accepts_ack():
         timeout=5,
     )
     assert nostr_event.verify_event(signed)
+
+
+@pytest.mark.parametrize("value", [None, "0", "false"])
+def test_connect_rejects_bare_ack_by_default(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv(nip46.ALLOW_LEGACY_ACK_ENV, raising=False)
+    else:
+        monkeypatch.setenv(nip46.ALLOW_LEGACY_ACK_ENV, value)
+    signer = FakeSigner()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = FakeWS(client, signer, connect_result="ack")
+    with pytest.raises(nip46.Nip46Error, match="timed out"):
+        client.wait_for_connection(timeout=0.1)
+    assert client.remote_signer_pubkey is None
+
+
+def test_legacy_ack_opt_in_warns_about_residual_dos(monkeypatch, caplog):
+    monkeypatch.setattr(nip46, "_WARNED_LEGACY_ACK", False)
+    caplog.set_level(10, logger="vezir.nip46")
+    nip46.Nip46Client(relay="wss://relay.example")
+    nip46.Nip46Client(relay="wss://relay.example")
+    warnings = [r.message for r in caplog.records if nip46.ALLOW_LEGACY_ACK_ENV in r.message]
+    assert len(warnings) == 1
+    assert "denial of service" in warnings[0]
 
 
 def test_auth_url_phishing_guard(monkeypatch):
@@ -378,11 +447,9 @@ def test_auth_url_phishing_guard(monkeypatch):
                 ct = nip44.encrypt_for(
                     resp, attacker.to_hex(), self._client.client_pubkey
                 )
-                return json.dumps(["EVENT", self._client._sub_id, {
-                    "pubkey": attacker.public_key_xonly.format().hex(),
-                    "kind": 24133, "content": ct,
-                    "tags": [["p", self._client.client_pubkey]],
-                    "created_at": int(time.time())}])
+                return json.dumps(["EVENT", self._client._sub_id, _nip46_event(
+                    attacker, self._client.client_pubkey, ct,
+                )])
             return super().recv()
 
     client._ws = AuthUrlWS(client, signer)
@@ -506,8 +573,12 @@ class _SockView:
 
 
 def _event_frame(sub_id, eid):
-    return json.dumps(["EVENT", sub_id, {"id": eid, "pubkey": "x", "kind": 24133,
-                                         "content": "c", "tags": []}])
+    priv = PrivateKey(bytes.fromhex(eid))
+    ev = nostr_event.finalize_event(
+        private_key_hex=priv.to_hex(), kind=nip46.NIP46_KIND,
+        tags=[], content="c", created_at=1,
+    )
+    return json.dumps(["EVENT", sub_id, ev])
 
 
 def test_recv_raw_dedupes_same_event_across_relays():
@@ -520,7 +591,8 @@ def test_recv_raw_dedupes_same_event_across_relays():
     client._wss = multi.as_dict()
 
     first = client._recv_raw(remaining=2.0)
-    assert first is not None and eid in first
+    assert first is not None
+    assert json.loads(first)[2]["id"] in client._seen_events
     # Second sweep: the duplicate from the other relay is suppressed.
     second = client._recv_raw(remaining=2.0)
     assert second is None
@@ -536,7 +608,8 @@ def test_recv_raw_reads_from_a_live_relay_when_another_is_quiet():
     client._wss = multi.as_dict()
 
     got = client._recv_raw(remaining=2.0)
-    assert got is not None and eid in got
+    assert got is not None
+    assert json.loads(got)[2]["id"] in client._seen_events
 
 
 def test_connect_ws_tolerates_partial_relay_failure(monkeypatch):
@@ -762,10 +835,10 @@ class _SinceFilterWS(FakeWS):
             )
             resp = json.dumps({"id": "connect", "result": result})
             ct = self._signer._encrypt(resp, self._client.client_pubkey)
-            return json.dumps(["EVENT", self._client._sub_id, {
-                "pubkey": self._signer.pubkey, "kind": 24133, "content": ct,
-                "tags": [["p", self._client.client_pubkey]],
-                "created_at": self._signer_since}])
+            return json.dumps(["EVENT", self._client._sub_id, _nip46_event(
+                self._signer._priv, self._client.client_pubkey, ct,
+                created_at=self._signer_since,
+            )])
         if self._outbox:
             return json.dumps(self._outbox.pop(0))
         raise TimeoutError("no message")
@@ -969,11 +1042,9 @@ def test_cancel_is_idempotent_and_sets_flag():
 
 def _attacker_event(client, priv: PrivateKey, body: dict) -> str:
     ct = nip44.encrypt_for(json.dumps(body), priv.to_hex(), client.client_pubkey)
-    return json.dumps(["EVENT", client._sub_id, {
-        "pubkey": priv.public_key_xonly.format().hex(),
-        "kind": 24133, "content": ct,
-        "tags": [["p", client.client_pubkey]],
-        "created_at": int(time.time())}])
+    return json.dumps([
+        "EVENT", client._sub_id, _nip46_event(priv, client.client_pubkey, ct),
+    ])
 
 
 class _InjectWS(FakeWS):
@@ -987,6 +1058,38 @@ class _InjectWS(FakeWS):
         if self._inject:
             return self._inject.pop(0)
         return super().recv()
+
+
+def test_invalid_inbound_signature_is_rejected_before_decrypt(monkeypatch):
+    signer = FakeSigner()
+    attacker = PrivateKey()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    forged = json.loads(_attacker_event(
+        client, attacker, {"id": "connect", "result": client.secret},
+    ))
+    forged[2]["content"] += "tampered"
+    client._ws = _InjectWS(
+        client, signer, connect_result="secret", inject=[json.dumps(forged)],
+    )
+    original_decrypt = client._decrypt_any
+
+    def guarded_decrypt(content, sender):
+        assert sender != attacker.public_key_xonly.format().hex()
+        return original_decrypt(content, sender)
+
+    monkeypatch.setattr(client, "_decrypt_any", guarded_decrypt)
+    assert client.wait_for_connection(timeout=5) == signer.pubkey
+
+
+def test_decrypted_non_object_json_is_ignored_cleanly():
+    signer = FakeSigner()
+    attacker = PrivateKey()
+    client = nip46.Nip46Client(relay="wss://relay.example")
+    client._ws = _InjectWS(
+        client, signer, connect_result="secret",
+        inject=[_attacker_event(client, attacker, ["not", "an", "object"])],
+    )
+    assert client.wait_for_connection(timeout=5) == signer.pubkey
 
 
 def test_attacker_ack_cannot_block_the_genuine_signer():
@@ -1090,11 +1193,29 @@ def test_verified_bind_is_never_downgraded_by_a_later_ack():
 # ── L-21 (0.27.0): relay TLS uses vezir's public trust; ws:// refused ─────────
 
 
-def test_plaintext_relay_is_refused_unless_opted_in(monkeypatch):
-    monkeypatch.delenv("VEZIR_NIP46_ALLOW_INSECURE_RELAY", raising=False)
+@pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off", "random"])
+def test_plaintext_relay_is_refused_without_explicit_truthy_opt_in(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("VEZIR_NIP46_ALLOW_INSECURE_RELAY", raising=False)
+    else:
+        monkeypatch.setenv("VEZIR_NIP46_ALLOW_INSECURE_RELAY", value)
     client = nip46.Nip46Client(relays=["ws://relay.local"])
     with pytest.raises(nip46.Nip46Error, match="plaintext relay"):
         client._open_relay("ws://relay.local")
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", " TRUE "])
+def test_plaintext_relay_truthy_opt_in(monkeypatch, value):
+    import sys
+    import types
+
+    connection = object()
+    fake = types.ModuleType("websocket")
+    fake.create_connection = lambda *a, **k: connection
+    monkeypatch.setitem(sys.modules, "websocket", fake)
+    monkeypatch.setenv("VEZIR_NIP46_ALLOW_INSECURE_RELAY", value)
+    client = nip46.Nip46Client(relays=["ws://relay.local"])
+    assert client._open_relay("ws://relay.local") is connection
 
 
 def test_relay_websocket_gets_public_trust_context(monkeypatch):

@@ -124,7 +124,16 @@ def _require_configured() -> tuple[str, str, list[str]]:
                 "[_FILE])."
             ),
         )
-    return client_id, client_secret, config.google_allowed_domains()
+    allowed_domains = config.google_allowed_domains()
+    if not allowed_domains:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                "Google sign-in is disabled: VEZIR_GOOGLE_ALLOWED_DOMAIN "
+                "is set but names no domain."
+            ),
+        )
+    return client_id, client_secret, allowed_domains
 
 
 @router.get("/api/auth/google/config", dependencies=[Depends(ratelimit.limit_api)])
@@ -137,8 +146,8 @@ def google_config():
     """
     client_id = config.google_client_id()
     secret = config.google_client_secret()
-    configured = bool(client_id and secret)
-    domains = config.google_allowed_domains() if configured else None
+    domains = config.google_allowed_domains() if client_id and secret else None
+    configured = bool(client_id and secret and domains)
     return {
         "configured": configured,
         "client_id": client_id if configured else None,

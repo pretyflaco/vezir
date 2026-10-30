@@ -33,7 +33,7 @@ import ssl
 log = logging.getLogger("vezir.trust")
 
 # Read only to warn.  Not honoured since 0.27.0.
-_LEGACY_CA_ENV_VARS = ("SSL_CERT_FILE", "VEZIR_CADDY_ROOT_CERT_PATH")
+_LEGACY_CA_ENV_VARS = ("SSL_CERT_FILE", "SSL_CERT_DIR", "VEZIR_CADDY_ROOT_CERT_PATH")
 _warned_legacy = False
 
 
@@ -70,37 +70,24 @@ def _warn_legacy_env_once() -> None:
 
 
 def _load_public_roots(ctx: ssl.SSLContext) -> None:
-    """Load the public CA roots into ``ctx`` independent of $SSL_CERT_FILE.
+    """Load certifi and the compiled OS capath, ignoring environment paths.
 
-    Prefers certifi (the same bundle httpx's default uses); also adds the OS
-    capath directory when present so privately-installed public-equivalent
-    roots still apply.  Best-effort: failures here leave whatever loaded so
-    far intact.
+    ``DefaultVerifyPaths.cafile`` and ``.capath`` are environment-derived
+    when ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` are set.  Only
+    ``openssl_capath`` is safe to consult here.  There is deliberately no
+    ``load_default_certs`` fallback: that would re-enable both variables.
     """
-    loaded = False
     try:
         import certifi
 
         ctx.load_verify_locations(cafile=certifi.where())
-        loaded = True
     except (ImportError, ssl.SSLError, OSError):
         pass
 
-    # Also pick up the OS trust directory (capath) if discoverable, without
-    # going through SSL_CERT_FILE.
     paths = ssl.get_default_verify_paths()
-    capath = paths.capath or paths.openssl_capath
+    capath = paths.openssl_capath
     if capath and os.path.isdir(capath):
         try:
             ctx.load_verify_locations(capath=capath)
-            loaded = True
-        except (ssl.SSLError, OSError):
-            pass
-
-    if not loaded:
-        # Last resort: fall back to OpenSSL defaults (may honor SSL_CERT_FILE,
-        # but better than an empty store).
-        try:
-            ctx.load_default_certs(ssl.Purpose.SERVER_AUTH)
         except (ssl.SSLError, OSError):
             pass

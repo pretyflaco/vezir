@@ -126,6 +126,8 @@ def test_legacy_env_warns_once(monkeypatch, ca_pem):
     root handlers, which would blind caplog depending on test order."""
     seen: list[str] = []
     monkeypatch.setattr(trust.log, "warning", lambda msg, *a, **k: seen.append(msg % a))
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
     monkeypatch.setenv("VEZIR_CADDY_ROOT_CERT_PATH", str(ca_pem))
     monkeypatch.setattr(trust, "_warned_legacy", False)
     trust.resolve_verify()
@@ -141,3 +143,61 @@ def test_ssl_cert_file_pointing_at_only_the_caddy_ca_does_not_blind_public_trust
     public_subjects = _public_subjects()
     monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
     assert public_subjects <= _subjects(trust.resolve_verify())
+
+
+def test_public_roots_use_compiled_capath_not_environment_paths(monkeypatch, tmp_path):
+    import certifi
+
+    environment_capath = tmp_path / "environment-certs"
+    compiled_capath = tmp_path / "compiled-certs"
+    environment_capath.mkdir()
+    compiled_capath.mkdir()
+    monkeypatch.setenv("SSL_CERT_FILE", str(environment_capath / "ca.pem"))
+    monkeypatch.setenv("SSL_CERT_DIR", str(environment_capath))
+    paths = ssl.get_default_verify_paths()
+    monkeypatch.setattr(
+        ssl, "get_default_verify_paths",
+        lambda: paths._replace(
+            cafile=str(environment_capath / "ca.pem"),
+            capath=str(environment_capath),
+            openssl_capath=str(compiled_capath),
+        ),
+    )
+
+    class _Ctx:
+        def __init__(self):
+            self.calls = []
+
+        def load_verify_locations(self, **kwargs):
+            self.calls.append(kwargs)
+
+        def load_default_certs(self, purpose):
+            raise AssertionError("environment-aware default trust must not be loaded")
+
+    ctx = _Ctx()
+    trust._load_public_roots(ctx)
+    assert ctx.calls == [
+        {"cafile": certifi.where()},
+        {"capath": str(compiled_capath)},
+    ]
+
+
+def test_public_roots_never_fall_back_to_default_certs(monkeypatch, tmp_path):
+    paths = ssl.get_default_verify_paths()
+    monkeypatch.setattr(
+        ssl, "get_default_verify_paths",
+        lambda: paths._replace(openssl_capath=str(tmp_path)),
+    )
+
+    class _Ctx:
+        default_loaded = False
+
+        def load_verify_locations(self, **kwargs):
+            raise OSError("no roots")
+
+        def load_default_certs(self, purpose):
+            self.default_loaded = True
+
+    ctx = _Ctx()
+    trust._load_public_roots(ctx)
+    assert not ctx.default_loaded
