@@ -252,7 +252,7 @@ class _RefreshBody(BaseModel):
     "/api/auth/refresh",
     dependencies=[Depends(ratelimit.limit_login)],
 )
-def refresh_session(body: _RefreshBody):
+def refresh_session(request: Request, body: _RefreshBody):
     """Rotate a refresh token → a fresh access/refresh pair.
 
     The client sends ``{"refresh_token": "vzrt_…"}``.  On success returns
@@ -270,7 +270,9 @@ def refresh_session(body: _RefreshBody):
     from . import sessions_auth
 
     try:
-        return sessions_auth.rotate(body.refresh_token)
+        return sessions_auth.rotate(
+            body.refresh_token, user_agent=request.headers.get("user-agent", "")
+        )
     except sessions_auth.SessionError as exc:
         if exc.reuse:
             log.warning("refresh rejected (reuse): %s", exc)

@@ -102,31 +102,34 @@ def _hash(token: str) -> str:
 # the window is anchored to the original rotation, and the family cannot be
 # forked.  Entries self-expire after the grace window; the cache is bounded
 # by pruning expired entries on each access.
-_GRACE_CACHE: dict[str, tuple[float, dict]] = {}
+_GRACE_CACHE: dict[str, tuple[float, str, dict]] = {}
 _GRACE_LOCK = threading.Lock()
 
 
 def _grace_prune(now: float) -> None:
     """Drop expired grace entries (called under ``_GRACE_LOCK``)."""
     grace = config.refresh_grace_seconds()
-    expired = [h for h, (ts, _) in _GRACE_CACHE.items() if now - ts > grace]
+    expired = [h for h, (ts, _, _) in _GRACE_CACHE.items() if now - ts > grace]
     for h in expired:
         _GRACE_CACHE.pop(h, None)
 
 
-def _grace_store(consumed_hash: str, response: dict) -> None:
+def _grace_store(consumed_hash: str, response: dict, user_agent: str = "") -> None:
     now = time.time()
     with _GRACE_LOCK:
         _grace_prune(now)
-        _GRACE_CACHE[consumed_hash] = (now, response)
+        _GRACE_CACHE[consumed_hash] = (now, _hash(user_agent), response)
 
 
-def _grace_lookup(consumed_hash: str) -> dict | None:
+def _grace_lookup(consumed_hash: str, user_agent: str = "") -> dict | None:
     now = time.time()
+    fingerprint = _hash(user_agent)
     with _GRACE_LOCK:
         _grace_prune(now)
         entry = _GRACE_CACHE.get(consumed_hash)
-        return entry[1] if entry is not None else None
+        if entry is None or not hmac.compare_digest(entry[1], fingerprint):
+            return None
+        return entry[2]
 
 
 def _reset_grace_cache_for_tests() -> None:
@@ -258,19 +261,20 @@ def _find_by_prev_hash(
 _ROTATE_LOCK = threading.Lock()
 
 
-def rotate(refresh_token: str) -> dict:
+def rotate(refresh_token: str, *, user_agent: str = "") -> dict:
     """Consume ``refresh_token``, rotate the family, return a new pair.
 
     Raises :class:`SessionError` (→ 401) when the token is unknown,
     expired (idle or absolute cap), from a revoked family, or a confirmed
     reuse.  On confirmed reuse the whole family is revoked as a
-    side-effect.
+    side-effect.  Grace replays must match the rotating request's
+    User-Agent fingerprint.
     """
     with _ROTATE_LOCK:
-        return _rotate_locked(refresh_token)
+        return _rotate_locked(refresh_token, user_agent)
 
 
-def _rotate_locked(refresh_token: str) -> dict:
+def _rotate_locked(refresh_token: str, user_agent: str = "") -> dict:
     if not refresh_token or not refresh_token.startswith(_REFRESH_PREFIX):
         raise SessionError("not a refresh token")
 
@@ -326,7 +330,7 @@ def _rotate_locked(refresh_token: str) -> dict:
                 # stale token inside the window return byte-identical data,
                 # and it expires with the window.
                 if within_grace:
-                    cached = _grace_lookup(token_hash)
+                    cached = _grace_lookup(token_hash, user_agent)
                     if cached is not None:
                         log.info(
                             "refresh grace: sid=%s github=%s replayed cached "
@@ -426,7 +430,7 @@ def _rotate_locked(refresh_token: str) -> dict:
     # THAT token replays this exact pair (grace path above) instead of
     # forking the family.  Runs under _ROTATE_LOCK (audit L-1), so a
     # concurrent refresh of the same token finds this entry.
-    _grace_store(token_hash, pair)
+    _grace_store(token_hash, pair, user_agent)
     return pair
 
 

@@ -206,7 +206,7 @@ def test_extract_frames_no_cues_is_noop(tmp_data, monkeypatch):
     assert worker._extract_frames(sdir, sid, _log_path(tmp_data, sid)) == 0
 
 
-def test_extract_frames_idempotent_keeps_existing(tmp_data, monkeypatch):
+def test_extract_frames_replaces_pre_planted_cues(tmp_data, monkeypatch):
     from vezir.server import worker
 
     sid = "01HZFRAMES0000000000000D"
@@ -216,19 +216,27 @@ def test_extract_frames_idempotent_keeps_existing(tmp_data, monkeypatch):
     adir = sdir / "attachments"
     adir.mkdir()
     (adir / "cue_00-00-00.png").write_bytes(b"OLD")
+    (adir / "cue_23-59-59.png").write_bytes(b"PLANTED")
+    (adir / "notes.txt").write_text("keep")
 
     calls: list = []
 
     def _run(cmd, stdout=None, stderr=None):
         calls.append(cmd)
+        assert Path(cmd[-1]).parent != adir
         return _ok_ffmpeg(cmd)
 
     monkeypatch.setattr(subprocess, "run", _run)
     written = worker._extract_frames(sdir, sid, _log_path(tmp_data, sid))
 
     assert written == 2
-    assert len(calls) == 1  # only the missing frame ran ffmpeg
-    assert (adir / "cue_00-00-00.png").read_bytes() == b"OLD"
+    assert len(calls) == 2
+    assert (adir / "cue_00-00-00.png").read_bytes() == b"OUT"
+    assert not (adir / "cue_23-59-59.png").exists()
+    assert (adir / "notes.txt").read_text() == "keep"
+    assert sorted(p.name for p in adir.glob("cue_*.png")) == [
+        "cue_00-00-00.png", "cue_00-00-05.png"
+    ]
 
 
 def test_extract_frames_caps_and_samples_evenly(tmp_data, monkeypatch):

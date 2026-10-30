@@ -327,6 +327,28 @@ def test_refresh_endpoint_reuse_returns_401(client, tmp_data, monkeypatch):
     assert "refresh failed" in r.json()["detail"]
 
 
+def test_refresh_grace_rejects_mismatched_user_agent(client, tmp_data):
+    body = _login(client)
+    payload = {"refresh_token": body["refresh_token"]}
+    rotated = client.post(
+        REFRESH_PATH, json=payload, headers={"User-Agent": "vezir-client"}
+    )
+    assert rotated.status_code == 200, rotated.text
+
+    replay = client.post(
+        REFRESH_PATH, json=payload, headers={"User-Agent": "different-client"}
+    )
+    assert replay.status_code == 401
+    assert "reuse" in replay.json()["detail"]
+
+    current = client.post(
+        REFRESH_PATH,
+        json={"refresh_token": rotated.json()["refresh_token"]},
+        headers={"User-Agent": "vezir-client"},
+    )
+    assert current.status_code == 401
+
+
 def test_refresh_unknown_token_401(client, tmp_data):
     r = client.post(REFRESH_PATH, json={"refresh_token": "vzrt_bogus"})
     assert r.status_code == 401
@@ -512,9 +534,8 @@ def test_history_rows_follow_the_family(tmp_data):
     assert n == 2
 
 
-def test_concurrent_refresh_of_same_token_does_not_self_revoke(tmp_data):
-    """L-1: two simultaneous refreshes of one token (the 0.24.0 fan-out
-    shape) must both succeed with the SAME pair, not revoke the family."""
+def test_concurrent_same_user_agent_refresh_shares_grace_pair(tmp_data):
+    """L-1/L-2: same-client concurrent refreshes share one pair."""
     import threading
 
     from vezir.server import sessions_auth
@@ -527,7 +548,9 @@ def test_concurrent_refresh_of_same_token_does_not_self_revoke(tmp_data):
     def go():
         barrier.wait()
         try:
-            results.append(sessions_auth.rotate(first["refresh_token"]))
+            results.append(
+                sessions_auth.rotate(first["refresh_token"], user_agent="vezir-client")
+            )
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 

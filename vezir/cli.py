@@ -1921,8 +1921,11 @@ def team_config():
               help="Server URL for this team (typically the same vezir "
                    "server, just different team slug).")
 @click.option("--token", default=None,
-              help="Bearer token issued by `vezir token issue` (machine/CI "
-                   "use; lands in shell history -- prefer --enroll-code).")
+              help="Bearer token issued by `vezir token issue` (lands in "
+                   "shell history; prefer --token-stdin or the hidden prompt).")
+@click.option("--token-stdin", is_flag=True,
+              help="Read the bearer token from standard input without "
+                   "placing it in shell history.")
 @click.option("--enroll-code", default=None,
               help="Enrollment code from `vezir token enroll` (0.27.0): "
                    "exchanged once with the server for the bearer.")
@@ -1932,12 +1935,20 @@ def team_config():
 @click.option("--activate/--no-activate", "activate", default=False,
               help="Make this the active team immediately.  Implicit "
                    "for the first team added.")
-def team_config_add(team_id, url, token, enroll_code, label, activate):
-    """Add or update a team in the client-side credentials store."""
+def team_config_add(team_id, url, token, token_stdin, enroll_code, label, activate):
+    """Add or update a team, prompting secretly when no token option is given."""
     from .client.config import add_team_credentials
 
-    if bool(token) == bool(enroll_code):
-        raise click.UsageError("pass exactly one of --token or --enroll-code")
+    if sum((bool(token), token_stdin, bool(enroll_code))) > 1:
+        raise click.UsageError(
+            "pass only one of --token, --token-stdin, or --enroll-code"
+        )
+    if token_stdin:
+        token = click.get_text_stream("stdin").read().strip()
+        if not token:
+            raise click.UsageError("--token-stdin received an empty token")
+    elif not token and not enroll_code:
+        token = click.prompt("Bearer token", hide_input=True)
     if enroll_code:
         from .client.api import exchange_enroll_code
 
@@ -1971,7 +1982,7 @@ def team_config_list():
         click.echo("(no teams configured locally)")
         click.echo(
             "Add one with: vezir team config add --id <slug> "
-            "--url <https://...> --token <vzr_...>"
+            "--url <https://...> --token-stdin"
         )
         return
     active = cfg.get("active")
