@@ -14,24 +14,24 @@ import logging
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import ulid
 from fastapi import (
     APIRouter,
     Depends,
-    File,
     Form,
     Header,
     HTTPException,
     Request,
     Response,
-    UploadFile,
 )
 from starlette.concurrency import run_in_threadpool
 
 from .. import config, presets
 from . import auth, queue, ratelimit
+from .multipart_stream import PartInfo, stream_multipart
 
 log = logging.getLogger("vezir.uploads")
 
@@ -39,6 +39,8 @@ router = APIRouter()
 
 
 CHUNK_BYTES = 4 * 1024 * 1024  # 4 MB
+# Raw-body cap = payload cap + room for multipart framing and form fields.
+_MULTIPART_OVERHEAD = 1 * 1024 * 1024
 
 # ── Idempotency cache (v0.12.1) ─────────────────────────────────────────────
 #
@@ -163,6 +165,66 @@ def _validate_magic(ext: str, chunk: bytes) -> None:
         raise HTTPException(status_code=415, detail=f"invalid {ext} file header")
 
 
+class _BoundedFileSink:
+    """Write one multipart file part to ``path`` with inline bounds.
+
+    ``on_first_chunk`` (e.g. magic-byte validation) and the per-file /
+    shared-total caps are enforced as bytes arrive — nothing is spooled
+    first (audit H-4).  ``shared`` is a one-element list used as a mutable
+    running total across the parts of one request.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        max_bytes: int,
+        shared: list[int] | None = None,
+        shared_max: int | None = None,
+        on_first_chunk: Callable[[bytes], None] | None = None,
+    ) -> None:
+        self.path = path
+        self.max_bytes = max_bytes
+        self.shared = shared
+        self.shared_max = shared_max
+        self.on_first_chunk = on_first_chunk
+        self.written = 0
+        self._first = True
+        self._fh = path.open("wb")
+        config.secure_chmod_file(path)
+
+    def write(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        if self._first:
+            self._first = False
+            if self.on_first_chunk is not None:
+                self.on_first_chunk(chunk)
+        self.written += len(chunk)
+        if self.written > self.max_bytes:
+            raise HTTPException(status_code=413, detail="upload too large")
+        if self.shared is not None:
+            self.shared[0] += len(chunk)
+            if self.shared_max is not None and self.shared[0] > self.shared_max:
+                raise HTTPException(status_code=413, detail="upload too large")
+        self._fh.write(chunk)
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+            config.secure_chmod_file(self.path)
+
+
+def _form_int(fields: dict[str, str], name: str) -> int | None:
+    raw = fields.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{name} must be an integer") from None
+
+
 def _parse_bool_form(v: str | None, default: bool) -> bool:
     """Parse a string-encoded bool from multipart form data.
 
@@ -184,27 +246,27 @@ def _parse_bool_form(v: str | None, default: bool) -> bool:
 @router.post("/upload", dependencies=[Depends(ratelimit.limit_upload)])
 async def upload(
     request: Request,
-    audio: UploadFile = File(...),
-    title: str | None = Form(default=None),
-    summary_preset: str | None = Form(default=None),
-    summary_template: str | None = Form(default=None),
-    # Per-upload privacy toggles.  Default True preserves pre-opt-out
-    # behavior for older clients (vezir < 0.1.11, vezir-android < 0.1.4)
-    # that don't send these fields.
-    auto_label: str | None = Form(default=None),
-    sync: str | None = Form(default=None),
-    personal: str | None = Form(default=None),
-    audio_bytes: int | None = Form(default=None),
     idempotency_key: str | None = Header(default=None),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
+    """One-shot upload: multipart with one ``audio`` file part.
+
+    Form fields: ``title``, ``summary_preset``, ``summary_template``,
+    ``auto_label`` / ``sync`` / ``personal`` (bool-ish; defaults True /
+    True / False for older clients that don't send them), ``audio_bytes``
+    (expected size, for truncation detection).
+
+    The body is parsed by :mod:`multipart_stream` and the audio part is
+    written straight to the session directory with inline bounds — never
+    spooled first (audit H-4 / H-4b).
+    """
     # v0.6.0: team_id is derived server-side from the bearer token;
     # clients never supply it.  This is the cornerstone of the team-
     # isolation invariant — see vezir_plan.md v0.6.0 design notes.
     github, team_id, _admin = auth_triple
-    _validate_preset(summary_preset)
     # Idempotent retry: if this exact upload already committed, return the
-    # existing session instead of creating a duplicate (M2).
+    # existing session instead of creating a duplicate (M2).  The key is a
+    # header, so this still happens before a single body byte is read.
     key = (idempotency_key or "").strip()[:128]
     existing = _idempotency_get(github, team_id, key)
     if existing is not None:
@@ -216,41 +278,45 @@ async def upload(
             "session_id": existing,
             "idempotent": True,
         }
-    auto_label_enabled = _parse_bool_form(auto_label, default=True)
-    sync_enabled = _parse_bool_form(sync, default=True)
-    is_personal = _parse_bool_form(personal, default=False)
     config.ensure_dirs()
     max_bytes = config.max_upload_bytes()
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > max_bytes:
-                raise HTTPException(status_code=413, detail="upload too large")
-        except ValueError:
-            pass
 
-    ext = _pick_extension(audio.filename, audio.content_type)
     session_id = ulid.new().str
     sdir = config.sessions_dir() / session_id
-    config.secure_mkdir(sdir)
-    out = sdir / f"{session_id}{ext}"
+    state: dict = {}  # ext, out, sink — filled when the audio part arrives
 
-    bytes_written = 0
+    def open_file(info: PartInfo) -> _BoundedFileSink:
+        if info.name != "audio":
+            raise HTTPException(status_code=400, detail=f"unexpected file field {info.name!r}")
+        if "sink" in state:
+            raise HTTPException(status_code=400, detail="exactly one audio file expected")
+        ext = _pick_extension(info.filename, info.content_type)
+        config.secure_mkdir(sdir)
+        out = sdir / f"{session_id}{ext}"
+        sink = _BoundedFileSink(
+            out, max_bytes=max_bytes,
+            on_first_chunk=lambda chunk: _validate_magic(ext, chunk),
+        )
+        state.update(ext=ext, out=out, sink=sink)
+        return sink
+
     try:
-        with out.open("wb") as f:
-            config.secure_chmod_file(out)
-            first_chunk = True
-            while True:
-                chunk = await audio.read(CHUNK_BYTES)
-                if not chunk:
-                    break
-                if first_chunk:
-                    _validate_magic(ext, chunk)
-                    first_chunk = False
-                bytes_written += len(chunk)
-                if bytes_written > max_bytes:
-                    raise HTTPException(status_code=413, detail="upload too large")
-                f.write(chunk)
+        fields = await stream_multipart(
+            request, open_file, max_body_bytes=max_bytes + _MULTIPART_OVERHEAD, max_files=1,
+        )
+        if "sink" not in state:
+            raise HTTPException(status_code=422, detail="missing audio file")
+        title = fields.get("title") or None
+        summary_preset = fields.get("summary_preset") or None
+        summary_template = fields.get("summary_template") or None
+        _validate_preset(summary_preset)
+        auto_label_enabled = _parse_bool_form(fields.get("auto_label"), default=True)
+        sync_enabled = _parse_bool_form(fields.get("sync"), default=True)
+        is_personal = _parse_bool_form(fields.get("personal"), default=False)
+        audio_bytes = _form_int(fields, "audio_bytes")
+        bytes_written = state["sink"].written
+        if bytes_written == 0:
+            raise HTTPException(status_code=400, detail="empty audio file")
         if audio_bytes is not None and bytes_written != audio_bytes:
             raise HTTPException(
                 status_code=400,
@@ -259,19 +325,20 @@ async def upload(
                     f"expected {audio_bytes}"
                 ),
             )
-        config.secure_chmod_file(out)
     except BaseException:
         # BaseException, not just HTTPException: a mid-upload client
         # disconnect raises starlette's ClientDisconnect (a plain
         # Exception), which previously slipped past the cleanup and
         # left a partial audio file + orphan session dir on disk
         # forever (nothing sweeps never-enqueued session dirs).
-        out.unlink(missing_ok=True)
+        if "out" in state:
+            state["out"].unlink(missing_ok=True)
         try:
             sdir.rmdir()
         except OSError:
             pass
         raise
+    ext = state["ext"]
 
     log.info(
         "upload accepted: session=%s github=%s team=%s bytes=%d ext=%s "
@@ -317,89 +384,76 @@ async def upload(
 @router.post("/upload/multi", dependencies=[Depends(ratelimit.limit_upload)])
 async def upload_multi(
     request: Request,
-    audio: list[UploadFile] = File(...),
-    title: str | None = Form(default=None),
-    summary_preset: str | None = Form(default=None),
-    summary_template: str | None = Form(default=None),
-    auto_label: str | None = Form(default=None),
-    sync: str | None = Form(default=None),
-    personal: str | None = Form(default=None),
-    audio_bytes: int | None = Form(default=None),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Accept multiple audio files as a single meeting.
 
-    The client is responsible for ordering the files (it sends them in the
-    desired order); the server preserves that order via a zero-padded
-    ``.part-NNN`` suffix.  The worker concatenates them before transcribe.
+    Multipart with one or more ``audio`` file parts plus the same form
+    fields as ``/upload``.  The client is responsible for ordering the
+    files (it sends them in the desired order); the server preserves that
+    order via a zero-padded ``.part-NNN`` suffix.  The worker concatenates
+    them before transcribe.  Streamed, never spooled (audit H-4).
     """
     github, team_id, _admin = auth_triple
-    _validate_preset(summary_preset)
-    auto_label_enabled = _parse_bool_form(auto_label, default=True)
-    sync_enabled = _parse_bool_form(sync, default=True)
-    is_personal = _parse_bool_form(personal, default=False)
-
-    if not audio:
-        raise HTTPException(status_code=400, detail="no audio files provided")
-
     config.ensure_dirs()
     max_bytes = config.max_upload_bytes()
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > max_bytes:
-                raise HTTPException(status_code=413, detail="upload too large")
-        except ValueError:
-            pass
-
-    # All parts must share one extension so the concatenated output has a
-    # single, unambiguous container.  We pick the extension from the first
-    # part and require the rest to agree.  (Validated BEFORE the session
-    # dir is created so a rejected upload leaves nothing behind.)
-    first_ext = _pick_extension(audio[0].filename, audio[0].content_type)
-    if first_ext in VIDEO_EXTS:
-        # Video is strictly single-file: the ffmpeg concat used for audio
-        # parts is not meaningful for screen recordings, and the video
-        # pipeline (audio extraction + cue frames) assumes one source file.
-        raise HTTPException(
-            status_code=415,
-            detail="video uploads are single-file; use /upload for one video",
-        )
 
     session_id = ulid.new().str
     sdir = config.sessions_dir() / session_id
-    config.secure_mkdir(sdir)
+    total = [0]
+    parts: list[tuple[Path, str]] = []
+    state: dict = {}
 
-    total_written = 0
-    try:
-        for idx, part_file in enumerate(audio):
-            ext = _pick_extension(part_file.filename, part_file.content_type)
-            if ext != first_ext:
+    def open_file(info: PartInfo) -> _BoundedFileSink:
+        if info.name != "audio":
+            raise HTTPException(status_code=400, detail=f"unexpected file field {info.name!r}")
+        ext = _pick_extension(info.filename, info.content_type)
+        idx = len(parts)
+        if idx == 0:
+            # All parts must share one extension so the concatenated output
+            # has a single, unambiguous container.  Decided on the first
+            # part; the rest must agree.
+            if ext in VIDEO_EXTS:
+                # Video is strictly single-file: the ffmpeg concat used for
+                # audio parts is not meaningful for screen recordings, and
+                # the video pipeline (audio extraction + cue frames) assumes
+                # one source file.
                 raise HTTPException(
                     status_code=415,
-                    detail=(
-                        f"all parts must share one audio type; part {idx} is "
-                        f"{ext}, expected {first_ext}"
-                    ),
+                    detail="video uploads are single-file; use /upload for one video",
                 )
-            out = sdir / f"{session_id}.part-{idx:03d}{ext}"
-            with out.open("wb") as f:
-                config.secure_chmod_file(out)
-                first_chunk = True
-                while True:
-                    chunk = await part_file.read(CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    if first_chunk:
-                        _validate_magic(ext, chunk)
-                        first_chunk = False
-                    total_written += len(chunk)
-                    if total_written > max_bytes:
-                        raise HTTPException(
-                            status_code=413, detail="upload too large"
-                        )
-                    f.write(chunk)
-            config.secure_chmod_file(out)
+            state["first_ext"] = ext
+            config.secure_mkdir(sdir)
+        elif ext != state["first_ext"]:
+            raise HTTPException(
+                status_code=415,
+                detail=(
+                    f"all parts must share one audio type; part {idx} is "
+                    f"{ext}, expected {state['first_ext']}"
+                ),
+            )
+        out = sdir / f"{session_id}.part-{idx:03d}{ext}"
+        parts.append((out, ext))
+        return _BoundedFileSink(
+            out, max_bytes=max_bytes, shared=total, shared_max=max_bytes,
+            on_first_chunk=lambda chunk: _validate_magic(ext, chunk),
+        )
+
+    try:
+        fields = await stream_multipart(
+            request, open_file, max_body_bytes=max_bytes + _MULTIPART_OVERHEAD,
+        )
+        if not parts:
+            raise HTTPException(status_code=400, detail="no audio files provided")
+        title = fields.get("title") or None
+        summary_preset = fields.get("summary_preset") or None
+        summary_template = fields.get("summary_template") or None
+        _validate_preset(summary_preset)
+        auto_label_enabled = _parse_bool_form(fields.get("auto_label"), default=True)
+        sync_enabled = _parse_bool_form(fields.get("sync"), default=True)
+        is_personal = _parse_bool_form(fields.get("personal"), default=False)
+        audio_bytes = _form_int(fields, "audio_bytes")
+        total_written = total[0]
         if audio_bytes is not None and total_written != audio_bytes:
             raise HTTPException(
                 status_code=400,
@@ -410,13 +464,15 @@ async def upload_multi(
             )
     except BaseException:
         # See the single-file endpoint: ClientDisconnect must clean up too.
-        for stale in sdir.glob(f"{session_id}.part-*"):
-            stale.unlink(missing_ok=True)
+        for out, _ext in parts:
+            out.unlink(missing_ok=True)
         try:
             sdir.rmdir()
         except OSError:
             pass
         raise
+    first_ext = state["first_ext"]
+    audio = parts  # for the log/return below
 
     log.info(
         "multi upload accepted: session=%s github=%s team=%s parts=%d bytes=%d "
@@ -851,8 +907,6 @@ def _frontmatter_meta(sdir: Path, session_id: str) -> dict:
 )
 async def import_session_endpoint(
     request: Request,
-    files: list[UploadFile] = File(...),
-    title: str | None = Form(default=None),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Import a pre-processed session's artifact bundle, verbatim.
@@ -867,6 +921,7 @@ async def import_session_endpoint(
 
     The job is registered with status ``imported`` — no transcription,
     no auto-label, no sync (both off until explicitly triggered).
+    Streamed, never spooled (audit H-4).
     """
     github, team_id, _admin = auth_triple
     config.ensure_dirs()
@@ -876,51 +931,50 @@ async def import_session_endpoint(
     sdir = config.sessions_dir() / session_id
     config.secure_mkdir(sdir)
 
-    transcript_path: Path | None = None
-    total_written = 0
+    total = [0]
     total_cap = max_bytes + (8 * _IMPORT_TEXT_CAP)
-    try:
-        for uf in files:
-            out_suffix = _classify_import_file(uf.filename or "")
-            if out_suffix is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"unsupported or unsafe file name: {uf.filename!r}",
-                )
-            out = sdir / f"{session_id}{out_suffix}"
-            if out.exists():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"duplicate artifact type in bundle: {uf.filename!r}",
-                )
-            cap = max_bytes if out_suffix in _IMPORT_AUDIO_EXTS else _IMPORT_TEXT_CAP
-            written = 0
-            with out.open("wb") as f:
-                config.secure_chmod_file(out)
-                first_chunk = True
-                while True:
-                    chunk = await uf.read(CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    if first_chunk:
-                        if out_suffix in _IMPORT_AUDIO_EXTS:
-                            _validate_magic(out_suffix, chunk)
-                        first_chunk = False
-                    written += len(chunk)
-                    total_written += len(chunk)
-                    if written > cap or total_written > total_cap:
-                        raise HTTPException(
-                            status_code=413, detail="import bundle too large",
-                        )
-                    f.write(chunk)
-            config.secure_chmod_file(out)
-            if written == 0:
-                raise HTTPException(
-                    status_code=400, detail=f"empty file: {uf.filename!r}",
-                )
-            if out_suffix == ".json":
-                transcript_path = out
+    written: list[tuple[Path, str, str, _BoundedFileSink]] = []  # out, suffix, filename, sink
+    transcript_path: Path | None = None
 
+    def open_file(info: PartInfo) -> _BoundedFileSink:
+        nonlocal transcript_path
+        if info.name != "files":
+            raise HTTPException(status_code=400, detail=f"unexpected file field {info.name!r}")
+        out_suffix = _classify_import_file(info.filename or "")
+        if out_suffix is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported or unsafe file name: {info.filename!r}",
+            )
+        out = sdir / f"{session_id}{out_suffix}"
+        if out.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"duplicate artifact type in bundle: {info.filename!r}",
+            )
+        cap = max_bytes if out_suffix in _IMPORT_AUDIO_EXTS else _IMPORT_TEXT_CAP
+        magic = (
+            (lambda chunk: _validate_magic(out_suffix, chunk))
+            if out_suffix in _IMPORT_AUDIO_EXTS else None
+        )
+        sink = _BoundedFileSink(
+            out, max_bytes=cap, shared=total, shared_max=total_cap, on_first_chunk=magic,
+        )
+        written.append((out, out_suffix, info.filename or "", sink))
+        if out_suffix == ".json":
+            transcript_path = out
+        return sink
+
+    try:
+        fields = await stream_multipart(
+            request, open_file, max_body_bytes=total_cap + _MULTIPART_OVERHEAD,
+        )
+        title = fields.get("title") or None
+        if not written:
+            raise HTTPException(status_code=422, detail="missing files")
+        for _out, _suffix, filename, sink in written:
+            if sink.written == 0:
+                raise HTTPException(status_code=400, detail=f"empty file: {filename!r}")
         if transcript_path is None:
             raise HTTPException(
                 status_code=400,
@@ -960,7 +1014,7 @@ async def import_session_endpoint(
     log.info(
         "import accepted: session=%s github=%s team=%s files=%d bytes=%d "
         "title=%r created_at=%r",
-        session_id, github, team_id, len(files), total_written,
+        session_id, github, team_id, len(written), total[0],
         title or meta.get("title"), meta.get("created_at"),
     )
     return {

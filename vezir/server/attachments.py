@@ -27,11 +27,12 @@ import mimetypes
 import re
 from pathlib import Path, PurePath
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from .. import config
 from . import auth, queue, ratelimit
+from .multipart_stream import PartInfo, stream_multipart
 from .sessions import enforce_team_visibility
 
 log = logging.getLogger("vezir.attachments")
@@ -48,6 +49,33 @@ _MAX_SUFFIX_LEN = 16
 # becomes a git path on someone else's checkout.
 _UNSAFE_NAME_RE = re.compile(r"[\x00-\x1f\x7f]")
 _FALLBACK_NAME = "attachment"
+
+
+class _AttachmentSink:
+    """One attachment part, written with the per-file and per-session caps."""
+
+    def __init__(self, path: Path, max_file: int, shared: list[int], shared_max: int) -> None:
+        self.path = path
+        self.max_file = max_file
+        self.shared = shared
+        self.shared_max = shared_max
+        self.written = 0
+        self._fh = path.open("wb")
+        config.secure_chmod_file(path)
+
+    def write(self, chunk: bytes) -> None:
+        self.written += len(chunk)
+        self.shared[0] += len(chunk)
+        if self.written > self.max_file:
+            raise HTTPException(413, "attachment too large")
+        if self.shared[0] > self.shared_max:
+            raise HTTPException(413, "attachments too large")
+        self._fh.write(chunk)
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+            config.secure_chmod_file(self.path)
 
 
 def attachments_dir(session_id: str) -> Path:
@@ -143,7 +171,6 @@ def _require_visible_session(
 async def upload_attachments(
     session_id: str,
     request: Request,
-    files: list[UploadFile] = File(...),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Store one or more attachments for an already-uploaded session.
@@ -166,55 +193,60 @@ async def upload_attachments(
     adir = sdir / ATTACHMENTS_SUBDIR
     existing = _stored(adir)
     used_bytes = sum(p.stat().st_size for p in existing)
-
-    if len(existing) + len(files) > max_count:
-        raise HTTPException(
-            413,
-            f"too many attachments: {len(existing)} stored, {len(files)} sent, "
-            f"limit {max_count}",
-        )
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if used_bytes + int(content_length) > max_total:
-                raise HTTPException(413, "attachments too large")
-        except ValueError:
-            pass
+    remaining_count = max_count - len(existing)
+    if remaining_count <= 0:
+        raise HTTPException(413, f"too many attachments: {len(existing)} stored, limit {max_count}")
+    remaining_bytes = max_total - used_bytes
+    if remaining_bytes <= 0:
+        raise HTTPException(413, "attachments too large")
 
     config.secure_mkdir(adir)
     written: list[Path] = []
-    total = used_bytes
+    total = [0]
+
+    def open_file(info: PartInfo) -> _AttachmentSink:
+        if info.name != "files":
+            raise HTTPException(400, f"unexpected file field {info.name!r}")
+        if len(written) >= remaining_count:
+            raise HTTPException(
+                413,
+                f"too many attachments: {len(existing)} stored, "
+                f"{len(written) + 1} sent, limit {max_count}",
+            )
+        dest = _unique_path(adir, safe_attachment_name(info.filename))
+        written.append(dest)
+        return _AttachmentSink(dest, max_file_bytes, total, remaining_bytes)
+
     try:
-        for upload in files:
-            dest = _unique_path(adir, safe_attachment_name(upload.filename))
-            written.append(dest)
-            file_bytes = 0
-            with dest.open("wb") as fh:
-                config.secure_chmod_file(dest)
-                while True:
-                    chunk = await upload.read(CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    file_bytes += len(chunk)
-                    total += len(chunk)
-                    if file_bytes > max_file_bytes:
-                        raise HTTPException(413, "attachment too large")
-                    if total > max_total:
-                        raise HTTPException(413, "attachments too large")
-                    fh.write(chunk)
-            config.secure_chmod_file(dest)
+        # Streamed straight into the attachments dir with inline caps —
+        # nothing is spooled to $TMPDIR first (audit H-4).
+        await stream_multipart(
+            request, open_file,
+            max_body_bytes=min(remaining_bytes, max_file_bytes * remaining_count) + (1 << 20),
+            max_files=remaining_count,
+        )
+        if not written:
+            raise HTTPException(422, "missing files")
     except BaseException:
         # BaseException, not just HTTPException: a mid-upload disconnect
         # raises starlette's ClientDisconnect, which would otherwise leave
         # half-written attachments behind (see uploads.py).
         for p in written:
             p.unlink(missing_ok=True)
+        if not existing:
+            # Nothing was stored before this request: leave no empty dir
+            # behind (the count is only known as parts arrive now).
+            try:
+                adir.rmdir()
+            except OSError:
+                pass
         raise
+    total_bytes = total[0]
 
     stored = [_describe(p) for p in written]
     log.info(
         "attachments stored: session=%s count=%d bytes=%d names=%s",
-        session_id, len(stored), total - used_bytes,
+        session_id, len(stored), total_bytes,
         [d["name"] for d in stored],
     )
     return {"session_id": session_id, "attachments": stored}
