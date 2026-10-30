@@ -17,6 +17,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -286,7 +287,8 @@ def test_tui_save_text_and_binary_are_private(monkeypatch, tmp_path, name, binar
         screen._body = "text secret"
     old = os.umask(0o022)
     try:
-        screen.action_save_to_disk()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("whole-file read")):
+            screen.action_save_to_disk()
     finally:
         os.umask(old)
 

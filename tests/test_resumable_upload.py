@@ -5,7 +5,9 @@ import io
 import tempfile
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +17,8 @@ def tmp_data(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setenv("VEZIR_DATA", d)
         monkeypatch.delenv("VEZIR_MAX_UPLOAD_BYTES", raising=False)
+        monkeypatch.delenv("VEZIR_RESUMABLE_USER_QUOTA_BYTES", raising=False)
+        monkeypatch.delenv("VEZIR_RESUMABLE_MIN_FREE_BYTES", raising=False)
         yield Path(d)
 
 
@@ -192,6 +196,110 @@ def test_missing_upload_length_400(client_and_token):
         }),
     )
     assert resp.status_code == 400
+
+
+def test_resumable_multipart_fields_remain_supported(client_and_token):
+    client, token, _ = client_and_token
+    data = _wav_bytes()
+    r = client.post(
+        "/upload/resumable",
+        headers=_headers(token, {
+            "Upload-Length": str(len(data)),
+            "Upload-Filename": "m.wav",
+            "Upload-Content-Type": "audio/wav",
+        }),
+        files={"title": (None, "Multipart title"), "personal": (None, "true")},
+    )
+    assert r.status_code == 201, r.text
+    from vezir.server import uploads
+
+    meta = uploads._load_meta(r.json()["upload_id"])
+    assert meta["title"] == "Multipart title"
+    assert meta["personal"] is True
+
+
+def test_resumable_multipart_file_is_rejected_without_spooling(
+    client_and_token, tmp_path, monkeypatch,
+):
+    client, token, tmp_data = client_and_token
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setenv("TMPDIR", str(spool))
+    tempfile.tempdir = None
+    try:
+        r = client.post(
+            "/upload/resumable",
+            headers=_headers(token, {
+                "Upload-Length": "100",
+                "Upload-Filename": "m.wav",
+                "Upload-Content-Type": "audio/wav",
+            }),
+            files={"audio": ("evil.wav", _wav_bytes(), "audio/wav")},
+        )
+    finally:
+        tempfile.tempdir = None
+    assert r.status_code == 400, r.text
+    assert list(spool.iterdir()) == []
+    staging = tmp_data / "uploads-tmp"
+    assert not staging.exists() or list(staging.iterdir()) == []
+
+
+def test_resumable_user_quota_reserves_and_releases(client_and_token, monkeypatch):
+    client, token, tmp_data = client_and_token
+    data = _wav_bytes()
+    monkeypatch.setenv("VEZIR_RESUMABLE_USER_QUOTA_BYTES", str(len(data)))
+    assert _create(client, token, data).status_code == 201
+    assert _create(client, token, data).status_code == 413
+    staging = tmp_data / "uploads-tmp"
+    assert len(list(staging.glob("*.meta.json"))) == 1
+
+    from vezir.server import uploads
+
+    assert uploads.sweep_abandoned_uploads(
+        now=time.time() + uploads.RESUMABLE_TTL_SEC + 1,
+    ) == 1
+    assert _create(client, token, data).status_code == 201
+
+
+def test_resumable_free_space_rejection_leaves_no_reservation(client_and_token, monkeypatch):
+    client, token, tmp_data = client_and_token
+    data = _wav_bytes()
+    min_free = 1024
+    monkeypatch.setenv("VEZIR_RESUMABLE_MIN_FREE_BYTES", str(min_free))
+    from vezir.server import uploads
+
+    monkeypatch.setattr(
+        uploads.shutil, "disk_usage",
+        lambda _path: SimpleNamespace(free=len(data) + min_free - 1),
+    )
+    assert _create(client, token, data).status_code == 507
+    staging = tmp_data / "uploads-tmp"
+    assert not staging.exists() or list(staging.iterdir()) == []
+
+
+def test_resumable_free_space_counts_existing_reservations(client_and_token, monkeypatch):
+    client, token, _ = client_and_token
+    data = _wav_bytes()
+    min_free = 1024
+    monkeypatch.setenv("VEZIR_RESUMABLE_MIN_FREE_BYTES", str(min_free))
+    from vezir.server import uploads
+
+    monkeypatch.setattr(
+        uploads.shutil, "disk_usage",
+        lambda _path: SimpleNamespace(free=2 * len(data) + min_free - 1),
+    )
+    assert _create(client, token, data).status_code == 201
+    assert _create(client, token, data).status_code == 507
+
+
+def test_concurrent_resumable_creates_cannot_exceed_user_quota(client_and_token, monkeypatch):
+    client, token, tmp_data = client_and_token
+    data = _wav_bytes()
+    monkeypatch.setenv("VEZIR_RESUMABLE_USER_QUOTA_BYTES", str(len(data)))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: _create(client, token, data), range(2)))
+    assert sorted(r.status_code for r in responses) == [201, 413]
+    assert len(list((tmp_data / "uploads-tmp").glob("*.meta.json"))) == 1
 
 
 def test_sweep_removes_old_staging(client_and_token):

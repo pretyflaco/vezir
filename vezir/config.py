@@ -38,6 +38,10 @@ Environment variables:
     VEZIR_SUMMARY_PRESET    Deprecated; presets no longer select anything
     VEZIR_LOG_LEVEL     Logging level (default INFO)
     VEZIR_MAX_UPLOAD_BYTES Maximum upload size (default 2 GiB)
+    VEZIR_RESUMABLE_USER_QUOTA_BYTES Per-user reserved resumable staging
+                                    quota (default 4 GiB)
+    VEZIR_RESUMABLE_MIN_FREE_BYTES Free disk space kept in reserve when
+                                    creating resumable uploads (default 1 GiB)
     VEZIR_TINY_SPEAKER_MAX_SECONDS  Max total speech (seconds) for an
                         unresolved raw speaker to be treated as spurious
                         noise and ignored when routing to needs_labeling
@@ -1038,6 +1042,16 @@ def max_upload_bytes() -> int:
     return int(raw)
 
 
+def resumable_user_quota_bytes() -> int:
+    """Maximum declared staging reserved by one user (default: 4 GiB)."""
+    return _positive_env_int("VEZIR_RESUMABLE_USER_QUOTA_BYTES", 4 * 1024 * 1024 * 1024)
+
+
+def resumable_min_free_bytes() -> int:
+    """Free space kept in reserve when staging resumable uploads (default: 1 GiB)."""
+    return _positive_env_int("VEZIR_RESUMABLE_MIN_FREE_BYTES", 1024 * 1024 * 1024)
+
+
 def max_attachments_per_session() -> int:
     """Maximum number of attachments stored for one session (default: 50).
 
@@ -1152,6 +1166,25 @@ def secure_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(text)
+        tmp.chmod(0o600)
+        tmp.replace(path)
+        secure_chmod_file(path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def secure_copy_file(source: Path, path: Path) -> None:
+    """Copy a file without loading it wholly into memory, privately and atomically."""
+    secure_mkdir(path.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with source.open("rb") as src, os.fdopen(fd, "wb") as dst:
+            shutil.copyfileobj(src, dst)
         tmp.chmod(0o600)
         tmp.replace(path)
         secure_chmod_file(path)

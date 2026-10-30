@@ -73,6 +73,7 @@ class _State:
     fields: dict[str, str] = field(default_factory=dict)
     sinks_open: list[FileSink] = field(default_factory=list)
     files_seen: int = 0
+    ended: bool = False
 
 
 def _parse_boundary(content_type: str | None) -> bytes:
@@ -213,6 +214,9 @@ async def stream_multipart(
         st.info = None
         st.field_buf = bytearray()
 
+    def on_end() -> None:
+        st.ended = True
+
     parser = multipart.MultipartParser(
         boundary,
         {
@@ -223,6 +227,7 @@ async def stream_multipart(
             "on_header_value": on_header_value,
             "on_header_end": on_header_end,
             "on_headers_finished": on_headers_finished,
+            "on_end": on_end,
         },
     )
 
@@ -246,6 +251,10 @@ async def stream_multipart(
             parser.finalize()
         except multipart.exceptions.FormParserError as exc:
             raise HTTPException(status_code=400, detail=f"malformed multipart body: {exc}") from exc
+        if not st.ended:
+            raise HTTPException(
+                status_code=400, detail="incomplete multipart body: closing boundary missing",
+            )
     finally:
         # A disconnect, a parser error, or a sink rejection: every sink the
         # handler opened is closed here so its cleanup can delete the files.

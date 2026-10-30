@@ -56,11 +56,12 @@
 	# authenticated request can fill the server's disk.  Caddy enforces it
 	# on read (http.MaxBytesReader), not on Content-Length, so it bounds
 	# bytes streamed upstream rather than rejecting up front.  Caddy's
-	# "MB" is decimal: 2200MB = 2.2e9 bytes > vezir's 2 GiB (2.147e9)
-	# default plus multipart overhead.  Keep in step with
-	# VEZIR_MAX_UPLOAD_BYTES if you raise it.
+	# "MB" is decimal.  The largest default request is an import bundle:
+	# 2 GiB audio + eight 32 MiB text artifacts + 1 MiB multipart overhead
+	# = 2,416,967,680 bytes.  2500MB (2.5e9 bytes) covers that legal maximum;
+	# keep it in step with VEZIR_MAX_UPLOAD_BYTES if you raise it.
 	request_body {
-		max_size 2200MB
+		max_size 2500MB
 	}
 	# Reverse-proxy to the local uvicorn. Vezir trusts the X-Forwarded-*
 	# headers Caddy sets by default.

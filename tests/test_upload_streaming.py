@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -170,6 +171,16 @@ def _post_until_response(base: str, headers: dict, path: str, chunks, *, chunked
 # ── Content-Length pre-check ─────────────────────────────────────────────────
 
 
+def test_caddy_cap_covers_largest_default_import_bundle():
+    caddyfile = Path(__file__).parents[1] / "infra" / "caddy" / "Caddyfile.example"
+    match = re.search(r"max_size\s+(\d+)MB", caddyfile.read_text(encoding="utf-8"))
+    assert match is not None
+    caddy_cap = int(match.group(1)) * 1_000_000
+    largest_import = 2 * 1024**3 + 8 * 32 * 1024**2 + 1024**2
+    assert caddy_cap == 2_500_000_000
+    assert caddy_cap >= largest_import
+
+
 def test_declared_oversize_body_is_rejected_before_reading(server, tmp_data, private_tmp):
     base, headers = server
     status, sent = _post_until_response(
@@ -283,6 +294,25 @@ def test_malformed_multipart_is_400(server, tmp_data):
         content=b"this is not multipart at all", timeout=10,
     )
     assert r.status_code in (400, 422)
+    assert _session_dirs(tmp_data) == []
+
+
+@pytest.mark.parametrize("part", ["field", "file"])
+def test_missing_closing_boundary_is_400_and_clean(server, tmp_data, part):
+    base, headers = server
+    if part == "field":
+        body = b'--zz\r\nContent-Disposition: form-data; name="title"\r\n\r\ntruncated'
+    else:
+        body = (
+            b'--zz\r\nContent-Disposition: form-data; name="audio"; filename="x.wav"\r\n'
+            b"Content-Type: audio/wav\r\n\r\n" + _wav_bytes()
+        )
+    r = httpx.post(
+        f"{base}/upload",
+        headers={**headers, "Content-Type": "multipart/form-data; boundary=zz"},
+        content=body, timeout=10,
+    )
+    assert r.status_code == 400, r.text
     assert _session_dirs(tmp_data) == []
 
 

@@ -16,12 +16,12 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 import ulid
 from fastapi import (
     APIRouter,
     Depends,
-    Form,
     Header,
     HTTPException,
     Request,
@@ -31,7 +31,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import config, presets
 from . import auth, queue, ratelimit
-from .multipart_stream import PartInfo, stream_multipart
+from .multipart_stream import FileSink, PartInfo, stream_multipart
 
 log = logging.getLogger("vezir.uploads")
 
@@ -85,6 +85,43 @@ def _reset_idempotency_for_tests() -> None:
 TUS_VERSION = "1.0.0"
 # Abandoned .part sessions older than this are swept (24h, per plan).
 RESUMABLE_TTL_SEC = 24 * 60 * 60
+_RESUMABLE_FORM_CAP = 64 * 1024
+
+
+async def _resumable_form_fields(request: Request) -> dict[str, str]:
+    content_type = request.headers.get("content-type", "")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type == "multipart/form-data":
+        def reject_file(info: PartInfo) -> FileSink:
+            raise HTTPException(status_code=400, detail=f"unexpected file field {info.name!r}")
+
+        return await stream_multipart(
+            request, reject_file, max_body_bytes=_RESUMABLE_FORM_CAP,
+        )
+    if media_type != "application/x-www-form-urlencoded":
+        return {}
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > _RESUMABLE_FORM_CAP:
+                raise HTTPException(status_code=413, detail="form body too large")
+        except ValueError:
+            pass
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > _RESUMABLE_FORM_CAP:
+            raise HTTPException(status_code=413, detail="form body too large")
+    try:
+        pairs = parse_qsl(
+            body.decode("utf-8", errors="replace"),
+            keep_blank_values=True,
+            max_num_fields=64,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="too many form fields") from None
+    return dict(pairs)
+
 
 # Audio extensions vezir accepts. millet decodes all of these via ffmpeg
 # (whisperx.load_audio is ffmpeg-backed); MP3 is supported end-to-end since 0.8.11.
@@ -545,6 +582,7 @@ async def upload_multi(
 # in-process lock sufficient.  Entries are dropped on finalize/sweep.
 _PATCH_LOCKS: dict[str, threading.Lock] = {}
 _PATCH_LOCKS_GUARD = threading.Lock()
+_STAGING_RESERVATION_LOCK = threading.Lock()
 
 
 def _patch_lock(upload_id: str) -> threading.Lock:
@@ -577,6 +615,28 @@ def _load_meta(upload_id: str) -> dict | None:
 
 def _save_meta(upload_id: str, meta: dict) -> None:
     config.secure_write_text(_meta_path(upload_id), json.dumps(meta, indent=2))
+
+
+def _staging_usage(github: str) -> tuple[int, int]:
+    user_reserved = 0
+    all_outstanding = 0
+    for meta_file in config.uploads_tmp_dir().glob("*.meta.json"):
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            length = meta["upload_length"]
+            if not isinstance(length, int) or isinstance(length, bool) or length <= 0:
+                continue
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if meta.get("github") == github:
+            user_reserved += length
+        upload_id = meta_file.name[: -len(".meta.json")]
+        try:
+            current = _part_path(upload_id).stat().st_size
+        except OSError:
+            current = 0
+        all_outstanding += max(0, length - current)
+    return user_reserved, all_outstanding
 
 
 def sweep_abandoned_uploads(now: float | None = None) -> int:
@@ -634,12 +694,6 @@ async def create_resumable_upload(
     upload_length: int | None = Header(default=None),
     upload_filename: str | None = Header(default=None),
     upload_content_type: str | None = Header(default=None),
-    title: str | None = Form(default=None),
-    summary_preset: str | None = Form(default=None),
-    summary_template: str | None = Form(default=None),
-    auto_label: str | None = Form(default=None),
-    sync: str | None = Form(default=None),
-    personal: str | None = Form(default=None),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Create a resumable upload session (tus creation extension).
@@ -649,8 +703,14 @@ async def create_resumable_upload(
     extension and validate the magic bytes once the first chunk lands).
     """
     github, team_id, _admin = auth_triple
+    fields = await _resumable_form_fields(request)
+    title = fields.get("title")
+    summary_preset = fields.get("summary_preset")
+    auto_label = fields.get("auto_label")
+    sync = fields.get("sync")
+    personal = fields.get("personal")
     _validate_preset(summary_preset)
-    summary_template = _validate_template(summary_template)
+    summary_template = _validate_template(fields.get("summary_template"))
     if upload_length is None or upload_length <= 0:
         raise HTTPException(status_code=400, detail="missing/invalid Upload-Length")
     max_bytes = config.max_upload_bytes()
@@ -660,12 +720,8 @@ async def create_resumable_upload(
     ext = _pick_extension(upload_filename, upload_content_type)
     upload_id = ulid.new().str
     config.secure_mkdir(config.uploads_tmp_dir())
-    # Touch an empty part file.
     part = _part_path(upload_id)
-    part.touch()
-    config.secure_chmod_file(part)
-
-    _save_meta(upload_id, {
+    meta = {
         "upload_id": upload_id,
         "github": github,
         "team_id": team_id,
@@ -681,7 +737,23 @@ async def create_resumable_upload(
         # streams the chunks, so this is the authoritative provenance.
         "client_agent": request.headers.get("user-agent"),
         "created_at_epoch": time.time(),
-    })
+    }
+    try:
+        with _STAGING_RESERVATION_LOCK:
+            user_reserved, all_outstanding = _staging_usage(github)
+            if user_reserved + upload_length > config.resumable_user_quota_bytes():
+                raise HTTPException(status_code=413, detail="resumable staging quota exceeded")
+            free = shutil.disk_usage(config.uploads_tmp_dir()).free
+            required = all_outstanding + upload_length + config.resumable_min_free_bytes()
+            if free < required:
+                raise HTTPException(status_code=507, detail="insufficient free space for upload")
+            part.touch()
+            config.secure_chmod_file(part)
+            _save_meta(upload_id, meta)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        _meta_path(upload_id).unlink(missing_ok=True)
+        raise
 
     log.info(
         "resumable upload created: id=%s github=%s team=%s length=%d ext=%s",
@@ -1011,19 +1083,19 @@ async def import_session_endpoint(
                 status_code=400,
                 detail="bundle must include the transcript .json",
             )
-        # The transcript must be a real millet transcript (segments list),
-        # not some other json that happened to end in .json.
+        # Validate the nested shapes millet reads, not just the top-level list.
+        from .transcript_import import validate_transcript
+
         try:
             tdata = json.loads(transcript_path.read_text(encoding="utf-8"))
         except Exception:
             raise HTTPException(
                 status_code=400, detail="transcript .json is not valid JSON",
             ) from None
-        if not isinstance(tdata, dict) or not isinstance(tdata.get("segments"), list):
-            raise HTTPException(
-                status_code=400,
-                detail="transcript .json has no 'segments' list",
-            )
+        try:
+            validate_transcript(tdata)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     except BaseException:
         shutil.rmtree(sdir, ignore_errors=True)
         raise

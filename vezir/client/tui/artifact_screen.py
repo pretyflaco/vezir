@@ -141,7 +141,7 @@ class ArtifactScreen(Screen):
             if self._body is not None:
                 _config.secure_write_text(dest, self._body)
             elif self._tmp_path is not None:
-                _config.secure_write_bytes(dest, self._tmp_path.read_bytes())
+                _config.secure_copy_file(self._tmp_path, dest)
             self.notify(f"Saved to {dest}", severity="information")
         except Exception as exc:
             self.notify(f"Save failed: {exc}", severity="error")
