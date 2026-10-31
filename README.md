@@ -28,6 +28,13 @@ Silicon) reachable over ordinary HTTPS.
 
 **Recent highlights** (full history in [`CHANGELOG.md`](CHANGELOG.md)):
 
+- **Video clipping (0.28.0).** Upload a video with the `video-clipping`
+  template and get back clip-worthy highlights — short (15-60 s) and long
+  (1-3 min) — plus `clips.json`, a cut list snapped to real transcript
+  segments with ready ffmpeg arguments. An agent pulls it over MCP
+  (`get_clips`) and cuts the clips. Needs `millet-pipeline >= 0.23.0`. See
+  [Video clipping](#video-clipping).
+
 - **Screen recordings are summarized from the screen (0.21.0).** For a
   `video` session using the `iteration-plan` template, the summary is
   deferred until after cue frames are extracted, then generated once with
@@ -159,7 +166,7 @@ Wire it into opencode (`~/.config/opencode/opencode.json`):
 { "mcp": { "vezir": { "type": "local", "command": ["vezir", "mcp"] } } }
 ```
 
-It exposes six read-only tools:
+It exposes seven read-only tools:
 
 | Tool | Returns |
 |---|---|
@@ -168,7 +175,8 @@ It exposes six read-only tools:
 | `get_summary(session_id)` | The AI summary (markdown). |
 | `get_transcript(session_id, max_chars?)` | The full diarized transcript (pass `max_chars` only for a preview). |
 | `list_artifacts(session_id)` | Every downloadable file: artifacts by type, plus attachments and cue frames. |
-| `get_artifact(session_id, name, save_path?)` | One artifact by type key or filename; binary (PNG/PDF/MP4) needs `save_path`. |
+| `get_artifact(session_id, name, save_path?)` | One artifact by type key or filename; binary (PNG/PDF/MP4) needs `save_path` (streamed to disk, so a multi-GB source video is fine). |
+| `get_clips(session_id, lang?, include_words?)` | The cut list of a `video-clipping` session: per clip `seek_s`, `duration_s`, title/hook/score, verbatim text and `ffmpeg_args`. |
 
 **`vezir ctx <id-or-title>`** — a one-shot alternative for any harness (no
 extra needed; base install). It pulls the session (unless `--no-pull`) and
@@ -232,6 +240,47 @@ millet's vision allowlist; a summary that falls back to the text-only
 sibling (`glm-5-3`) degrades to text-only rather than failing. See the [case study](https://github.com/pretyflaco/millet/blob/main/docs/vision-summarization-case-study.md)
 for what this does and does not buy — it is an n=1 case study, not an
 evaluation.
+
+### Video clipping
+
+Upload a talk, podcast, interview or livestream with the `video-clipping`
+template and the model proposes the moments worth cutting out as
+stand-alone clips: **short** (15-60 s, vertical short-form) and **long**
+(1-3 min highlight segments), each with a title, the hook (its opening
+words), why it works and a 1-10 score.
+
+```bash
+vezir upload ./launch-talk.mp4 --title "Launch talk" --template video-clipping
+```
+
+In the TUI, the video-template button on the Record tab cycles
+`Iter. plan` → `Clips` → `No template` for video imports (`ctrl+u`).
+
+You get two artifacts: `video-clipping.md` (for people) and `clips.json`
+(for tools).  The model's timestamps are only cues — floored to the
+second, and sometimes mis-copied — so millet snaps every boundary onto a
+real transcript segment, pads into the surrounding silence, enforces each
+kind's duration window and drops same-kind overlaps.  A clip that fails a
+check is listed under `dropped` with its reason, never guessed.  The worker
+then adds the source media and the video's timeline offset
+(`source.video_start_time`; some Android screen recordings start at a
+boot-clock timestamp), so each clip's `seek_s` and `ffmpeg_args` are
+correct for the original file.
+
+Cutting happens outside vezir, e.g. an agent with the MCP server:
+
+```text
+get_clips(session_id)                            -> clips + source.media
+get_artifact(session_id, "<id>.mp4", save_path=…) -> the source video
+ffmpeg -y <ffmpeg_args with {input}/{output}>     -> one file per clip
+```
+
+`get_clips(..., include_words=True)` adds per-word timings relative to the
+clip start, for burned-in captions.  Clipping sessions skip cue frames and
+never wait in `needs_labeling`: clipped videos are usually of people with
+no voiceprint, and raw speaker labels don't affect the cut list.  You can
+still label them later.  An audio-only clipping session keeps its audio even with
+`VEZIR_DELETE_AUDIO=1`, because that audio is what the cut list points at.
 
 ### Presets (deprecated)
 

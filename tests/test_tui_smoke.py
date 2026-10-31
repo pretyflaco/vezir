@@ -1973,3 +1973,78 @@ async def test_detail_move_session_flow(app, mock_server, monkeypatch, tmp_path)
     assert calls == [("blink", "01MV", "twentyone", True)]
     assert (tmp_path / "rec" / "twentyone" / "meeting-1").is_dir()
     assert not local_dir.exists()
+
+
+# ─── video-clipping template (v0.28.0) ───────────────────────────────────────
+
+
+async def test_record_body_video_template_cycle(app, mock_server, monkeypatch, tmp_path):
+    """The video-template button cycles plan -> clips -> none -> plan, persists
+    the choice (migrating the old boolean), and the upload sends it."""
+    from textual.widgets import Button
+
+    from vezir.client import uploader
+    from vezir.client.config import load_client_prefs
+    from vezir.client.tui.record_screen import RecordBody
+
+    monkeypatch.setattr(uploader, "server_supports_resumable", lambda *a, **k: False)
+    captured: dict = {}
+    monkeypatch.setattr(uploader, "upload",
+                        lambda server_url, token, path, **kw: captured.update(kw)
+                        or {"session_id": "01UP"})
+    vid = tmp_path / "talk.mp4"
+    vid.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16)
+
+    async with app.run_test() as pilot:
+        from vezir.client.tui.review_screen import ReviewResult
+
+        body = RecordBody()
+        body._prefs["iteration_plan"] = True
+        await app.mount(body)
+        await pilot.pause(0.2)
+        btn = body.query_one("#video-template-btn", Button)
+        assert str(btn.label) == "Iter. plan" and "toggle-on" in btn.classes
+
+        btn.press()
+        await pilot.pause(0.1)
+        assert str(btn.label) == "Clips" and "toggle-on" in btn.classes
+        prefs = load_client_prefs()
+        assert prefs["video_template"] == "video-clipping"
+        assert "iteration_plan" not in prefs
+
+        body._kick_upload(vid, ReviewResult(
+            action="upload", team="blink", title=None,
+            auto_label=True, sync=True, personal=False,
+        ))
+        for _ in range(30):
+            await pilot.pause(0.1)
+            if "summary_template" in captured:
+                break
+        assert captured["summary_template"] == "video-clipping"
+
+        btn.press()
+        await pilot.pause(0.1)
+        assert str(btn.label) == "No template" and "toggle-on" not in btn.classes
+        btn.press()
+        await pilot.pause(0.1)
+        assert str(btn.label) == "Iter. plan"
+
+
+async def test_artifact_screen_renders_clips_view(app, mock_server):
+    """A clips.json is shown as a readable list; save/copy keep raw JSON."""
+    import json as _json
+
+    from textual.widgets import TextArea
+
+    from vezir.client.tui.artifact_screen import ArtifactScreen, TextLoaded
+
+    raw = _json.dumps({"clips": [{"id": "short-01", "start_ts": "00:00:01.000",
+                                  "end_ts": "00:00:31.000", "duration_s": 30.0,
+                                  "score": 8, "title": "Hook"}], "dropped": []})
+    async with app.run_test() as pilot:
+        screen = ArtifactScreen("01X", "01X.clips.json")
+        await app.push_screen(screen)
+        await pilot.pause(0.3)  # let the (mock 404) load settle first
+        screen.on_text_loaded(TextLoaded(name="01X.clips.json", body=raw))
+        assert screen.query_one(TextArea).text.startswith("1 clip(s) from the recording")
+        assert screen._body == raw

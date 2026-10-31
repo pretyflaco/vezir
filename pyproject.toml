@@ -155,7 +155,10 @@ server = [
     # 0.21.8: venice/near out of the default summary chain, sync origin check,
     # session.json path validation (security audit 2026-10-30).  0.22.0:
     # NRAS EAT signature verification + NEAR provider-key response signatures.
-    "millet-pipeline>=0.22.1",
+    # Raised to >= 0.23.0 (vezir 0.28.0): the video-clipping template and its
+    # <id>.clips.json cut list.  An older millet falls back to the default
+    # meeting prompt for an unknown template and writes no clips file.
+    "millet-pipeline>=0.23.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

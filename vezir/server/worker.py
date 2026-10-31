@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..presets import ITERATION_PLAN, is_clipping
 from ..speakers import UNRESOLVED_RE, is_crosstalk
 from . import meet_runner, queue
 
@@ -422,7 +423,7 @@ def _should_defer_summary(job: dict) -> bool:
     only the ``iteration-plan`` template knows what to do with them.  Every
     other session keeps the single-pass flow, paying nothing for this.
     """
-    return bool(job.get("video")) and job.get("summary_template") == "iteration-plan"
+    return bool(job.get("video")) and job.get("summary_template") == ITERATION_PLAN
 
 
 def _run_deferred_summary(
@@ -520,12 +521,23 @@ def _find_artifacts(session_dir: Path) -> dict:
     for p in sorted(session_dir.glob("*.pdf")):
         out["pdf"] = p.name
         break
+    # video-clipping cut list (v0.28.0): <base>.clips.json -> "clips", and an
+    # additional-language <base>.clips.<lang>.json -> "clips_<lang>".
+    for p in sorted(session_dir.glob("*.clips.json")):
+        out["clips"] = p.name
+        break
+    for p in sorted(session_dir.glob("*.clips.*.json")):
+        lang = p.name[: -len(".json")].rsplit(".clips.", 1)[-1]
+        if lang and "." not in lang:
+            out.setdefault(f"clips_{lang}", p.name)
     for p in sorted(session_dir.glob("*.json")):
         if any(
             marker in p.name
             for marker in (
                 ".session.", ".summary.", ".translation.",
                 ".frontmatter.", ".autoid.", ".meta.",
+                # The clip cut list sorts before <id>.json (v0.28.0).
+                ".clips.",
                 # The transient label map ``.{id}.labels.json`` — pathlib's
                 # ``*.json`` DOES match dotfiles, and ``.`` sorts first
                 # (audit L-22).
@@ -664,16 +676,31 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
     return matched, unresolved
 
 
-def _delete_audio(session_dir: Path) -> None:
+_AUDIO_SUFFIXES = (".wav", ".ogg", ".mp3")
+
+
+def _delete_audio(session_dir: Path, *, keep_source_audio: bool = False) -> None:
     """Optionally delete audio (.wav, .ogg, .mp3) after artifacts are produced.
 
     Disabled by default during the pilot (see _delete_audio_enabled()).
+
+    ``keep_source_audio`` (v0.28.0) keeps the session's audio itself and
+    deletes only multi-audio ``*.part-*`` fragments, which are already merged
+    into it.  Set for an audio-only clipping session, whose cut list names
+    that audio as the media to cut (see :func:`_keeps_source_audio`).
     """
     if not _delete_audio_enabled():
         log.debug("audio deletion disabled (VEZIR_DELETE_AUDIO not set)")
         return
     for pattern in ("*.wav", "*.ogg", "*.mp3", "*.part-*"):
         for f in session_dir.glob(pattern):
+            if (
+                keep_source_audio
+                and f.suffix.lower() in _AUDIO_SUFFIXES
+                and ".part-" not in f.name
+            ):
+                log.info("keeping clip source audio: %s", f)
+                continue
             try:
                 f.unlink()
                 log.info("deleted audio: %s", f)
@@ -953,6 +980,129 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
     return written
 
 
+# ── Clip cut list (v0.28.0, millet >= 0.23.0) ───────────────────────────────
+#
+# A ``video-clipping`` session gets ``<id>.clips.json`` from millet: clip
+# boundaries snapped to transcript segments, on the TRANSCRIPT timeline.
+# millet never sees the video, so the worker adds what only it knows — the
+# source media's name and the video stream's timeline offset (the same
+# boot-clock problem ``_video_start_time`` solves for cue frames) — and
+# rebases each clip's ffmpeg arguments onto the source file.  Idempotent:
+# derived fields are recomputed from ``start_s``/``duration_s`` every run,
+# so a summary retry that rewrites the file just gets re-enriched.
+
+
+def _clip_ffmpeg_args(seek_s: float, duration_s: float, *, video: bool) -> list[str]:
+    """Frame-accurate re-encode (stream copy would cut on keyframes)."""
+    codec = (
+        ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] if video else ["-vn"]
+    )
+    return [
+        "-ss", f"{seek_s:.3f}", "-i", "{input}", "-t", f"{duration_s:.3f}",
+        *codec, "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "{output}",
+    ]
+
+
+def _clips_files(session_dir: Path, job_id: str) -> list[Path]:
+    """``<id>.clips.json`` plus any ``<id>.clips.<lang>.json``."""
+    prefix = f"{job_id}.clips."
+    return sorted(
+        p for p in session_dir.iterdir()
+        if p.is_file() and not p.is_symlink()
+        and p.name.startswith(prefix) and p.name.endswith(".json")
+    ) if session_dir.is_dir() else []
+
+
+def _find_source_audio(session_dir: Path, job_id: str) -> Path | None:
+    for ext in (".ogg", ".wav", ".mp3"):
+        p = session_dir / f"{job_id}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _enrich_clips(session_dir: Path, job_id: str) -> int:
+    """Add the source media + timeline offset to every clips file.
+
+    Returns the number of files rewritten.  Never raises: a bad clips file
+    is logged and left alone — the Markdown clip list is still there.
+    """
+    files = _clips_files(session_dir, job_id)
+    if not files:
+        return 0
+    video = _find_source_video(session_dir, job_id)
+    media = video or _find_source_audio(session_dir, job_id)
+    offset = _video_start_time(video) if video is not None else 0.0
+    if offset > 0:
+        log.info("session %s: clips rebased onto a %.3fs video timeline offset",
+                 job_id, offset)
+    written = 0
+    for path in files:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(doc, dict) or not isinstance(doc.get("clips"), list):
+                continue
+            source = doc.get("source") if isinstance(doc.get("source"), dict) else {}
+            source.update({
+                "media": media.name if media else None,
+                "media_kind": "video" if video else ("audio" if media else None),
+                "video_start_time": round(offset, 3),
+            })
+            doc["source"] = source
+            doc["seek_note"] = (
+                "seek_s = source.video_start_time + start_s; ffmpeg_args are "
+                "ready for the source media (substitute {input}/{output})"
+            )
+            for clip in doc["clips"]:
+                if not isinstance(clip, dict):
+                    continue
+                try:
+                    start_s = float(clip["start_s"])
+                    duration_s = float(clip["duration_s"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                seek = round(offset + start_s, 3)
+                clip["seek_s"] = seek
+                clip["ffmpeg_args"] = _clip_ffmpeg_args(
+                    seek, duration_s, video=video is not None,
+                )
+            config.secure_write_text(
+                path, json.dumps(doc, indent=2, ensure_ascii=False) + "\n",
+            )
+            written += 1
+        except Exception:
+            log.exception("session %s: could not enrich %s", job_id, path.name)
+    return written
+
+
+def _keeps_source_audio(session_dir: Path, job_id: str, job: dict) -> bool:
+    """True when the session's audio is the media its cut list points at.
+
+    A clipping session — the ``video-clipping`` template, or any session
+    that has a cut list (a summary retry with a template override creates
+    one without changing ``jobs.summary_template``) — with NO source video
+    cuts its clips from the audio, so ``VEZIR_DELETE_AUDIO`` must not delete
+    it.  With a video, the audio track is derived and the video is the
+    media; deleting the audio is fine.
+    """
+    if _find_source_video(session_dir, job_id) is not None:
+        return False
+    return is_clipping(job.get("summary_template")) or bool(
+        _clips_files(session_dir, job_id)
+    )
+
+
+def _labeling_optional(job: dict) -> bool:
+    """Sessions that finish without waiting for a human to name speakers.
+
+    Clipped videos are mostly podcasts and talks whose speakers have no
+    voiceprint, so the gate would hold every one of them in
+    ``needs_labeling``.  Raw labels don't affect the cut list; a user can
+    still label later.
+    """
+    return is_clipping(job.get("summary_template"))
+
+
 def process_one(job: dict) -> None:
     """Run the full pipeline for one claimed job."""
     job_id = job["id"]
@@ -1123,7 +1273,7 @@ def process_one(job: dict) -> None:
         # as the rest of the artifacts.  Runs inline on the worker thread
         # (single-writer model); failures degrade to a log warning, never
         # a failed job — the transcript/summary are the primary artifacts.
-        if job.get("video"):
+        if job.get("video") and not is_clipping(job.get("summary_template")):
             try:
                 _extract_frames(sd, job_id, log_path)
             except Exception:
@@ -1140,8 +1290,13 @@ def process_one(job: dict) -> None:
             summary_fallback_msg = _summary_fallback_provenance(sd)
             summary_prov = _summary_provenance(sd)
 
-        # 3b. unresolved speakers?
-        if _has_unresolved_speakers(sd):
+        # 3a-clips.  Add the source media + video timeline offset to the cut
+        # list before sync, so the pushed clips.json is ready for ffmpeg.
+        if _enrich_clips(sd, job_id):
+            artifacts = _find_artifacts(sd)
+
+        # 3b. unresolved speakers?  (Not a gate for clipped videos.)
+        if _has_unresolved_speakers(sd) and not _labeling_optional(job):
             queue.update_status(
                 job_id, "needs_labeling", artifacts=artifacts,
                 summary_error=summary_err_msg,
@@ -1190,8 +1345,9 @@ def process_one(job: dict) -> None:
                         "job %s: sync silent failure: %s", job_id, failure,
                     )
 
-        # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1)
-        _delete_audio(sd)
+        # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1).  An audio-only
+        # clipping session keeps its audio: the cut list points at it.
+        _delete_audio(sd, keep_source_audio=_keeps_source_audio(sd, job_id, job))
         queue.update_status(
             job_id, "done", artifacts=artifacts,
             summary_error=summary_err_msg,
@@ -1445,6 +1601,7 @@ def retry_summary_for_session(
             summary_err = f"summary retry failed: {exc}"
             log.warning("retry-summary %s failed: %s", session_id, summary_err)
 
+        _enrich_clips(sd, session_id)
         artifacts = _find_artifacts(sd)
 
         if summary_err:
@@ -1634,7 +1791,7 @@ def reauto_label_session(
 
         artifacts = _find_artifacts(sd)
 
-        if _has_unresolved_speakers(sd):
+        if _has_unresolved_speakers(sd) and not _labeling_optional(job):
             queue.update_status(session_id, "needs_labeling", artifacts=artifacts)
             result["status"] = "needs_labeling"
             log.info(
@@ -1762,7 +1919,7 @@ def finalize_after_labeling(
                         session_id, failure,
                     )
         artifacts = _find_artifacts(sd)
-        _delete_audio(sd)
+        _delete_audio(sd, keep_source_audio=_keeps_source_audio(sd, session_id, job))
         # Explicit sync intent (post-label finalize / Sync now): a failed push
         # is the headline outcome -> `sync_failed`.  (The main transcribe
         # pipeline keeps `done` + a sync-err badge instead.)

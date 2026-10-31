@@ -291,7 +291,7 @@ class PresetPickerScreen(ModalScreen[tuple[str, str, str] | None]):
                 allow_blank=False,
                 id="language-select",
             )
-            yield Label("Template (optional, e.g. iteration-plan):")
+            yield Label("Template (optional: iteration-plan, video-clipping):")
             yield Input(
                 value=self._template_default,
                 placeholder="(none — default meeting summary)",

@@ -58,6 +58,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from ... import config, presets
+from ...presets import ITERATION_PLAN, TEMPLATE_LABELS, TEMPLATES
 from .. import attachments
 from ..config import load_client_prefs, save_client_prefs
 
@@ -210,17 +211,52 @@ _VIDEO_EXTS = {".mp4", ".mov"}
 _ACCEPTED_EXTS = _AUDIO_EXTS | _VIDEO_EXTS
 
 
-def _template_for(path: Path, iteration_plan_on: bool) -> str | None:
+def _template_for(path: Path, video_template: str | bool | None) -> str | None:
     """Summary template for an upload, or None for the default summary.
 
-    The iteration-plan template only makes sense for video uploads (it is
-    keyed to cue frames); audio meetings always get the default summary.
+    ``video_template`` is the Record tab's video-template choice
+    (``"iteration-plan"``, ``"video-clipping"``, or empty for the default
+    summary); ``True`` is the pre-0.28 boolean toggle and means
+    iteration-plan.  Templates apply to video uploads only; audio meetings
+    always get the default summary.
     """
-    if not iteration_plan_on:
+    if video_template is True:
+        video_template = ITERATION_PLAN
+    if not video_template:
         return None
     if path.suffix.lower() in _VIDEO_EXTS:
-        return "iteration-plan"
+        return str(video_template)
     return None
+
+
+# The Record tab's video-template button cycles through these ("" = the
+# default meeting summary).
+_VIDEO_TEMPLATE_CYCLE: tuple[str, ...] = (*TEMPLATES, "")
+
+
+def _video_template_pref(prefs: dict) -> str:
+    """The saved video template, migrating the pre-0.28 boolean pref.
+
+    0.19-0.27 stored ``iteration_plan: bool`` (default on).  A saved value
+    that is no longer offered falls back to the same default.
+    """
+    if "video_template" in prefs:
+        value = prefs.get("video_template") or ""
+        return value if value in _VIDEO_TEMPLATE_CYCLE else ITERATION_PLAN
+    return ITERATION_PLAN if prefs.get("iteration_plan", True) else ""
+
+
+def _next_video_template(current: str) -> str:
+    try:
+        i = _VIDEO_TEMPLATE_CYCLE.index(current)
+    except ValueError:
+        return _VIDEO_TEMPLATE_CYCLE[0]
+    return _VIDEO_TEMPLATE_CYCLE[(i + 1) % len(_VIDEO_TEMPLATE_CYCLE)]
+
+
+def _video_template_label(template: str) -> str:
+    # Short: the toggles row splits ~100 columns five ways.
+    return TEMPLATE_LABELS.get(template, "No template")
 
 _MEETING_TS_RE = re.compile(r"meeting-(\d{8})-(\d{6})")
 
@@ -724,9 +760,12 @@ class RecordBody(Vertical):
             yield Button("Auto-label", id="auto-label-btn")
             yield Button("Sync", id="sync-btn")
             yield Button("Personal", id="personal-btn")
-            # Iteration-plan template for video uploads (screen recordings,
-            # v0.19.0).  Audio uploads are unaffected either way.
-            yield Button("Iter. plan", id="iteration-plan-btn")
+            # Summary template for video uploads (v0.19.0 iteration plan,
+            # v0.28.0 clips); click cycles.  Audio uploads are unaffected.
+            yield Button(
+                _video_template_label(_video_template_pref(self._prefs)),
+                id="video-template-btn",
+            )
             yield Select(
                 options=_PRESET_OPTIONS,
                 value=_saved_preset(self._prefs),
@@ -796,9 +835,9 @@ class RecordBody(Vertical):
         # Personal always starts off (not persisted).
         pe = self.query_one("#personal-btn", Button)
         self._style_toggle(pe, False, personal=True)
-        # Iteration-plan template toggle (video uploads only; default ON).
-        ip = self.query_one("#iteration-plan-btn", Button)
-        self._style_toggle(ip, bool(self._prefs.get("iteration_plan", True)))
+        # Video template (video uploads only; default iteration-plan).
+        vt = self.query_one("#video-template-btn", Button)
+        self._style_toggle(vt, bool(_video_template_pref(self._prefs)))
         self._warn_if_session_expiring()
         # The update-check poll (update_check.py) fills
         # app.latest_available_version a few seconds after launch; poll
@@ -972,8 +1011,8 @@ class RecordBody(Vertical):
         elif bid == "personal-btn":
             self.action_toggle_personal()
             event.stop()
-        elif bid == "iteration-plan-btn":
-            self._toggle_pref_button(event.button, "iteration_plan")
+        elif bid == "video-template-btn":
+            self._cycle_video_template(event.button)
             event.stop()
 
     # ── toggle-button helpers ──
@@ -985,6 +1024,15 @@ class RecordBody(Vertical):
         self._prefs[pref_key] = new_val
         save_client_prefs(self._prefs)
         self._style_toggle(btn, new_val)
+
+    def _cycle_video_template(self, btn: Button) -> None:
+        """Advance the video template (plan -> clips -> summary), persist."""
+        new = _next_video_template(_video_template_pref(self._prefs))
+        self._prefs["video_template"] = new
+        self._prefs.pop("iteration_plan", None)  # migrated
+        save_client_prefs(self._prefs)
+        btn.label = _video_template_label(new)
+        self._style_toggle(btn, bool(new))
 
     @staticmethod
     def _style_toggle(btn: Button, is_on: bool, *, personal: bool = False) -> None:
@@ -1279,10 +1327,10 @@ class RecordBody(Vertical):
         title = review.title
         preset = str(self.query_one("#preset", Select).value)
 
-        # Iteration-plan template (v0.19.0): only for video uploads — a
-        # plan keyed to cue frames makes no sense for an audio meeting.
-        iteration_on = "toggle-on" in self.query_one("#iteration-plan-btn", Button).classes
-        template = _template_for(audio_path, iteration_on)
+        # Video template (v0.19.0 / v0.28.0): only for video uploads — a
+        # plan keyed to cue frames or a clip list makes no sense for an
+        # audio meeting.
+        template = _template_for(audio_path, _video_template_pref(self._prefs))
 
         self.is_uploading = True
         self.status_text = "compressing" if audio_path.suffix.lower() == ".wav" else "uploading"

@@ -70,6 +70,16 @@ class _FakeApi:
             return _FakeResult(ok=b"\x00\x00\x00\x18ftypmp42VIDEOBYTES")
         return _FakeResult(ok=None)
 
+    def stream_artifact(self, sid, name, dest):
+        """Artifacts saved to disk stream (0.28.0); same bytes, same writer."""
+        from vezir import config
+
+        data = self.download_artifact(sid, name)
+        if not data.is_ok() or data.ok is None:
+            return _FakeResult(ok=None, success=False)
+        config.secure_write_bytes(Path(dest), data.ok)
+        return _FakeResult(ok=Path(dest))
+
     def list_attachments(self, sid):
         return _FakeResult(ok=self.attachments.get(sid, []))
 
@@ -492,7 +502,7 @@ async def test_mcp_build_server_keeps_tool_contract():
         tools = {t.name: t for t in (await client.list_tools()).tools}
     assert set(tools) == {
         "list_sessions", "search_sessions", "get_summary", "get_transcript",
-        "list_artifacts", "get_artifact",
+        "list_artifacts", "get_artifact", "get_clips",
     }
     # Offloading must not hide the real signature or docs from the harness.
     assert set(tools["get_artifact"].inputSchema["properties"]) == {

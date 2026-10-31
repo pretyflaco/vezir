@@ -77,7 +77,9 @@ def serve(host, port, reload):
     help="DEPRECATED (removed in 0.22.0): every summary backend is private "
          "now, so all presets resolve to the same default")
 @click.option("--template", "summary_template", default=None,
-              help="Summary template name (e.g. 'iteration-plan'); requires "
+              help="Summary template: 'iteration-plan' (narrated demo) or "
+                   "'video-clipping' (clip-worthy highlights + clips.json; "
+                   "millet-pipeline >= 0.23.0); requires "
                    "millet-pipeline >= 0.17.0 on the server")
 @click.option("--auto-label/--no-auto-label", "auto_label", default=None,
               help="Auto-label speakers against the central voiceprint DB "
@@ -242,7 +244,9 @@ def _cli_refresh_cb(server_url: str, team_id: str):
     help="DEPRECATED (removed in 0.22.0): every summary backend is private "
          "now, so all presets resolve to the same default")
 @click.option("--template", "summary_template", default=None,
-              help="Summary template name (e.g. 'iteration-plan'); writes "
+              help="Summary template: 'iteration-plan' (narrated demo) or "
+                   "'video-clipping' (clip-worthy highlights + clips.json, "
+                   "millet-pipeline >= 0.23.0); writes "
                    "<base>.<template>.md instead of the default summary. "
                    "Requires millet-pipeline >= 0.17.0 on the server")
 @click.option("--auto-label/--no-auto-label", "auto_label", default=None,
@@ -389,7 +393,9 @@ def upload_cmd(server_url, token, team, title, compress, preset, summary_templat
     help="DEPRECATED (removed in 0.22.0): every summary backend is private "
          "now, so all presets resolve to the same default")
 @click.option("--template", "summary_template", default=None,
-              help="Summary template name (e.g. 'iteration-plan'); writes "
+              help="Summary template: 'iteration-plan' (narrated demo) or "
+                   "'video-clipping' (clip-worthy highlights + clips.json, "
+                   "millet-pipeline >= 0.23.0); writes "
                    "<base>.<template>.md instead of the default summary. "
                    "Requires millet-pipeline >= 0.17.0 on the server")
 @click.option("--auto-label/--no-auto-label", "auto_label", default=None,

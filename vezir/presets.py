@@ -65,3 +65,23 @@ def normalize(preset: str | None) -> str | None:
 # /upload, /upload/multi, /upload/resumable, retry-summary — so a value that
 # would be rejected on retry can't be stored by an upload (audit M-13).
 TEMPLATE_RE = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,63}\Z")
+
+# The templates millet ships.  Servers validate the *shape* only (above), so
+# a newer millet template works before vezir knows its name; this list is
+# what the clients offer.
+ITERATION_PLAN = "iteration-plan"
+VIDEO_CLIPPING = "video-clipping"
+TEMPLATES: tuple[str, ...] = (ITERATION_PLAN, VIDEO_CLIPPING)
+TEMPLATE_LABELS: dict[str, str] = {
+    ITERATION_PLAN: "Iter. plan",
+    VIDEO_CLIPPING: "Clips",
+}
+
+
+def is_clipping(template: str | None) -> bool:
+    """True for the ``video-clipping`` template (millet >= 0.23.0).
+
+    Such sessions carry a ``<id>.clips.json`` cut list, need no cue frames,
+    and don't wait on speaker labeling.
+    """
+    return template == VIDEO_CLIPPING
