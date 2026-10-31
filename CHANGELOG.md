@@ -42,8 +42,8 @@ banner's new drawing (see Changed).
 
 - **The banner is drawn by libass** (band, text, icons) instead of
   ffmpeg's drawbox/drawtext.  That makes tilt and inline icons possible,
-  `\\move` makes the scroll speed exact, and the text is never wrapped
-  (`\\q2`).
+  `\move` makes the scroll speed exact, and the text is never wrapped
+  (`\q2`).
 - **Vertical layout re-tuned** for a tilted band: the caption block ends
   at y=1320, and the band is centered at y=1412 and is 72 px high.
 - **ffmpeg retries once if a signal kills it.**  A single SIGSEGV inside
