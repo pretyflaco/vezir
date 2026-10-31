@@ -58,7 +58,13 @@ jobs:
             vezir/server/sessions_auth.py \
             vezir/presets.py \
             vezir/speakers.py \
-            vezir/client/local.py
+            vezir/client/local.py \
+            vezir/client/clips/kit.py \
+            vezir/client/clips/profiles.py \
+            vezir/client/clips/captions.py \
+            vezir/client/clips/ass.py \
+            vezir/client/clips/render.py \
+            vezir/client/clips/session.py
 
   test:
     name: pytest (py${{ matrix.python-version }})
@@ -84,6 +90,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,tui,server,mcp]"
+      - name: Install ffmpeg + fonts (clip render integration tests)
+        # `vezir clips render` shells out to ffmpeg (libass, drawtext) and
+        # resolves the neutral kit's font through fontconfig; without these
+        # the end-to-end render tests skip instead of running.
+        run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg fonts-dejavu-core fontconfig
       - name: Run pytest
         # VEZIR_COOKIE_SECURE / VEZIR_CADDY_ROOT_CERT_PATH must be unset
         # for the test suite to pass (per the v0.6.2 plan note: muscle's

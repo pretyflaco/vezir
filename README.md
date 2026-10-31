@@ -28,6 +28,14 @@ Silicon) reachable over ordinary HTTPS.
 
 **Recent highlights** (full history in [`CHANGELOG.md`](CHANGELOG.md)):
 
+- **Branded social clips (0.29.0).** `vezir clips render` turns a
+  video-clipping session into ready-to-post videos: vertical shorts and 16:9
+  long clips with burned-in subtitles (word highlight on shorts), a scrolling
+  banner, title and end cards, normalized audio, plus `.srt`/`.vtt` and
+  suggested post text.  vezir stays brand-agnostic: the look comes from a
+  *brand kit* directory, the message from a *campaign* file.  See
+  [Branded clips](#branded-clips).
+
 - **Video clipping (0.28.0).** Upload a video with the `video-clipping`
   template and get back clip-worthy highlights — short (15-60 s) and long
   (1-3 min) — plus `clips.json`, a cut list snapped to real transcript
@@ -281,6 +289,49 @@ never wait in `needs_labeling`: clipped videos are usually of people with
 no voiceprint, and raw speaker labels don't affect the cut list.  You can
 still label them later.  An audio-only clipping session keeps its audio even with
 `VEZIR_DELETE_AUDIO=1`, because that audio is what the cut list points at.
+
+### Branded clips
+
+`vezir clips render` turns a video-clipping session's cut list into
+shareable videos, rendered locally with ffmpeg (libass).  Nothing about any
+brand is built in; everything comes from three inputs:
+
+| Input | What | Example |
+|---|---|---|
+| **Brand kit** (directory with `kit.toml`) | the look: 5 colors, font, logos, background pattern, caption glossary, optional designer motion files for cards | colors, Poppins, logos |
+| **Campaign** (`.toml`) | the message: ticker items, end card, link, hashtags, handles | "AB Cape Town 2027 · 26–27 Feb · tickets" |
+| **Profile** (built in) | where it's posted: `vertical` 1080×1920 (shorts), `landscape` 1920×1080 (long clips) | platform safe zones |
+
+```bash
+vezir clips list 01M68Q79D1GYRRS7YQGJ5GKF9X --team abcapetown
+vezir clips render 01M68Q79D1GYRRS7YQGJ5GKF9X --team abcapetown \
+  --brand ~/brands/acme --campaign ~/brands/acme/launch.toml \
+  --source talk.mp4 --speaker "Ann" --talk "Open protocols" \
+  --recorded-at "Acme Conf 2024"          # --clips short-03,long-01  --profile auto
+cp -r "$(vezir clips kit-path)" ~/brands/acme   # start from the neutral example kit
+```
+
+Per clip (`~/vezir-clips/<session>/<clip id>/` by default):
+
+- `<id>.vertical.mp4` (short) or `<id>.landscape.mp4` (long).
+  - Shorts open on the hook (no intro) and end on a 3 s card.
+  - Longs get a 1.5 s title card (talk, speaker, recorded at), a lower
+    third and the same end card.
+  - The banner starts 2 s in, so the opening line stays clean.
+  - Audio is normalized to −14 LUFS (two-pass).
+- `<id>.srt` / `<id>.vtt`, shifted by any title card.
+- `<id>.captions.json`: **editable**. Burned-in text can't be fixed after
+  export, so fix a word here and render again.  Keeping the word count keeps
+  the word highlight in sync; `--captions-only` writes these first.  For
+  recurring mistakes, add a `[[glossary]]` regex to the kit or campaign
+  (e.g. Whisper's "sets" for "sats").
+- `post.md` (suggested post text) and `render.json` (what was rendered from
+  what).
+
+The logo is chosen by contrast with what it sits on.  A designer motion file
+can replace any card (`[cards] end_vertical = "end-9x16.mp4"`).  The CLI
+warns when campaign text uses characters the kit's font lacks.  Without
+`--source`, the video is streamed once from the server.
 
 ### Presets (deprecated)
 

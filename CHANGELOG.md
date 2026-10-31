@@ -3,6 +3,91 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.29.0 — branded social clips (`vezir clips`)
+
+`vezir clips render` turns a video-clipping session (0.28.0) into
+ready-to-post social videos.  It runs client-side with ffmpeg; the server and
+millet are unchanged.
+
+### Design: vezir stays brand-agnostic
+
+Everything brand- or purpose-specific is data, so one renderer serves any
+brand and any campaign:
+
+- **Brand kit**: a directory with `kit.toml`, describing the look: five
+  colors, the font, logos, a background pattern, a caption glossary, and
+  optional designer motion files that replace generated cards.
+- **Campaign**: a `.toml` file, describing the message: ticker items, end
+  card, link, hashtags, handles, glossary.
+- **Profile**: built in, describing where the clip is posted.  `vertical`
+  (1080×1920) for short clips and `landscape` (1920×1080) for long ones,
+  each with platform safe zones (TikTok/Reels/Shorts UI).
+
+A neutral example kit ships with vezir (`vezir clips kit-path`).
+
+### Added
+
+- **`vezir clips list` / `render` / `kit-path`.**  The cut list comes from
+  the server (MCP `get_clips`, word timings included) or `--clips-file`.
+  The source is `--source` or streamed once from the server.  Clips are
+  selected with `--clips`.  `--profile auto` puts shorts in vertical and
+  longs in landscape.  The encoder is NVENC when a test encode works,
+  otherwise libx264.
+- **Shorts:** they open on the hook (no intro, for retention) and end on a
+  3 s card.  The layout stacks the logo header, the 16:9 video, two-line
+  captions with the spoken word highlighted, and a scrolling banner placed
+  above the platforms' bottom UI.
+- **Long clips:** they open on a 1.5 s title card (talk, speaker, "Recorded
+  at …"), show a lower third with a translucent panel, plain captions on a
+  translucent box (legible over slides) and a watermark, and end on the same
+  end card.
+- **The banner starts after the hook** (`ticker.start_s`, default 2 s) and
+  loops for the length of the clip.
+- **Subtitles:** cues are built from the word timings, breaking at sentence
+  ends, pauses (> 0.5 s), at most two lines per cue, and 0.7–3 s on screen.
+  - `.srt`/`.vtt` sidecars are shifted by any title card.
+  - An **editable** `<id>.captions.json` comes first: fix a word and render
+    again (keeping the word count keeps the highlight in sync).
+    `--captions-only` writes these files without rendering, and
+    `--recaption` rebuilds them.
+  - A regex **glossary** in the kit and campaign handles recurring
+    transcription mistakes.
+- **Audio** is normalized to −14 LUFS with two-pass `loudnorm` (measure,
+  then a linear correction).  Single pass landed speech 1–3 LU low.
+- **Other outputs and checks:**
+  - `post.md`: suggested post text (title, hook, credits, campaign CTA,
+    handles, hashtags).
+  - `render.json`: inputs and kit/campaign digests, for reproducibility.
+  - The logo is chosen by contrast with its surface; footage always gets
+    the light logo.
+  - The CLI warns about campaign characters missing from the kit font (via
+    `fc-query`): Poppins has no ⚡ or →.
+- **Safety:**
+  - Every input ffmpeg sees is staged under a fixed ASCII name in a private
+    work directory, so no user path is ever escaped inside a filtergraph.
+  - Caption text can't inject ASS override codes.
+  - The server-supplied source media name goes through
+    `config.safe_path_component`, and clip ids are checked before they
+    become directories.
+  - Outputs are 0600.
+- **Strict mypy:** the new `vezir.client.clips.*` modules join the
+  allowlist.  `tomli` is a dependency on Python 3.10 only, since kits are
+  TOML.
+
+### Validated
+
+The 13 clips of a real 41-minute talk were rendered in two variants of an
+Adopting Bitcoin Cape Town kit (dark brown and orange, from the AB brand
+guidelines) for an AB CPT 2027 tickets campaign.
+- About 4 minutes per set of 13 on NVENC.
+- Every duration matches clip + cards to within about one frame.
+- −14.7 to −15.1 LUFS; peaks at or below −0.8 dBFS.
+
+CI now installs ffmpeg and fonts so the end-to-end render tests run.
+
+Tests: 1631 (+72, `tests/test_clips_render.py`).  Every changed line and branch is
+covered, except the Python 3.11+ `tomllib` import line on 3.10.
+
 ## 0.28.0 — video-clipping template
 
 A third summary template next to the meeting summary and `iteration-plan`.

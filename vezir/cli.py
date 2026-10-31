@@ -3057,6 +3057,143 @@ def pull_cmd(server_url, token, limit, since, session_id, output_dir):
 # ── mcp + ctx (v0.15.0: harness context integration) ────────────────────────
 
 
+@main.group("clips")
+def clips_group():
+    """Branded social clips from a video-clipping session (v0.29.0).
+
+    `vezir clips list` shows a session's cut list; `vezir clips render` turns
+    it into ready-to-post videos with subtitles, a scrolling banner and end
+    cards, styled by a brand kit (look) and a campaign file (message).  The
+    neutral example kit ships with vezir: `vezir clips kit-path`.
+    """
+
+
+_clip_source_options = [
+    click.argument("session_id", required=False),
+    click.option("--clips-file", type=click.Path(dir_okay=False, exists=True),
+                 help="Use a local clips.json instead of fetching SESSION_ID."),
+    click.option("--team", default=None, help="Team of the session (default: active team)."),
+]
+
+
+def _with_clip_source(fn):
+    for decorator in reversed(_clip_source_options):
+        fn = decorator(fn)
+    return fn
+
+
+@clips_group.command("list")
+@_with_clip_source
+def clips_list(session_id, clips_file, team):
+    """Show the cut list of SESSION_ID: clips, scores, dropped proposals."""
+    from .client.clips import session as _session
+
+    try:
+        doc = _session.load_doc(session_id, clips_file, team)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from None
+    for row in _session.summary_table(doc):
+        click.echo(row)
+
+
+@clips_group.command("kit-path")
+def clips_kit_path():
+    """Print the directory of the neutral example kit (copy it to start a kit)."""
+    from pathlib import Path
+
+    from .client import clips
+
+    click.echo(Path(clips.__file__).parent / "kits" / "neutral")
+
+
+@clips_group.command("render")
+@_with_clip_source
+@click.option("--brand", "brand_dir", required=True,
+              type=click.Path(file_okay=False, exists=True),
+              help="Brand kit directory (with kit.toml).")
+@click.option("--campaign", "campaign_file", required=True,
+              type=click.Path(dir_okay=False, exists=True), help="Campaign .toml file.")
+@click.option("--source", type=click.Path(dir_okay=False, exists=True),
+              help="Local copy of the source video (default: download it once).")
+@click.option("--clips", "clip_ids", default=None, help="Comma-separated clip ids (default: all).")
+@click.option("--profile", type=click.Choice(["auto", "vertical", "landscape"]), default="auto",
+              show_default=True, help="auto: short clips vertical, long clips landscape.")
+@click.option("--speaker", default=None, help="Speaker name (title card, lower third, post).")
+@click.option("--talk", default=None, help="Talk title (title card, lower third, post).")
+@click.option("--recorded-at", default=None, help='e.g. "AB Cape Town 2024".')
+@click.option("-o", "--out", "out_dir", type=click.Path(file_okay=False), default=None,
+              help="Output directory (default ~/vezir-clips/<session>).")
+@click.option("--encoder", type=click.Choice(["auto", "nvenc", "x264"]), default="auto",
+              show_default=True)
+@click.option("--captions-only", is_flag=True,
+              help="Write the editable <id>.captions.json files and stop.")
+@click.option("--recaption", is_flag=True,
+              help="Rebuild captions from the cut list, discarding manual edits.")
+def clips_render(session_id, clips_file, team, brand_dir, campaign_file, source, clip_ids,
+                 profile, speaker, talk, recorded_at, out_dir, encoder, captions_only,
+                 recaption):
+    """Render SESSION_ID's clips as branded, subtitled social videos.
+
+    \b
+    Per clip, in <out>/<clip id>/:
+      <id>.vertical.mp4 / <id>.landscape.mp4   the video to post
+      <id>.srt, <id>.vtt                       subtitles for upload
+      <id>.captions.json                       edit to fix captions, then re-render
+      post.md                                  suggested post text
+      render.json                              what was rendered from what
+    """
+    from pathlib import Path
+
+    from .client.clips import kit as _kit
+    from .client.clips import profiles as _profiles
+    from .client.clips import render as _render
+    from .client.clips import session as _session
+
+    try:
+        brand = _kit.load_brand(brand_dir)
+        campaign = _kit.load_campaign(campaign_file)
+        doc = _session.load_doc(session_id, clips_file, team)
+        selected = _session.select(doc, clip_ids)
+        stem = session_id or Path(clips_file).stem
+        out = Path(out_dir).expanduser() if out_dir else Path.home() / "vezir-clips" / stem
+        enc = "libx264"
+        src = None
+        if not captions_only:
+            _render.require_ffmpeg()
+            src = _render.probe(_session.ensure_source(doc, session_id, source, out, team))
+            enc = _render.detect_encoder(encoder)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from None
+
+    gaps = _kit.campaign_glyph_gaps(brand, campaign)
+    if gaps:
+        click.echo(
+            f"warning: the kit font has no glyph for {' '.join(gaps)} "
+            "(campaign text will show gaps there)", err=True,
+        )
+    credits = _render.Credits(speaker=speaker, talk=talk, recorded_at=recorded_at)
+    if not selected:
+        click.echo("no clips to render")
+        return
+    click.echo(f"{len(selected)} clip(s) -> {out}  (encoder: {enc})")
+    failures = 0
+    for clip in selected:
+        prof = _profiles.for_clip(clip.get("kind"), profile)
+        try:
+            manifest = _render.render_clip(
+                clip, src, prof, brand, campaign, out, credits=credits, encoder=enc,
+                captions_only=captions_only, recaption=recaption,
+            )
+        except Exception as exc:
+            failures += 1
+            click.echo(f"  {clip.get('id')}: FAILED: {exc}", err=True)
+            continue
+        made = manifest["outputs"] or [manifest["captions"]]
+        click.echo(f"  {clip['id']:9} {prof.name:9} {', '.join(made)}")
+    if failures:
+        raise click.ClickException(f"{failures} clip(s) failed")
+
+
 @main.command("mcp")
 def mcp_cmd():
     """Run the vezir MCP server (stdio) for AI harnesses.
