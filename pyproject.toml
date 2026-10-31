@@ -261,6 +261,7 @@ module = [
     "vezir.client.clips.ass",
     "vezir.client.clips.render",
     "vezir.client.clips.session",
+    "vezir.client.clips.svgpath",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true

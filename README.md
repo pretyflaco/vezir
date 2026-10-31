@@ -328,6 +328,16 @@ Per clip (`~/vezir-clips/<session>/<clip id>/` by default):
 - `post.md` (suggested post text) and `render.json` (what was rendered from
   what).
 
+Kits can also carry:
+- a tilted banner with an icon between items
+  (`[ticker] tilt_deg = 5`, `separator_icon = "icons/bolt.svg"`,
+  `on_cards = true`).  It's tilted on vertical clips and cards, and straight
+  over landscape footage.
+- a sonic logo on the end card (`[audio] end = "sting.wav"`) and on the
+  long clips' title card (`title`).  Each card lengthens to fit its sting.
+- template-style header lines beside the logo on vertical clips, set by
+  the campaign (`header_lines = ["26–27 FEB 2027", "CAPE TOWN"]`).
+
 The logo is chosen by contrast with what it sits on.  A designer motion file
 can replace any card (`[cards] end_vertical = "end-9x16.mp4"`).  The CLI
 warns when campaign text uses characters the kit's font lacks.  Without

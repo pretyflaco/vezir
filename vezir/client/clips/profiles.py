@@ -9,6 +9,7 @@ may run full width (text scrolls through the icon column).
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -46,31 +47,53 @@ class Profile:
     caption_max_chars: int   # per line; two lines max
     caption_highlight: bool  # current word in the brand's primary color
     caption_box: bool        # translucent box behind captions (they sit on footage)
-    ticker: Box              # the banner strip
+    ticker: Box              # the banner strip, before any tilt
     ticker_size: int
     safe: Box
     title_card_s: float      # 0 = no title card (shorts open on the hook)
     end_card_s: float
+    ticker_tilt: bool = False         # may the kit tilt the banner over footage?
+    card_band_y: int = 0              # center of the banner on cards (kit on_cards)
+    header_logo: Box | None = None    # logo box when the campaign has header lines
+    header_text: tuple[int, int] | None = None   # (right edge x, center y) of those lines
     lower_third: Box | None = None
     lower_third_s: tuple[float, float] = (0.4, 4.5)
     fps: int = 30
+
+    def max_ticker_tilt(self) -> float:
+        """Largest tilt (degrees) that keeps the banner between the captions
+        and the bottom of the safe area; 0 where tilting isn't allowed."""
+        if not self.ticker_tilt:
+            return 0.0
+        center = self.ticker.y + self.ticker.h / 2
+        room = min(center - self.captions.bottom, self.safe.bottom - center) - self.ticker.h / 2
+        return max(0.0, math.degrees(math.atan(room / (self.width / 2))))
+
+    def ticker_tilt_for(self, requested: float) -> float:
+        """The kit's tilt, clamped to what this profile's layout allows."""
+        limit = self.max_ticker_tilt()
+        return max(-limit, min(limit, requested))
 
 
 VERTICAL = Profile(
     name="vertical",
     width=1080, height=1920,
     logo=Box(240, 215, 600, 230),
+    header_logo=Box(80, 215, 420, 230),
+    header_text=(960, 330),
     video=Box(0, 470, 1080, 608),
-    captions=Box(80, 1110, 840, 250),
+    captions=Box(80, 1090, 840, 230),
     caption_size=84,
     caption_max_chars=22,
     caption_highlight=True,
     caption_box=False,
-    ticker=Box(0, 1395, 1080, 84),
-    ticker_size=44,
+    ticker=Box(0, 1376, 1080, 72),
+    ticker_size=42,
     safe=Box(60, 210, 900, 1290),
     title_card_s=0.0,
     end_card_s=3.0,
+    ticker_tilt=True,
+    card_band_y=400,
 )
 
 LANDSCAPE = Profile(
@@ -88,6 +111,7 @@ LANDSCAPE = Profile(
     safe=Box(48, 27, 1824, 1026),
     title_card_s=1.5,
     end_card_s=3.0,
+    card_band_y=960,
     lower_third=Box(80, 610, 1100, 170),
 )
 

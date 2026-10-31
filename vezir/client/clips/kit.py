@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import svgpath
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - exercised on 3.10 only
@@ -25,6 +27,9 @@ else:  # pragma: no cover - exercised on 3.10 only
 KIT_FILE = "kit.toml"
 COLOR_NAMES = ("primary", "background", "text", "on_primary", "outline")
 CARD_SLOTS = ("title_landscape", "end_landscape", "end_vertical")
+AUDIO_SLOTS = ("title", "end")       # stings mixed into the generated cards
+MAX_TILT_DEG = 15.0
+MAX_HEADER_LINES = 3
 
 _HEX = re.compile(r"\A#[0-9a-fA-F]{6}\Z")
 
@@ -56,6 +61,10 @@ class Brand:
     cards: dict[str, Path] = field(default_factory=dict)
     glossary: tuple[GlossaryRule, ...] = ()
     digest: str = ""
+    ticker_tilt_deg: float = 0.0          # profiles that allow it tilt the banner
+    ticker_icon: svgpath.Icon | None = None   # drawn between ticker items
+    ticker_on_cards: bool = False          # the banner also runs across the cards
+    audio: dict[str, Path] = field(default_factory=dict)   # AUDIO_SLOTS -> file
 
     @property
     def fonts_dir(self) -> Path:
@@ -76,6 +85,7 @@ class Campaign:
     handles: dict[str, str] = field(default_factory=dict)
     glossary: tuple[GlossaryRule, ...] = ()
     digest: str = ""
+    header_lines: tuple[str, ...] = ()     # beside the logo on vertical clips
 
     @property
     def ticker_text(self) -> str:
@@ -198,9 +208,16 @@ def missing_glyphs(font: Path, *texts: str) -> list[str]:
 
 
 def campaign_glyph_gaps(brand: Brand, campaign: Campaign) -> list[str]:
-    """Campaign characters the brand's font lacks (ticker and end card)."""
+    """Campaign characters the brand's font lacks (ticker, header, end card).
+
+    With a separator icon the text separator is never drawn, so it is not
+    checked.
+    """
+    ticker = (" ".join(campaign.ticker_items) if brand.ticker_icon is not None
+              else campaign.ticker_text)
     return missing_glyphs(
-        brand.font_file, campaign.ticker_text, campaign.end_headline, *campaign.end_lines,
+        brand.font_file, ticker, campaign.end_headline, *campaign.end_lines,
+        *campaign.header_lines,
     )
 
 
@@ -243,6 +260,30 @@ def load_brand(kit_dir: str | Path) -> Brand:
         slot: path for slot in CARD_SLOTS
         if (path := _asset(root, cards_in.get(slot), f"cards.{slot}", where)) is not None
     }
+
+    ticker = _table(data, "ticker", where)
+    unknown = sorted(set(ticker) - {"tilt_deg", "separator_icon", "on_cards"})
+    if unknown:
+        raise KitError(f"{where}: unknown [ticker] key(s) {unknown}")
+    icon_path = _asset(root, ticker.get("separator_icon"), "ticker.separator_icon", where)
+    icon = None
+    if icon_path is not None:
+        try:
+            icon = svgpath.load(icon_path)
+        except svgpath.IconError as exc:
+            raise KitError(f"{where}: ticker.separator_icon: {exc}") from None
+    on_cards = ticker.get("on_cards", False)
+    if not isinstance(on_cards, bool):
+        raise KitError(f"{where}: ticker.on_cards must be true or false")
+
+    audio_in = _table(data, "audio", where)
+    unknown = sorted(set(audio_in) - set(AUDIO_SLOTS))
+    if unknown:
+        raise KitError(f"{where}: unknown audio slot(s) {unknown}; expected {list(AUDIO_SLOTS)}")
+    audio = {
+        slot: path for slot in AUDIO_SLOTS
+        if (path := _asset(root, audio_in.get(slot), f"audio.{slot}", where)) is not None
+    }
     return Brand(
         root=root,
         name=_str(data.get("name"), "name", where),
@@ -256,6 +297,11 @@ def load_brand(kit_dir: str | Path) -> Brand:
         cards=cards,
         glossary=_glossary(data, where),
         digest=digest,
+        ticker_tilt_deg=_number(ticker.get("tilt_deg", 0.0), "ticker.tilt_deg", where,
+                                -MAX_TILT_DEG, MAX_TILT_DEG),
+        ticker_icon=icon,
+        ticker_on_cards=on_cards,
+        audio=audio,
     )
 
 
@@ -271,6 +317,9 @@ def load_campaign(path: str | Path) -> Campaign:
     if not all(isinstance(v, str) for v in handles.values()):
         raise KitError(f"{where}: handles values must be strings")
     url = data.get("url")
+    header = _str_list(data.get("header_lines"), "header_lines", where)
+    if len(header) > MAX_HEADER_LINES:
+        raise KitError(f"{where}: header_lines takes at most {MAX_HEADER_LINES} lines")
     return Campaign(
         name=_str(data.get("name"), "name", where),
         ticker_items=items,
@@ -284,4 +333,5 @@ def load_campaign(path: str | Path) -> Campaign:
         handles=dict(handles),
         glossary=_glossary(data, where),
         digest=digest,
+        header_lines=header,
     )

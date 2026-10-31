@@ -5,17 +5,22 @@ and joined by stream copy: an optional title card, the clip itself, and an
 end card.  The clip segment is one ffmpeg pass:
 
     brand background (+ pattern) -> source video fitted into the profile's
-    video box -> logo -> banner strip + scrolling ticker (from
-    ``ticker.start_s``) -> captions / lower third (libass) -> fades, with the
+    video box -> logo -> one libass overlay: captions, the banner (band +
+    scrolling text + separator icons, tilted where the profile allows it,
+    from ``ticker.start_s``), header lines, lower third -> fades, with the
     audio loudness-normalized for social platforms (-14 LUFS).
 
+Cards carry the kit's stings (``[audio]``) instead of silence.
+
 Every input ffmpeg sees is staged into a private work directory under a
-fixed ASCII name (``logo.png``, ``ticker.ttf``, ``main.ass`` ...) and ffmpeg
-runs there, so no user path ever has to be escaped inside a filtergraph.
+fixed ASCII name (``logo.png``, ``main.ass``, ``end-sting.wav`` ...) and
+ffmpeg runs there, so no user path ever has to be escaped inside a
+filtergraph.
 """
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
 import subprocess
@@ -29,10 +34,14 @@ from . import ass, captions
 from .kit import Brand, Campaign
 from .profiles import Box, Profile, fit
 
+log = logging.getLogger("vezir.client.clips.render")
+
 LOUDNESS = "loudnorm=I=-14:TP=-1.5:LRA=11"
 _MEASURED = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
 AUDIO_ARGS = ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"]
 FADE_S = 0.25
+STING_FADE_S = 0.3
+MAX_CARD_S = {"title": 3.0, "end": 5.0}   # a sting may lengthen a card up to this
 _LOGO_CARD = {"vertical": Box(190, 560, 700, 260), "landscape": Box(610, 170, 700, 220)}
 _CARD_TEXT_TOP = {"vertical": 960, "landscape": 470}
 
@@ -57,10 +66,22 @@ class Credits:
 
 
 def _run(cmd: list[str], cwd: Path) -> None:
+    """Run ffmpeg; one retry if a signal killed it.
+
+    A negative exit code is a native crash (seen once in ~100 renders: SIGSEGV
+    inside Ubuntu's ffmpeg 6.1 / libass, not reproducible on replay), never an
+    error ffmpeg reported about its input, so the same command is tried once
+    more.  Real ffmpeg errors (positive exit) fail immediately.
+    """
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if proc.returncode < 0:
+        log.warning("ffmpeg was killed by signal %d; retrying once", -proc.returncode)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-12:])
-        raise RenderError(f"ffmpeg failed (exit {proc.returncode}):\n{tail}")
+        reason = (f"killed by signal {-proc.returncode}" if proc.returncode < 0
+                  else f"exit {proc.returncode}")
+        raise RenderError(f"ffmpeg failed ({reason}):\n{tail}")
 
 
 def require_ffmpeg() -> None:
@@ -174,11 +195,11 @@ def _logo(box: Box, logo_input: int, base: str, label: str) -> list[str]:
     ]
 
 
-def _ticker_text(campaign: Campaign, profile: Profile, duration: float) -> str:
-    unit = campaign.ticker_text + campaign.ticker_separator
-    est = max(1.0, len(unit) * 0.6 * profile.ticker_size)
-    travel = max(0.0, duration - campaign.ticker_start_s) * campaign.ticker_speed
-    return unit * min(50, math.ceil((travel + profile.width) / est) + 1)
+def card_duration(profile_s: float, sting_s: float | None, slot: str) -> float:
+    """A card lasts its profile length, or longer to let a sting finish."""
+    if sting_s is None:
+        return profile_s
+    return max(profile_s, min(sting_s + STING_FADE_S, MAX_CARD_S[slot]))
 
 
 def luminance(hex_rgb: str) -> float:
@@ -236,7 +257,9 @@ def _main_segment(
     if brand.pattern is not None:
         inputs += ["-i", work.link("pattern.png", brand.pattern)]
         pattern_input, n = n, n + 1
-    logo = _logo_for(brand, on_video=profile.video.contains(profile.logo))
+    logo_box = (profile.header_logo if campaign.header_lines and profile.header_logo
+                else profile.logo)
+    logo = _logo_for(brand, on_video=profile.video.contains(logo_box))
     if logo is not None:
         inputs += ["-i", work.link("logo.png", logo)]
         logo_input = n
@@ -247,16 +270,15 @@ def _main_segment(
     graph.append(f"[bg][vid]overlay={vx}:{vy}:shortest=1[c0]")
     base = "c0"
     if logo_input is not None:
-        graph += _logo(profile.logo, logo_input, base, "c1")
+        graph += _logo(logo_box, logo_input, base, "c1")
         base = "c1"
 
     work.link("fonts", brand.fonts_dir)
-    work.link("ticker.ttf", brand.font_file)
-    work.write("ticker.txt", _ticker_text(campaign, profile, duration))
-    work.write("main.ass", ass.main_script(profile, brand, cues,
-                                           speaker=credits.speaker, talk=credits.talk))
-    t, s = profile.ticker, campaign.ticker_start_s
-    on = f"enable='gte(t,{s:.2f})'"
+    work.write("main.ass", ass.main_script(
+        profile, brand, cues, campaign=campaign, duration=duration,
+        tilt=profile.ticker_tilt_for(brand.ticker_tilt_deg),
+        speaker=credits.speaker, talk=credits.talk,
+    ))
     video_chain = []
     lt = profile.lower_third
     if lt is not None and (credits.speaker or credits.talk):
@@ -269,14 +291,7 @@ def _main_segment(
             f":color={_hex(brand.colors['background'])}@0.72:t=fill"
             f":enable='between(t,{t0:.2f},{t1:.2f})'"
         )
-    video_chain += [
-        f"drawbox=x={t.x}:y={t.y}:w={t.w}:h={t.h}:color={_hex(brand.colors['primary'])}@1"
-        f":t=fill:{on}",
-        "drawtext=fontfile=ticker.ttf:textfile=ticker.txt:expansion=none"
-        f":fontsize={profile.ticker_size}:fontcolor={_hex(brand.colors['on_primary'])}"
-        f":y={t.y}+({t.h}-th)/2:x='w-mod((t-{s:.2f})*{campaign.ticker_speed:g},w+tw)':{on}",
-        "ass=main.ass:fontsdir=fonts",
-    ]
+    video_chain.append("ass=main.ass:fontsdir=fonts")
     audio_chain = [
         loudness_filter(source.path, seek, duration) if source.has_audio else LOUDNESS,
         "aresample=48000",
@@ -299,9 +314,14 @@ def _main_segment(
 
 def _card_segment(
     work: _Work, out: str, name: str, profile: Profile, brand: Brand, duration: float,
-    headline: str, lines: list[str], encoder: str,
+    headline: str, lines: list[str], encoder: str, *, campaign: Campaign | None = None,
+    sting: Path | None = None,
 ) -> float:
-    """Generated card; returns its duration."""
+    """Generated card; returns its duration.
+
+    With a *sting*, it plays from the card's first frame and fades out at its
+    end; otherwise the card is silent.
+    """
     inputs, n = [], 0
     pattern_input = logo_input = None
     if brand.pattern is not None:
@@ -319,12 +339,22 @@ def _card_segment(
     work.link("fonts", brand.fonts_dir)
     script = work.write(f"{name}.ass", ass.card_script(
         profile, brand, duration, headline, lines, text_top=_CARD_TEXT_TOP[profile.name],
+        campaign=campaign,
     ))
     graph.append(
         f"[{base}]ass={script}:fontsdir=fonts,fade=t=in:st=0:d={FADE_S},"
         f"fade=t=out:st={duration - FADE_S:.3f}:d={FADE_S}[v]"
     )
-    graph.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{duration:.3f}[a]")
+    if sting is not None:
+        n = len([x for x in inputs if x == "-i"])
+        inputs += ["-i", work.link(f"{name}-sting{sting.suffix.lower()}", sting)]
+        graph.append(
+            f"[{n}:a]aresample=48000,aformat=channel_layouts=stereo,apad,"
+            f"atrim=0:{duration:.3f},afade=t=out:st={duration - STING_FADE_S:.3f}"
+            f":d={STING_FADE_S}[a]"
+        )
+    else:
+        graph.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{duration:.3f}[a]")
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-y", *inputs,
            "-filter_complex", ";".join(graph), "-map", "[v]", "-map", "[a]",
            *_video_args(encoder, profile.fps), *AUDIO_ARGS, "-t", f"{duration:.3f}", out]
@@ -432,10 +462,14 @@ def render_clip(
             segments.append("title.mp4")
         elif has_title:
             title_lines = [x for x in (credits.speaker, credits.recorded_at) if x]
-            intro = _card_segment(work, "title.mp4", "title", profile, brand,
-                                  profile.title_card_s,
-                                  credits.talk or str(clip.get("title") or ""), title_lines,
-                                  encoder)
+            sting = brand.audio.get("title")
+            intro = _card_segment(
+                work, "title.mp4", "title", profile, brand,
+                card_duration(profile.title_card_s, _duration(sting) if sting else None,
+                              "title"),
+                credits.talk or str(clip.get("title") or ""), title_lines, encoder,
+                campaign=campaign, sting=sting,
+            )
             segments.append("title.mp4")
         _main_segment(work, "main.mp4", clip, source, profile, brand, campaign, cues, credits,
                       encoder, fade_in=bool(segments))
@@ -443,8 +477,13 @@ def render_clip(
         if end_slot in brand.cards:
             _designer_card(work, "end.mp4", "end", brand.cards[end_slot], profile, encoder)
         else:
-            _card_segment(work, "end.mp4", "end", profile, brand, profile.end_card_s,
-                          campaign.end_headline, list(campaign.end_lines), encoder)
+            sting = brand.audio.get("end")
+            _card_segment(
+                work, "end.mp4", "end", profile, brand,
+                card_duration(profile.end_card_s, _duration(sting) if sting else None, "end"),
+                campaign.end_headline, list(campaign.end_lines), encoder,
+                campaign=campaign, sting=sting,
+            )
         segments.append("end.mp4")
 
         work.write("segments.txt", "".join(f"file '{s}'\n" for s in segments))
@@ -465,6 +504,8 @@ def render_clip(
     config.secure_write_text(post, post_text(clip, campaign, credits))
     manifest.update({
         "encoder": encoder, "intro_s": intro,
+        "ticker_tilt_deg": profile.ticker_tilt_for(brand.ticker_tilt_deg),
+        "stings": sorted(brand.audio),
         "outputs": [final.name, srt.name, vtt.name, post.name],
     })
     config.secure_write_text(clip_dir / "render.json",

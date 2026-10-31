@@ -457,13 +457,15 @@ def test_luminance_and_logo_choice(tmp_path):
     assert render._logo_for(only_light).name == "l.png"
 
 
-def test_ticker_text_repeats_enough(tmp_path):
+def test_ticker_line_repeats_enough(tmp_path):
     camp = kit.load_campaign(_campaign(tmp_path, GOOD_CAMPAIGN))
-    short = render._ticker_text(camp, VERTICAL, 5.0)
-    long = render._ticker_text(camp, VERTICAL, 120.0)
+    brand = _brand(tmp_path)
+    short = ass.ticker_line(VERTICAL, brand, camp, 5 * camp.ticker_speed)
+    long = ass.ticker_line(VERTICAL, brand, camp, 120 * camp.ticker_speed)
     assert long.count("ONE") > short.count("ONE") >= 2
-    unit = len(camp.ticker_text + camp.ticker_separator) * 0.6 * VERTICAL.ticker_size
-    assert long.count("ONE") * unit >= (120 - 2) * camp.ticker_speed
+    unit = (len("ONETWO") * 0.6 + 2 * len(camp.ticker_separator) * 0.6) * VERTICAL.ticker_size
+    assert long.count("ONE") * unit >= 120 * camp.ticker_speed
+    assert "•" in short and "\\p3" not in short       # text separator, no icon
 
 
 def test_encoder_selection(monkeypatch):
@@ -839,3 +841,290 @@ def test_cli_render_end_to_end(tmp_path, media):
     assert res.exit_code == 0, res.output
     assert "short-01  vertical" in res.output
     assert (tmp_path / "out" / "short-01" / "short-01.vertical.mp4").is_file()
+
+
+# ── 0.30.0: svg icons, tilted banner, header lines, stings ──────────────────
+
+from vezir.client.clips import svgpath  # noqa: E402
+
+BOLT = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 20">'
+        '<path d="M5 0L10 0L4 20Z"/></svg>')
+
+
+def test_svgpath_commands_absolute_and_relative():
+    segs = svgpath.parse_path("M0 0 10 0 h5 v5 H20 V10 l-5 5 z")
+    assert segs[0] == ("m", (0.0, 0.0))
+    assert ("l", (10.0, 0.0)) in segs                       # implicit lineto after M
+    assert ("l", (15.0, 0.0)) in segs and ("l", (15.0, 5.0)) in segs
+    assert ("l", (20.0, 5.0)) in segs and ("l", (20.0, 10.0)) in segs
+    assert ("l", (15.0, 15.0)) in segs and segs[-1] == ("l", (0.0, 0.0))   # z closes
+    rel = svgpath.parse_path("m1 1 l1 0 m2 2 2 0")
+    assert rel == [("m", (1.0, 1.0)), ("l", (2.0, 1.0)), ("m", (4.0, 3.0)),
+                   ("l", (6.0, 3.0))]
+    assert svgpath.parse_path("M0 0 v1 h1") == [("m", (0.0, 0.0)), ("l", (0.0, 1.0)),
+                                                ("l", (1.0, 1.0))]
+
+
+def test_svgpath_curves():
+    c = svgpath.parse_path("M0 0 C1 1 2 1 3 0 S5 -1 6 0")
+    assert c[1] == ("b", (1.0, 1.0, 2.0, 1.0, 3.0, 0.0))
+    assert c[2] == ("b", (4.0, -1.0, 5.0, -1.0, 6.0, 0.0))    # reflected control point
+    rel = svgpath.parse_path("M1 1 c1 1 2 1 3 0 s2 -1 3 0")
+    assert rel[1] == ("b", (2.0, 2.0, 3.0, 2.0, 4.0, 1.0))
+    assert rel[2] == ("b", (5.0, 0.0, 6.0, 0.0, 7.0, 1.0))
+    s_first = svgpath.parse_path("M0 0 S2 2 4 0")             # no previous C: c1 = current
+    assert s_first[1][1][:2] == (0.0, 0.0)
+    q = svgpath.parse_path("M0 0 Q3 3 6 0 T12 0")
+    assert q[1] == ("b", (2.0, 2.0, 4.0, 2.0, 6.0, 0.0))
+    assert q[2][1][-2:] == (12.0, 0.0) and q[2][1][1] == pytest.approx(-2.0)
+    rq = svgpath.parse_path("m0 0 q3 3 6 0 t6 0")
+    assert rq[2][1][-2:] == (12.0, 0.0)
+    t_first = svgpath.parse_path("M0 0 T3 0")                 # no previous Q: control = current
+    assert t_first[1] == ("b", (0.0, 0.0, 1.0, 0.0, 3.0, 0.0))
+    assert svgpath.parse_path("M0 0 Z Z") == [("m", (0.0, 0.0)), ("l", (0.0, 0.0)),
+                                               ("l", (0.0, 0.0))]
+    assert svgpath.parse_path("Z M0 0") == [("m", (0.0, 0.0))]
+
+
+@pytest.mark.parametrize(("d", "message"), [
+    ("M0 0 A1 1 0 0 1 2 2", "unsupported path command"),
+    ("10 10", "must start with a command"),
+    ("M0", "missing numbers"),
+    ("M0 0 L1 L2 2", "missing numbers"),
+    ("M0 0 L1 #2", "characters this parser"),
+])
+def test_svgpath_rejects(d, message):
+    with pytest.raises(svgpath.IconError, match=message):
+        svgpath.parse_path(d)
+
+
+def test_svgpath_load_and_drawing(tmp_path):
+    f = tmp_path / "bolt.svg"
+    f.write_text(BOLT)
+    icon = svgpath.load(f)
+    assert icon.aspect == pytest.approx(6 / 20)               # bbox x 4..10, y 0..20
+    assert icon.segments[0] == ("m", (pytest.approx(0.05), 0.0))
+    d = icon.drawing(40)                                      # 40 px tall, \p3 = x4
+    assert d.startswith("m 8 0 l 48 0 l 0 160")
+    multi = tmp_path / "multi.svg"
+    multi.write_text('<svg xmlns="http://www.w3.org/2000/svg"><g><path d="M0 0L1 1"/>'
+                     '<path d="M2 0L3 2"/><rect/></g></svg>')
+    assert svgpath.load(multi).aspect == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(("body", "message"), [
+    ("<svg", "cannot read SVG"),
+    ('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', "no <path"),
+    ('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L5 0"/></svg>', "no area"),
+    ('<svg xmlns="http://www.w3.org/2000/svg"><g transform="scale(2)">'
+     '<path d="M0 0L1 1"/></g></svg>', "transform"),
+])
+def test_svgpath_load_errors(tmp_path, body, message):
+    f = tmp_path / "x.svg"
+    f.write_text(body)
+    with pytest.raises(svgpath.IconError, match=message):
+        svgpath.load(f)
+    with pytest.raises(svgpath.IconError, match="cannot read"):
+        svgpath.load(tmp_path / "missing.svg")
+
+
+TICKER_KIT = """
+[ticker]
+tilt_deg = 5
+separator_icon = "bolt.svg"
+on_cards = true
+[audio]
+end = "end.wav"
+title = "title.wav"
+"""
+
+
+def test_brand_ticker_and_audio(tmp_path):
+    brand = _brand(tmp_path, TICKER_KIT, {"bolt.svg": BOLT.encode(), "end.wav": b"x",
+                                          "title.wav": b"x"})
+    assert brand.ticker_tilt_deg == 5 and brand.ticker_on_cards is True
+    assert brand.ticker_icon is not None and set(brand.audio) == {"end", "title"}
+    plain = _brand(tmp_path)
+    assert plain.ticker_tilt_deg == 0 and plain.ticker_icon is None and plain.audio == {}
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    ("[ticker]\nspeed = 3\n", "unknown \\[ticker\\] key"),
+    ("[ticker]\ntilt_deg = 40\n", "ticker.tilt_deg"),
+    ("[ticker]\non_cards = 1\n", "ticker.on_cards"),
+    ('[ticker]\nseparator_icon = "nope.svg"\n', "separator_icon not found"),
+    ('[ticker]\nseparator_icon = "bad.svg"\n', "ticker.separator_icon: .*no <path"),
+    ('[audio]\nintro = "end.wav"\n', "unknown audio slot"),
+    ('[audio]\nend = "missing.wav"\n', "audio.end not found"),
+])
+def test_brand_ticker_audio_errors(tmp_path, extra, message):
+    files = {"f/X-Bold.ttf": FONT, "end.wav": b"x",
+             "bad.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>'}
+    with pytest.raises(kit.KitError, match=message):
+        kit.load_brand(_kit(tmp_path, GOOD_KIT + extra, files))
+
+
+def test_campaign_header_lines(tmp_path):
+    camp = kit.load_campaign(_campaign(tmp_path, 'header_lines = ["A", "B"]\n' + GOOD_CAMPAIGN))
+    assert camp.header_lines == ("A", "B")
+    with pytest.raises(kit.KitError, match="at most 3"):
+        kit.load_campaign(_campaign(tmp_path, 'header_lines = ["1","2","3","4"]\n'
+                                    + GOOD_CAMPAIGN))
+    with pytest.raises(kit.KitError, match="header_lines must be a list"):
+        kit.load_campaign(_campaign(tmp_path, "header_lines = 3\n" + GOOD_CAMPAIGN))
+
+
+def test_glyph_gaps_skip_icon_separator_and_check_header(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(kit, "missing_glyphs", lambda font, *texts: seen.extend(texts) or [])
+    camp = kit.load_campaign(_campaign(tmp_path, 'header_lines = ["HEAD ✓"]\n'
+                                       + GOOD_CAMPAIGN.replace('items = ["ONE", "TWO"]',
+                                                               'items = ["ONE", "TWO"]\n'
+                                                               'separator = " ⚡ "')))
+    kit.campaign_glyph_gaps(_brand(tmp_path), camp)
+    assert any("⚡" in t for t in seen) and "HEAD ✓" in seen
+    seen.clear()
+    iconed = _brand(tmp_path, '[ticker]\nseparator_icon = "bolt.svg"\n',
+                    {"bolt.svg": BOLT.encode()})
+    kit.campaign_glyph_gaps(iconed, camp)
+    assert not any("⚡" in t for t in seen) and "ONE TWO" in seen
+
+
+def test_tilt_budget():
+    assert 5.0 < VERTICAL.max_ticker_tilt() < 6.0
+    assert LANDSCAPE.max_ticker_tilt() == 0 and LANDSCAPE.ticker_tilt_for(5) == 0
+    assert VERTICAL.ticker_tilt_for(5) == 5
+    assert VERTICAL.ticker_tilt_for(12) == pytest.approx(VERTICAL.max_ticker_tilt())
+    assert VERTICAL.ticker_tilt_for(-12) == pytest.approx(-VERTICAL.max_ticker_tilt())
+    # At the maximum tilt the band stays between the captions and the safe bottom.
+    import math
+    t = math.radians(VERTICAL.max_ticker_tilt())
+    center = VERTICAL.ticker.y + VERTICAL.ticker.h / 2
+    reach = VERTICAL.ticker.h / 2 + VERTICAL.width / 2 * math.tan(t)
+    assert center - reach >= VERTICAL.captions.bottom - 1e-6
+    assert center + reach <= VERTICAL.safe.bottom + 1e-6
+    squeezed = profiles.Profile(**{**VERTICAL.__dict__, "captions": Box(0, 0, 10, 1440)})
+    assert squeezed.max_ticker_tilt() == 0
+
+
+def test_header_layout_inside_safe_area():
+    assert VERTICAL.header_logo is not None and VERTICAL.safe.contains(VERTICAL.header_logo)
+    x, y = VERTICAL.header_text
+    assert VERTICAL.header_logo.right < x <= VERTICAL.safe.right
+    assert VERTICAL.header_logo.y <= y <= VERTICAL.header_logo.bottom
+    assert LANDSCAPE.header_text is None
+
+
+def test_ticker_events_tilt_icon_and_speed(tmp_path):
+    brand = _brand(tmp_path, TICKER_KIT, {"bolt.svg": BOLT.encode(), "end.wav": b"x",
+                                          "title.wav": b"x"})
+    camp = kit.load_campaign(_campaign(tmp_path, GOOD_CAMPAIGN))
+    styles, (band, text) = ass.ticker_events(VERTICAL, brand, camp, 2.0, 12.0,
+                                             center_y=1412, tilt=5)
+    assert any(s.startswith("Style: Band,") for s in styles)
+    assert "\\frz5" in band and "\\org(540,1412)" in band and "\\p1}m 0 0 l 1512 0" in band
+    assert "\\q2" in text and "\\frz5" in text and "{\\p3}m " in text
+    travel = camp.ticker_speed * 10
+    assert f"\\move(1080,1412,{round(1080 - travel)},1412,0,10000)" in text
+    _, (_, full) = ass.ticker_events(VERTICAL, brand, camp, 0, 3, center_y=400, tilt=5,
+                                     prefilled=True)
+    assert "\\move(0,400," in full
+    _, (flat, _) = ass.ticker_events(LANDSCAPE, brand, camp, 0, 3, center_y=900, tilt=0)
+    assert "\\frz" not in flat
+
+
+def test_main_script_ticker_and_header(tmp_path):
+    brand = _brand(tmp_path)
+    camp = kit.load_campaign(_campaign(tmp_path, 'header_lines = ["26 FEB", "CITY"]\n'
+                                       + GOOD_CAMPAIGN))
+    vert = ass.main_script(VERTICAL, brand, [], campaign=camp, duration=10.0, tilt=5)
+    assert ",Band," in vert and ",Ticker," in vert and "\\frz5" in vert
+    assert "Dialogue: 1,0:00:00.00,0:00:10.00,Header,,0,0,0,,{\\pos(960,330)}26 FEB\\NCITY" in vert
+    short = ass.main_script(VERTICAL, brand, [], campaign=camp, duration=1.5)
+    assert ",Band," not in short                                  # ends before start_s
+    land = ass.main_script(LANDSCAPE, brand, [], campaign=camp, duration=10.0)
+    assert ",Header," not in land and "\\frz" not in land
+
+
+def test_card_script_band_only_when_enabled(tmp_path):
+    camp = kit.load_campaign(_campaign(tmp_path, GOOD_CAMPAIGN))
+    plain = ass.card_script(VERTICAL, _brand(tmp_path), 3.0, "H", ["l"], text_top=900,
+                            campaign=camp)
+    assert ",Band," not in plain
+    on = _brand(tmp_path, "[ticker]\ntilt_deg = 5\non_cards = true\n")
+    card = ass.card_script(LANDSCAPE, on, 3.0, "H", ["l"], text_top=470, campaign=camp)
+    assert ",Band," in card and "\\frz5" in card and "\\move(0,960," in card
+
+
+def test_card_duration():
+    assert render.card_duration(3.0, None, "end") == 3.0
+    assert render.card_duration(3.0, 1.5, "end") == 3.0
+    assert render.card_duration(3.0, 4.0, "end") == pytest.approx(4.3)
+    assert render.card_duration(3.0, 9.0, "end") == 5.0
+    assert render.card_duration(1.5, 2.0, "title") == pytest.approx(2.3)
+    assert render.card_duration(1.5, 9.0, "title") == 3.0
+
+
+def _mean_volume(path: Path, start: float, duration: float) -> float:
+    out = subprocess.run(["ffmpeg", "-nostats", "-ss", str(start), "-t", str(duration),
+                          "-i", str(path), "-vn", "-af", "volumedetect", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    return float(next(ln for ln in out.splitlines() if "mean_volume" in ln).split()[-2])
+
+
+@needs_ffmpeg
+def test_render_end_to_end_tilt_icon_header_stings(tmp_path, media):
+    font = kit.find_font("DejaVu Sans")
+    _ff("-f", "lavfi", "-i", "sine=f=880:d=4.0", "-ac", "2", str(tmp_path / "end.wav"))
+    _ff("-f", "lavfi", "-i", "sine=f=660:d=0.8", str(tmp_path / "title.wav"))
+    body = (GOOD_KIT.replace('family = "X"', 'family = "DejaVu Sans"')
+            .replace('bold = "f/X-Bold.ttf"', f'bold = "{font}"')
+            + '[assets]\nlogo_light = "logo.png"\n'
+            + TICKER_KIT.replace('"end.wav"', f'"{tmp_path / "end.wav"}"')
+            .replace('"title.wav"', f'"{tmp_path / "title.wav"}"'))
+    brand = kit.load_brand(_kit(tmp_path, body, {"bolt.svg": BOLT.encode(),
+                                                 "logo.png": (media / "logo.png").read_bytes()}))
+    camp = kit.load_campaign(_campaign(tmp_path, 'header_lines = ["26 FEB", "CITY"]\n'
+                                       + GOOD_CAMPAIGN))
+    src = render.probe(media / "src.mp4")
+    out = tmp_path / "out"
+
+    m = render.render_clip(_clip(duration_s=4.0), src, VERTICAL, brand, camp, out,
+                           encoder="libx264")
+    final = out / "short-01" / "short-01.vertical.mp4"
+    total = float(_probe_streams(final)["format"]["duration"])
+    assert total == pytest.approx(4.0 + 4.3, abs=0.15)            # end card follows the sting
+    assert m["ticker_tilt_deg"] == 5 and m["stings"] == ["end", "title"]
+    assert _mean_volume(final, 4.2, 3.0) > -40                    # the sting plays on the card
+
+    m = render.render_clip(_clip(id="long-01", kind="long", duration_s=3.0), src, LANDSCAPE,
+                           brand, camp, out, credits=render.Credits("Ann", "Talk"),
+                           encoder="libx264")
+    assert m["ticker_tilt_deg"] == 0 and m["intro_s"] == LANDSCAPE.title_card_s
+    total = float(_probe_streams(out / "long-01" / "long-01.landscape.mp4")["format"]["duration"])
+    assert total == pytest.approx(1.5 + 3.0 + 4.3, abs=0.2)
+
+
+def test_run_retries_once_after_a_crash(monkeypatch, tmp_path):
+    codes = iter([-11, 0])
+    calls = []
+
+    class R:
+        def __init__(self, rc):
+            self.returncode, self.stderr = rc, "boom"
+
+    def fake(*a, **k):
+        calls.append(1)
+        return R(next(codes))
+
+    monkeypatch.setattr(render.subprocess, "run", fake)
+    render._run(["ffmpeg"], tmp_path)
+    assert len(calls) == 2
+    monkeypatch.setattr(render.subprocess, "run", lambda *a, **k: R(-11))
+    with pytest.raises(render.RenderError, match="killed by signal 11"):
+        render._run(["ffmpeg"], tmp_path)
+    calls.clear()
+    monkeypatch.setattr(render.subprocess, "run", lambda *a, **k: calls.append(1) or R(1))
+    with pytest.raises(render.RenderError, match="exit 1"):
+        render._run(["ffmpeg"], tmp_path)
+    assert len(calls) == 1                     # a reported error is not retried

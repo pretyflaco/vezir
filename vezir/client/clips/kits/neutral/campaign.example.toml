@@ -2,6 +2,7 @@
 name = "Example event 2027"
 url = "https://example.org/tickets"
 hashtags = ["#Example", "#Event2027"]
+# header_lines = ["12-13 MAR 2027", "EXAMPLE CITY"]   # beside the logo on vertical clips
 
 [ticker]
 items = ["EXAMPLE EVENT 2027", "12-13 MARCH", "EXAMPLE CITY", "TICKETS: EXAMPLE.ORG"]

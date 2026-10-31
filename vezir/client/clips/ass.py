@@ -7,14 +7,18 @@ the input: braces and backslashes are neutralised, so a caption reading
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 from .captions import Cue
-from .kit import Brand
+from .kit import Brand, Campaign
 from .profiles import Profile
+from .svgpath import DRAW_SCALE_LEVEL
 
 LOWER_NAME = 1.0   # lower-third sizes relative to the caption size
 LOWER_TALK = 0.8
+HEADER_SIZE = 0.6  # header lines relative to the caption size
+ICON_HEIGHT = 0.75  # separator icon height relative to the ticker font size
 
 
 def color(hex_rgb: str, alpha: int = 0) -> str:
@@ -94,11 +98,69 @@ def _caption_lines(cue: Cue, highlight: int | None, hl_color: str) -> str:
     return "\\N".join(out)
 
 
+def ticker_line(profile: Profile, brand: Brand, campaign: Campaign, travel: float) -> str:
+    """The banner text, repeated so it never runs out over ``travel`` pixels.
+
+    Items are separated by the kit's icon (an inline vector drawing in the
+    text color) or by the campaign's text separator.
+    """
+    size = profile.ticker_size
+    items = [escape(x) for x in campaign.ticker_items]
+    if brand.ticker_icon is not None:
+        icon = brand.ticker_icon
+        icon_h = size * ICON_HEIGHT
+        sep = (f"  {{\\p{DRAW_SCALE_LEVEL}}}{icon.drawing(icon_h)}{{\\p0}}  ")
+        sep_w = icon_h * icon.aspect + 4 * 0.3 * size
+    else:
+        sep = escape(campaign.ticker_separator)
+        sep_w = len(campaign.ticker_separator) * 0.6 * size
+    unit = sep.join(items) + sep
+    unit_w = sum(len(x) for x in campaign.ticker_items) * 0.6 * size + len(items) * sep_w
+    return unit * min(60, math.ceil((travel + profile.width) / max(unit_w, 1.0)) + 1)
+
+
+def ticker_events(
+    profile: Profile, brand: Brand, campaign: Campaign, start: float, end: float, *,
+    center_y: int, tilt: float, layer: int = 2, prefilled: bool = False,
+) -> tuple[list[str], list[str]]:
+    """Styles + events for the banner: a band and its scrolling text.
+
+    The text enters from the right edge; ``prefilled`` (short cards) starts
+    with the band already full of text instead.
+
+    Band and text rotate together about the band's center (``\\org`` +
+    ``\\frz``), so the text rides along the tilted band; ``\\move`` makes the
+    scroll speed exact (``campaign.ticker_speed`` px/s) whatever the text width.
+    """
+    h, w = profile.ticker.h, profile.width
+    styles = [
+        _style("Band", brand, 20, brand.colors["primary"], align=7),
+        _style("Ticker", brand, profile.ticker_size, brand.colors["on_primary"], align=4),
+    ]
+    rot = f"\\org({w // 2},{center_y})" + (f"\\frz{tilt:g}" if tilt else "")
+    duration = max(0.0, end - start)
+    travel = campaign.ticker_speed * duration
+    x0, band_w = -round(w * 0.2), round(w * 1.4)   # wide enough to cover the edges when tilted
+    band = (f"{{\\fad(200,0)\\pos({x0},{center_y - h // 2}){rot}\\p1}}"
+            f"m 0 0 l {band_w} 0 {band_w} {h} 0 {h}{{\\p0}}")
+    # \\q2: one line, never wrapped (the line is far wider than the canvas).
+    x_start = 0 if prefilled else w
+    text = (f"{{\\q2\\fad(200,0)\\move({x_start},{center_y},{round(x_start - travel)},"
+            f"{center_y},0,"
+            f"{round(duration * 1000)}){rot}}}{ticker_line(profile, brand, campaign, travel)}")
+    return styles, [
+        _event(start, end, "Band", band, layer=layer),
+        _event(start, end, "Ticker", text, layer=layer + 1),
+    ]
+
+
 def main_script(
     profile: Profile, brand: Brand, cues: Sequence[Cue], *,
+    campaign: Campaign | None = None, duration: float | None = None, tilt: float = 0.0,
     speaker: str | None = None, talk: str | None = None,
 ) -> str:
-    """Overlay for the clip itself: captions (+ lower third on landscape)."""
+    """Overlay for the clip itself: captions, banner (from the campaign's
+    ``ticker.start_s``), header lines, and the lower third on landscape."""
     cap = profile.captions
     styles = [
         _style("Caption", brand, profile.caption_size, brand.colors["text"], align=2,
@@ -137,17 +199,34 @@ def main_script(
             y = lt.y + round(name_size * 1.2) if speaker else lt.y
             events.append(_event(t0, t1, "LowerTalk",
                                  f"{fade}{{\\pos({lt.x},{y})}}{escape(talk)}", layer=1))
+
+    if campaign is not None and duration is not None:
+        if duration > campaign.ticker_start_s:
+            t_styles, t_events = ticker_events(
+                profile, brand, campaign, campaign.ticker_start_s, duration,
+                center_y=profile.ticker.y + profile.ticker.h // 2, tilt=tilt,
+            )
+            styles += t_styles
+            events += t_events
+        if campaign.header_lines and profile.header_text is not None:
+            x, y = profile.header_text
+            styles.append(_style("Header", brand, round(profile.caption_size * HEADER_SIZE),
+                                 brand.colors["text"], align=6))
+            lines = "\\N".join(escape(ln) for ln in campaign.header_lines)
+            events.append(_event(0, duration, "Header", f"{{\\pos({x},{y})}}{lines}", layer=1))
     return _header(profile, styles) + "\n" + "\n".join(events) + "\n"
 
 
 def card_script(
     profile: Profile, brand: Brand, duration: float, headline: str,
-    lines: Sequence[str], *, text_top: int,
+    lines: Sequence[str], *, text_top: int, campaign: Campaign | None = None,
 ) -> str:
     """Card text as one block: headline (primary color), then lines.
 
     A single top-centered event lets libass wrap every line with the real
-    font metrics inside the profile's safe area.
+    font metrics inside the profile's safe area.  With the kit's
+    ``ticker.on_cards`` the campaign banner also runs across the card, at the
+    kit's tilt (cards have no footage to cover).
     """
     size = profile.caption_size
     margins = (profile.safe.x, profile.width - profile.safe.right, text_top)
@@ -168,6 +247,12 @@ def card_script(
     if parts:
         events.append(_event(0, duration, "CardHead" if headline.strip() else "CardLine",
                              "{\\fad(200,200)}" + "\\N".join(parts)))
+    if brand.ticker_on_cards and campaign is not None:
+        t_styles, t_events = ticker_events(profile, brand, campaign, 0.0, duration,
+                                           center_y=profile.card_band_y,
+                                           tilt=brand.ticker_tilt_deg, prefilled=True)
+        styles += t_styles
+        events += t_events
     return _header(profile, styles) + "\n" + "\n".join(events) + "\n"
 
 
