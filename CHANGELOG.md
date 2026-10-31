@@ -3,6 +3,61 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.30.0 — tilted banner with icons, sonic logo, header lines
+
+Brand features for `vezir clips render`, prompted by designer feedback on the
+first Adopting Bitcoin Cape Town renders.  Everything is opt-in data in the
+brand kit or campaign; existing kits render as before apart from the
+banner's new drawing (see Changed).
+
+### Added
+
+- **Tilted banner with an icon between items** (kit `[ticker]`):
+  - `tilt_deg` (up to 15).  It applies to vertical clips and cards;
+    landscape footage keeps a straight banner so it doesn't cover the
+    picture.  Each profile also has a tilt budget that keeps the band
+    between the captions and the platform UI (vertical: about 5.5°), and
+    larger values are clamped.
+  - `separator_icon`: a flat SVG drawn between ticker items in the text
+    color.  Fonts often lack symbol glyphs such as ⚡, so this replaces
+    them.
+  - `on_cards`: the banner also runs across the **end** cards, generated
+    or designer motion files (the same overlay is burned onto designer
+    cards), full and visible from the first frame.  Title cards, the long
+    clips' intro, never get a banner.
+- **`svgpath`**: converts a flat SVG icon to a libass drawing.  It supports
+  the M L H V C S Q T Z path commands, absolute and relative, and its
+  output is normalized and scalable.  Arcs, transforms and empty paths are
+  rejected when the kit loads.
+- **Sonic logo** (kit `[audio] end` / `title`): a sting replaces the
+  cards' silence and fades out at the end.  The end card lengthens to fit
+  its sting (up to 5 s), the title card up to 3 s.  A designer motion file
+  keeps its own audio.
+- **Header lines** (campaign `header_lines`, up to 3): on vertical clips
+  the logo moves left and the lines sit right-aligned beside it, like the
+  AB social templates.  The glyph check covers them, and skips the text
+  separator when an icon replaces it.
+- `render.json` records the effective `ticker_tilt_deg` and the `stings`
+  that actually played.  Shorts have no title card, and designer motion
+  cards keep their own audio, so neither adds a sting.
+
+### Changed
+
+- **The banner is drawn by libass** (band, text, icons) instead of
+  ffmpeg's drawbox/drawtext.  That makes tilt and inline icons possible,
+  `\move` makes the scroll speed exact, and the text is never wrapped
+  (`\q2`).
+- **Vertical layout re-tuned** for a tilted band: the caption block ends
+  at y=1320, and the band is centered at y=1412 and is 72 px high.
+- **ffmpeg retries once if a signal kills it.**  A single SIGSEGV inside
+  Ubuntu's ffmpeg 6.1 (in the `ass` + `loudnorm` main segment) showed up in
+  about 100 renders.  Replaying the identical command 150 times never
+  reproduced it, so it is a native fault, not an input error.  Positive
+  exit codes still fail immediately.
+
+Tests: 1662 (+31).  Every changed line and branch is covered, except the
+`__version__` metadata fallback.
+
 ## 0.29.0 — branded social clips (`vezir clips`)
 
 `vezir clips render` turns a video-clipping session (0.28.0) into

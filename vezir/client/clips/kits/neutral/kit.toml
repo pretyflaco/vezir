@@ -26,6 +26,19 @@ family = "DejaVu Sans"   # family name libass uses for captions and cards
 # end_landscape = "motion/end-16x9.mp4"
 # end_vertical = "motion/end-9x16.mp4"
 
+[ticker]
+# tilt_deg = 5                      # tilt the banner (vertical clips + cards; footage
+#                                   # in landscape stays straight). Max 15; the layout
+#                                   # may allow less (vertical: ~5.5).
+# separator_icon = "icons/bolt.svg" # flat SVG drawn between items (paths only)
+# on_cards = true                   # also run the banner across the END cards
+#                                   # (generated or designer); title cards never
+
+[audio]
+# end = "audio/end-sting.wav"   # sting on the end card (sonic logo); the card
+#                               # lengthens to fit it, up to 5 s
+# title = "audio/title.wav"     # sting on the long clips' title card (up to 3 s)
+
 # [[glossary]]                 # regex fixes applied to captions
 # pattern = "\\bTCP ?IP\\b"
 # replace = "TCP/IP"

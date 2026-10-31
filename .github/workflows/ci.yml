@@ -64,7 +64,8 @@ jobs:
             vezir/client/clips/captions.py \
             vezir/client/clips/ass.py \
             vezir/client/clips/render.py \
-            vezir/client/clips/session.py
+            vezir/client/clips/session.py \
+            vezir/client/clips/svgpath.py
 
   test:
     name: pytest (py${{ matrix.python-version }})
