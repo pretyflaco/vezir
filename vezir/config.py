@@ -1397,13 +1397,20 @@ ARTIFACT_EXTENSIONS: list[tuple[str, str]] = [
     # Template summaries (0.18.0) before the plain summary: distinct suffix,
     # no overlap, but keep them grouped for readability.
     (".iteration-plan.md", ".iteration-plan.md"),
+    (".video-clipping.md", ".video-clipping.md"),
     (".summary.md", ".md"),
     (".frontmatter.json", ".frontmatter.json"),
+    # video-clipping cut list (0.28.0): before ".json", which would rename
+    # it to the transcript's friendly name.
+    (".clips.json", ".clips.json"),
     (".srt", ".srt"),
     (".txt", ".txt"),
     (".pdf", ".pdf"),
     (".json", ".json"),
 ]
+
+
+_CLIPS_LANG_RE = re.compile(r"\.clips\.([a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)\.json\Z")
 
 
 def artifact_friendly_name(server_filename: str, date_yyyymmdd: str, title: str | None) -> str:
@@ -1414,6 +1421,11 @@ def artifact_friendly_name(server_filename: str, date_yyyymmdd: str, title: str 
     filename.  Unknown artifact types keep their stored name.
     """
     stem = artifact_stem(date_yyyymmdd, title)
+    # Additional-language cut list <id>.clips.<lang>.json: keep the language,
+    # and never fall through to ".json" (the transcript's friendly name).
+    m = _CLIPS_LANG_RE.search(server_filename)
+    if m:
+        return f"{stem}.clips.{m.group(1)}.json"
     for suffix, ext in ARTIFACT_EXTENSIONS:
         if server_filename.endswith(suffix):
             return f"{stem}{ext}"

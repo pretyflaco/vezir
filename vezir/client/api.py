@@ -47,6 +47,8 @@ Endpoint coverage (server: vezir 0.1.17):
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +57,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..config import secure_chmod_file, secure_mkdir
 from ..config import secure_write_bytes as _secure_write_bytes
 
 log = logging.getLogger("vezir.client.api")
@@ -814,6 +817,47 @@ class VezirClient:
         """Return the raw bytes of an artifact (transcript, summary, etc.)."""
         path = f"/artifact/{quote(session_id, safe='')}/{quote(name, safe='')}"
         return self._get_bytes(path)
+
+    def stream_artifact(self, session_id: str, name: str, dest: Path) -> ApiResult:
+        """Stream an artifact to ``dest`` without holding it in memory.
+
+        For the source video of a session (multi-GB is normal), where
+        :meth:`save_artifact` would buffer the whole body.  Same guarantees:
+        0600, atomic (same-dir temp + replace, so a symlink at ``dest`` is
+        replaced, not followed), parent created 0700.  ``.ok`` is ``dest``.
+        """
+        dest = Path(dest)
+        url = (
+            f"{self.base_url}/artifact/{quote(session_id, safe='')}/"
+            f"{quote(name, safe='')}"
+        )
+
+        def send() -> ApiResult:
+            secure_mkdir(dest.parent)
+            fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", dir=str(dest.parent))
+            tmp = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "wb") as f, httpx.Client(
+                    timeout=_DOWNLOAD_TIMEOUT, verify=self._verify,
+                ) as c, c.stream("GET", url, headers=self._headers()) as r:
+                    if r.status_code != 200:
+                        r.read()
+                        tmp.unlink(missing_ok=True)
+                        return ApiResult.http(r.status_code, r.text[:200])
+                    for chunk in r.iter_bytes(1 << 20):
+                        f.write(chunk)
+                tmp.chmod(0o600)
+                tmp.replace(dest)
+                secure_chmod_file(dest)
+                return ApiResult.success(dest)
+            except httpx.HTTPError as exc:
+                tmp.unlink(missing_ok=True)
+                return ApiResult.network(exc)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+
+        return self._with_refresh(lambda: self._with_retry(send))
 
     def save_artifact(
         self,

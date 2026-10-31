@@ -117,12 +117,14 @@ def list_artifacts(session_id: str) -> dict:
     """List every downloadable file for a session.
 
     Returns ``{"artifacts": {<type>: <filename>}, "attachments": [...]}``:
-    the artifact dict (transcript/summary/pdf/iteration_plan/… keyed by
-    type) plus the attachments list (cue frames ``cue_HH-MM-SS.png`` and
-    any user-uploaded files).  Use a filename (or an artifact type key)
-    with get_artifact to pull the content.  The source video of a video
-    session (``.mp4``/``.mov``) sits at the session root — it is not in
-    either list but get_artifact can fetch it by name.
+    the artifact dict (transcript/summary/pdf/iteration_plan/
+    video_clipping/clips/… keyed by type) plus the attachments list (cue
+    frames ``cue_HH-MM-SS.png`` and any user-uploaded files).  Use a
+    filename (or an artifact type key) with get_artifact to pull the
+    content.  The source video of a video session (``.mp4``/``.mov``) sits
+    at the session root — it is not in either list but get_artifact can
+    fetch it by name.  For a ``video-clipping`` session, get_clips returns
+    the cut list ready for ffmpeg.
     """
     api = _client()
     result = api.get_session(session_id)
@@ -143,7 +145,8 @@ def get_artifact(session_id: str, name: str, save_path: str | None = None) -> st
     """Download one file of a session by name (or artifact type key).
 
     ``name`` may be an artifact type (``txt``, ``summary``,
-    ``iteration_plan``, ``json``, ``srt``, ``pdf``), an exact filename
+    ``iteration_plan``, ``video_clipping``, ``clips``, ``json``, ``srt``,
+    ``pdf``), an exact filename
     from list_artifacts (e.g. ``cue_00-03-12.png``), or a session-root
     file (the source video).  Attachments (frames, user files) are
     resolved automatically.
@@ -172,6 +175,14 @@ def get_artifact(session_id: str, name: str, save_path: str | None = None) -> st
         att_names = {a.get("name") for a in att.ok} if att.is_ok() else set()
     if filename in att_names:
         data = api.download_attachment(session_id, filename)
+    elif save_path:
+        # Artifacts (incl. a multi-GB source video) stream straight to disk.
+        streamed = api.stream_artifact(
+            session_id, filename, Path(save_path).expanduser(),
+        )
+        if not streamed.is_ok():
+            raise RuntimeError(f"download failed: {streamed.error_message()}")
+        return str(streamed.ok)
     else:
         data = api.download_artifact(session_id, filename)
     if not data.is_ok():
@@ -213,6 +224,42 @@ def get_transcript(session_id: str, max_chars: int = 0) -> str:
     return text
 
 
+def get_clips(session_id: str, lang: str | None = None,
+              include_words: bool = False) -> dict:
+    """Return the clip cut list of a ``video-clipping`` session.
+
+    Each clip has ``id`` (``short-01``/``long-01``…), ``kind`` (short
+    15-60 s / long 1-3 min), ``title``, ``hook``, ``reason``, ``score``
+    (1-10), ``start_s``/``end_s``/``duration_s`` on the transcript
+    timeline, ``seek_s`` (the same start on the SOURCE MEDIA's timeline —
+    use this one), the verbatim ``text`` and ``speakers``, and
+    ``ffmpeg_args``: a frame-accurate cut with ``{input}``/``{output}``
+    placeholders.  Boundaries are snapped to real transcript segments;
+    clips the model proposed but that failed validation are in
+    ``dropped`` with a reason.
+
+    To cut a clip: ``get_artifact(session_id, source["media"],
+    save_path="<dir>/<media>")`` once, then run
+    ``ffmpeg -y <ffmpeg_args>`` with ``{input}`` = that path and
+    ``{output}`` = e.g. ``<dir>/<clip id>.mp4``.  ``include_words=True``
+    adds per-word timings (relative to the clip start) for captions.
+    ``lang`` selects an additional-language cut list (e.g. ``"de"``).
+    """
+    import json
+
+    key = f"clips_{lang}" if lang else "clips"
+    suffix = f".clips.{lang}.json" if lang else ".clips.json"
+    doc = json.loads(_fetch_artifact_text(session_id, key, suffix))
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"session {session_id}: malformed clips file")
+    if not include_words:
+        for clip in doc.get("clips") or []:
+            if isinstance(clip, dict):
+                clip.pop("words", None)
+    doc["session_id"] = session_id
+    return doc
+
+
 # Tools doing blocking HTTP at once.  Bounded so a harness fanning out
 # hundreds of calls queues them here instead of tripping the server's
 # per-client rate limiter.
@@ -220,7 +267,7 @@ MAX_CONCURRENT_CALLS = 4
 
 TOOLS = (
     list_sessions, search_sessions, get_summary, get_transcript,
-    list_artifacts, get_artifact,
+    list_artifacts, get_artifact, get_clips,
 )
 
 

@@ -35,6 +35,60 @@ def _is_text(name: str) -> bool:
     return Path(name).suffix.lower() in _TEXT_EXTS
 
 
+def _is_clips(name: str) -> bool:
+    """A ``video-clipping`` cut list: ``<id>.clips[.<lang>].json``."""
+    return name.endswith(".json") and ".clips." in name
+
+
+def render_clips(body: str) -> str:
+    """Human view of a clips.json; falls back to the raw body if malformed.
+
+    Save/copy keep the raw JSON — this is only what the viewer shows.
+    """
+    import json
+
+    try:
+        doc = json.loads(body)
+        clips = doc["clips"]
+        if not isinstance(clips, list):
+            raise TypeError("clips is not a list")
+    except Exception:
+        return body
+    source = doc.get("source") if isinstance(doc.get("source"), dict) else {}
+    lines = [
+        f"{len(clips)} clip(s) from {source.get('media') or 'the recording'}"
+        + (f"  (video timeline offset {source['video_start_time']}s)"
+           if source.get("video_start_time") else ""),
+    ]
+    if doc.get("error"):
+        lines.append(f"error: {doc['error']}")
+    for c in clips:
+        if not isinstance(c, dict):
+            continue
+        score = f"{c['score']}/10" if c.get("score") is not None else "-"
+        lines += [
+            "",
+            f"{c.get('id', '?'):<9} {c.get('start_ts', '?')} -> {c.get('end_ts', '?')}"
+            f"  ({c.get('duration_s', 0):.1f}s)  {score}  {c.get('title') or ''}",
+        ]
+        if c.get("hook"):
+            lines.append(f"  hook:   {c['hook']}")
+        if c.get("reason"):
+            lines.append(f"  why:    {c['reason']}")
+        if c.get("tags"):
+            lines.append(f"  tags:   {', '.join(map(str, c['tags']))}")
+        args = c.get("ffmpeg_args")
+        if isinstance(args, list):
+            lines.append("  ffmpeg -y " + " ".join(map(str, args)))
+    dropped = doc.get("dropped") or []
+    if dropped:
+        lines += ["", f"{len(dropped)} proposed clip(s) dropped:"]
+        for d in dropped:
+            if isinstance(d, dict):
+                lines.append(f"  - {d.get('title') or '(untitled)'}: {d.get('reason')}")
+    return "\n".join(lines) + "\n"
+
+
 def _os_opener_cmd() -> list[str] | None:
     if sys.platform == "darwin":
         return ["open"]
@@ -237,7 +291,9 @@ class ArtifactScreen(Screen):
         self._body = message.body
         assert self._area is not None
         # TextArea.load_text in older textual, .text = … in newer; use .text.
-        self._area.text = message.body
+        self._area.text = (
+            render_clips(message.body) if _is_clips(message.name) else message.body
+        )
         self.query_one("#status-line", Static).update(
             f"{message.name}  ({len(message.body)} chars)  "
             f"[s] save  [escape] back"

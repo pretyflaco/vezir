@@ -3,6 +3,72 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.28.0 — video-clipping template
+
+A third summary template next to the meeting summary and `iteration-plan`.
+Upload a video and the model finds the clip-worthy highlights; an agent then
+cuts them with ffmpeg, outside vezir, using the cut list from the MCP
+server.  Requires **millet-pipeline >= 0.23.0** (floor raised), which adds
+the prompts and writes `<id>.clips.json`: clip boundaries snapped to real
+transcript segments, with anything the model got wrong listed under
+`dropped` with a reason instead of guessed.
+
+### Added
+
+- **`video-clipping` template.** `vezir upload talk.mp4 --template
+  video-clipping` (also `upload-multi`, `scribe`, retry-summary), or cycle
+  the Record tab's video-template button (`Iter. plan` → `Clips` → `No
+  template`).  Short clips are 15-60 s and long ones 1-3 min, each with a
+  title, hook, reason, score and tags.  The session gets
+  `video-clipping.md` plus the new `clips` artifact (`clips_<lang>` for an
+  additional-language retry).
+- **The worker rebases the cut list onto the source file.**  millet never
+  sees the video, so after transcription and after every summary retry the
+  worker adds `source.media` / `media_kind` / `video_start_time`.  The
+  offset is the ffprobe `start_time` already used for cue frames: some
+  Android screen recordings start at a boot-clock timestamp, and an
+  unrebased `-ss` lands before the first frame.  It also writes each
+  clip's `seek_s` and `ffmpeg_args`: a frame-accurate re-encode, or
+  `-vn` for an audio-only session.  Idempotent.
+- **MCP `get_clips(session_id, lang?, include_words?)`.**  Returns the cut
+  list (word timings only when asked, to keep context small) and documents
+  the cut recipe for the agent.  `get_artifact(..., save_path=)` now
+  **streams** artifacts to disk (new `VezirClient.stream_artifact`):
+  0600, atomic, and a symlink at the destination is replaced.  Before, a
+  multi-GB source video was held in memory.
+- **TUI clips view.**  The artifact viewer renders a `clips.json` as a
+  readable list (time range, score, hook, reason, ffmpeg command, dropped
+  clips).  Save and copy still use the raw JSON.
+- `presets.TEMPLATES` / `TEMPLATE_LABELS` / `is_clipping` are now the
+  client-side list of shipped templates.  Servers still validate only the
+  template-name shape.
+
+### Changed
+
+- **Clipping sessions don't wait in `needs_labeling`.**  Clipped videos
+  are mostly podcasts and talks of people with no voiceprint, so the gate
+  would have held every one of them.  Raw labels don't affect the cut
+  list, so the session finishes `done` and can still be labeled (which
+  renames speakers inside `clips.json`; boundaries never move).  The main
+  pipeline and `reauto_label_session` both honor this.  Every other
+  template is gated as before.
+- **Clipping sessions skip cue-frame extraction.**  Clip selection uses
+  the transcript only, and frames would spend the shared 50-file
+  attachment sync cap for nothing.
+- The Record tab's `iteration_plan: bool` preference becomes
+  `video_template` (`iteration-plan` | `video-clipping` | `""`), migrated
+  on first use.  The default is still iteration-plan.
+
+### Fixed
+
+- `<id>.clips.json` sorts before `<id>.json`, and the transcript-JSON glob
+  in `_find_artifacts` would have registered the cut list as the
+  transcript (`json`).  `.clips.` is now excluded.  Friendly download
+  names map `.clips.json` / `.clips.<lang>.json` explicitly, so neither
+  claims the transcript's `<stem>.json`.
+
+Tests: 1542 (+20, `tests/test_video_clipping.py`).
+
 ## 0.27.1 — security audit validation follow-up
 
 ### Security
