@@ -50,6 +50,9 @@ dependencies = [
     # default, and on the server Google's token exchange + JWKS fetch go
     # through it, so a stale bundle means a forged JWKS could mint logins.
     "certifi>=2026.10.19",
+    # v0.29.0 `vezir clips render`: brand kits / campaigns are TOML.
+    # tomllib is stdlib from 3.11; tomli is its 3.10 backport (same API).
+    "tomli>=2.0; python_version < '3.11'",
     "ulid-py>=1.1",
     # Raised to >= 0.6.0 (vezir 0.23.0): the startup recovery scan and
     # RecordingInProgressError surfacing build on millet-record 0.6.0's
@@ -73,8 +76,9 @@ include = ["vezir*"]
 
 [tool.setuptools.package-data]
 # v0.7.0: web templates + static assets + Tkinter logo PNGs removed
-# (HTML dashboard + Tk widget dropped).  Nothing left to bundle.
-vezir = []
+# (HTML dashboard + Tk widget dropped).  v0.29.0: the neutral clip-render
+# brand kit + example campaign (TOML only; no fonts or images).
+vezir = ["client/clips/kits/*/*.toml"]
 
 [tool.setuptools.dynamic]
 # Single source of truth lives at vezir/__init__.py:__version__.
@@ -251,6 +255,12 @@ module = [
     "vezir.presets",
     "vezir.speakers",
     "vezir.client.local",
+    "vezir.client.clips.kit",
+    "vezir.client.clips.profiles",
+    "vezir.client.clips.captions",
+    "vezir.client.clips.ass",
+    "vezir.client.clips.render",
+    "vezir.client.clips.session",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true

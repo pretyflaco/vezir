@@ -1,0 +1,31 @@
+# Neutral brand kit shipped with vezir: for tests, docs and a first look.
+# A real kit is a directory you own (e.g. in a team repo) with the same
+# keys plus your fonts, logos and pattern.  Paths are relative to the kit.
+name = "Neutral"
+
+[colors]
+primary = "#ffcc00"      # caption highlight, banner strip, card headline
+background = "#1e1e24"   # canvas behind the video, cards
+text = "#ffffff"         # captions, card lines
+on_primary = "#111111"   # ticker text on the banner strip
+outline = "#000000"      # caption outline
+
+[fonts]
+family = "DejaVu Sans"   # family name libass uses for captions and cards
+# bold = "fonts/MyFont-Bold.ttf"   # the bold face; omitted -> found via fontconfig
+
+[assets]
+# logo_light = "logos/logo-white.png"   # logo for dark surfaces (PNG)
+# logo_dark = "logos/logo-black.png"
+# pattern = "patterns/texture.png"      # subtle background texture
+# pattern_opacity = 0.12
+
+[cards]
+# Designer motion files replace a generated card:
+# title_landscape = "motion/title-16x9.mp4"
+# end_landscape = "motion/end-16x9.mp4"
+# end_vertical = "motion/end-9x16.mp4"
+
+# [[glossary]]                 # regex fixes applied to captions
+# pattern = "\\bTCP ?IP\\b"
+# replace = "TCP/IP"

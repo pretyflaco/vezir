@@ -1,0 +1,21 @@
+# Example campaign: what a set of clips promotes.  Copy and edit.
+name = "Example event 2027"
+url = "https://example.org/tickets"
+hashtags = ["#Example", "#Event2027"]
+
+[ticker]
+items = ["EXAMPLE EVENT 2027", "12-13 MARCH", "EXAMPLE CITY", "TICKETS: EXAMPLE.ORG"]
+separator = "   •   "
+start_s = 2.0      # the banner appears after the hook
+speed = 140        # pixels per second
+
+[end_card]
+headline = "EXAMPLE EVENT 2027"
+lines = ["12-13 March 2027 · Example City", "Tickets: example.org"]
+
+[handles]
+x = "@example"
+
+# [[glossary]]
+# pattern = "\\bsets\\b(?= worth)"
+# replace = "sats"
