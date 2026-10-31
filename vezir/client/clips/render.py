@@ -315,12 +315,13 @@ def _main_segment(
 def _card_segment(
     work: _Work, out: str, name: str, profile: Profile, brand: Brand, duration: float,
     headline: str, lines: list[str], encoder: str, *, campaign: Campaign | None = None,
-    sting: Path | None = None,
+    sting: Path | None = None, band: bool = False,
 ) -> float:
     """Generated card; returns its duration.
 
     With a *sting*, it plays from the card's first frame and fades out at its
-    end; otherwise the card is silent.
+    end; otherwise the card is silent.  ``band``: end cards carry the
+    campaign banner when the kit asks for it.
     """
     inputs, n = [], 0
     pattern_input = logo_input = None
@@ -339,7 +340,7 @@ def _card_segment(
     work.link("fonts", brand.fonts_dir)
     script = work.write(f"{name}.ass", ass.card_script(
         profile, brand, duration, headline, lines, text_top=_CARD_TEXT_TOP[profile.name],
-        campaign=campaign,
+        campaign=campaign, band=band,
     ))
     graph.append(
         f"[{base}]ass={script}:fontsdir=fonts,fade=t=in:st=0:d={FADE_S},"
@@ -363,14 +364,25 @@ def _card_segment(
 
 
 def _designer_card(work: _Work, out: str, name: str, path: Path, profile: Profile,
-                   encoder: str) -> float:
-    """Conform a designer-supplied motion file to the profile; returns its duration."""
+                   encoder: str, *, brand: Brand | None = None,
+                   campaign: Campaign | None = None, band: bool = False) -> float:
+    """Conform a designer-supplied motion file to the profile; returns its duration.
+
+    The motion file keeps its own audio.  ``band`` (end cards) burns the same
+    campaign banner over it that a generated end card gets.
+    """
     src = probe(path)
     duration = _duration(path)
     w, h = profile.width, profile.height
     inputs = ["-i", work.link(f"{name}-motion{path.suffix.lower()}", path)]
+    overlay = ""
+    script = (ass.card_band_script(profile, brand, campaign, duration)
+              if band and brand is not None else None)
+    if script is not None and brand is not None:
+        work.link("fonts", brand.fonts_dir)
+        overlay = f",ass={work.write(f'{name}-band.ass', script)}:fontsdir=fonts"
     graph = [f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={profile.fps}[v]"]
+             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={profile.fps}{overlay}[v]"]
     if src.has_audio:
         graph.append("[0:a]aresample=48000[a]")
     else:
@@ -455,6 +467,7 @@ def render_clip(
     work = _Work(clip_dir)
     try:
         segments: list[str] = []
+        stings_used: list[str] = []
         intro = 0.0
         if title_slot in brand.cards:
             intro = _designer_card(work, "title.mp4", "title", brand.cards[title_slot],
@@ -470,20 +483,23 @@ def render_clip(
                 credits.talk or str(clip.get("title") or ""), title_lines, encoder,
                 campaign=campaign, sting=sting,
             )
+            stings_used += ["title"] if sting else []
             segments.append("title.mp4")
         _main_segment(work, "main.mp4", clip, source, profile, brand, campaign, cues, credits,
                       encoder, fade_in=bool(segments))
         segments.append("main.mp4")
         if end_slot in brand.cards:
-            _designer_card(work, "end.mp4", "end", brand.cards[end_slot], profile, encoder)
+            _designer_card(work, "end.mp4", "end", brand.cards[end_slot], profile, encoder,
+                           brand=brand, campaign=campaign, band=True)
         else:
             sting = brand.audio.get("end")
             _card_segment(
                 work, "end.mp4", "end", profile, brand,
                 card_duration(profile.end_card_s, _duration(sting) if sting else None, "end"),
                 campaign.end_headline, list(campaign.end_lines), encoder,
-                campaign=campaign, sting=sting,
+                campaign=campaign, sting=sting, band=True,
             )
+            stings_used += ["end"] if sting else []
         segments.append("end.mp4")
 
         work.write("segments.txt", "".join(f"file '{s}'\n" for s in segments))
@@ -505,7 +521,9 @@ def render_clip(
     manifest.update({
         "encoder": encoder, "intro_s": intro,
         "ticker_tilt_deg": profile.ticker_tilt_for(brand.ticker_tilt_deg),
-        "stings": sorted(brand.audio),
+        # The stings that actually played: shorts have no title card, and a
+        # designer motion card keeps its own audio.
+        "stings": sorted(stings_used),
         "outputs": [final.name, srt.name, vtt.name, post.name],
     })
     config.secure_write_text(clip_dir / "render.json",

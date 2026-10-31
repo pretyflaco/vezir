@@ -331,8 +331,10 @@ Per clip (`~/vezir-clips/<session>/<clip id>/` by default):
 Kits can also carry:
 - a tilted banner with an icon between items
   (`[ticker] tilt_deg = 5`, `separator_icon = "icons/bolt.svg"`,
-  `on_cards = true`).  It's tilted on vertical clips and cards, and straight
-  over landscape footage.
+  `on_cards = true`).  It's tilted on vertical clips and end cards, and
+  straight over landscape footage.  `on_cards` covers end cards, generated
+  or designer-supplied; title cards (the long clips' intro) never get a
+  banner.
 - a sonic logo on the end card (`[audio] end = "sting.wav"`) and on the
   long clips' title card (`title`).  Each card lengthens to fit its sting.
 - template-style header lines beside the logo on vertical clips, set by

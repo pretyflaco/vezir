@@ -21,8 +21,10 @@ banner's new drawing (see Changed).
   - `separator_icon`: a flat SVG drawn between ticker items in the text
     color.  Fonts often lack symbol glyphs such as ⚡, so this replaces
     them.
-  - `on_cards`: the banner also runs across the title and end cards, full
-    from the first frame.
+  - `on_cards`: the banner also runs across the **end** cards, generated
+    or designer motion files (the same overlay is burned onto designer
+    cards), full and visible from the first frame.  Title cards, the long
+    clips' intro, never get a banner.
 - **`svgpath`**: converts a flat SVG icon to a libass drawing.  It supports
   the M L H V C S Q T Z path commands, absolute and relative, and its
   output is normalized and scalable.  Arcs, transforms and empty paths are
@@ -35,8 +37,9 @@ banner's new drawing (see Changed).
   the logo moves left and the lines sit right-aligned beside it, like the
   AB social templates.  The glyph check covers them, and skips the text
   separator when an icon replaces it.
-- `render.json` records the effective `ticker_tilt_deg` and which `stings`
-  were used.
+- `render.json` records the effective `ticker_tilt_deg` and the `stings`
+  that actually played.  Shorts have no title card, and designer motion
+  cards keep their own audio, so neither adds a sting.
 
 ### Changed
 
@@ -52,7 +55,7 @@ banner's new drawing (see Changed).
   reproduced it, so it is a native fault, not an input error.  Positive
   exit codes still fail immediately.
 
-Tests: 1661 (+30).  Every changed line and branch is covered, except the
+Tests: 1662 (+31).  Every changed line and branch is covered, except the
 `__version__` metadata fallback.
 
 ## 0.29.0 — branded social clips (`vezir clips`)

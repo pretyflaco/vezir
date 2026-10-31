@@ -31,7 +31,8 @@ family = "DejaVu Sans"   # family name libass uses for captions and cards
 #                                   # in landscape stays straight). Max 15; the layout
 #                                   # may allow less (vertical: ~5.5).
 # separator_icon = "icons/bolt.svg" # flat SVG drawn between items (paths only)
-# on_cards = true                   # also run the banner across title/end cards
+# on_cards = true                   # also run the banner across the END cards
+#                                   # (generated or designer); title cards never
 
 [audio]
 # end = "audio/end-sting.wav"   # sting on the end card (sonic logo); the card

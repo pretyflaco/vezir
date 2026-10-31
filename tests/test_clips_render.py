@@ -1026,9 +1026,11 @@ def test_ticker_events_tilt_icon_and_speed(tmp_path):
     assert "\\q2" in text and "\\frz5" in text and "{\\p3}m " in text
     travel = camp.ticker_speed * 10
     assert f"\\move(1080,1412,{round(1080 - travel)},1412,0,10000)" in text
-    _, (_, full) = ass.ticker_events(VERTICAL, brand, camp, 0, 3, center_y=400, tilt=5,
-                                     prefilled=True)
+    assert "\\fad(200,0)" in band and "\\fad(200,0)" in text    # main banner fades in
+    _, (full_band, full) = ass.ticker_events(VERTICAL, brand, camp, 0, 3, center_y=400,
+                                             tilt=5, prefilled=True)
     assert "\\move(0,400," in full
+    assert "\\fad" not in full and "\\fad" not in full_band   # visible from frame one
     _, (flat, _) = ass.ticker_events(LANDSCAPE, brand, camp, 0, 3, center_y=900, tilt=0)
     assert "\\frz" not in flat
 
@@ -1046,14 +1048,21 @@ def test_main_script_ticker_and_header(tmp_path):
     assert ",Header," not in land and "\\frz" not in land
 
 
-def test_card_script_band_only_when_enabled(tmp_path):
+def test_card_script_band_only_on_end_cards_when_enabled(tmp_path):
     camp = kit.load_campaign(_campaign(tmp_path, GOOD_CAMPAIGN))
     plain = ass.card_script(VERTICAL, _brand(tmp_path), 3.0, "H", ["l"], text_top=900,
-                            campaign=camp)
-    assert ",Band," not in plain
+                            campaign=camp, band=True)
+    assert ",Band," not in plain                               # kit without on_cards
     on = _brand(tmp_path, "[ticker]\ntilt_deg = 5\non_cards = true\n")
-    card = ass.card_script(LANDSCAPE, on, 3.0, "H", ["l"], text_top=470, campaign=camp)
+    card = ass.card_script(LANDSCAPE, on, 3.0, "H", ["l"], text_top=470, campaign=camp,
+                           band=True)
     assert ",Band," in card and "\\frz5" in card and "\\move(0,960," in card
+    title = ass.card_script(LANDSCAPE, on, 1.5, "Talk", ["Ann"], text_top=470, campaign=camp)
+    assert ",Band," not in title                               # title cards: never
+    assert ass.card_band_script(LANDSCAPE, on, None, 3.0) is None
+    assert ass.card_band_script(LANDSCAPE, _brand(tmp_path), camp, 3.0) is None
+    only = ass.card_band_script(VERTICAL, on, camp, 3.0)
+    assert only is not None and ",Band," in only and "Card" not in only
 
 
 def test_card_duration():
@@ -1094,13 +1103,15 @@ def test_render_end_to_end_tilt_icon_header_stings(tmp_path, media):
     final = out / "short-01" / "short-01.vertical.mp4"
     total = float(_probe_streams(final)["format"]["duration"])
     assert total == pytest.approx(4.0 + 4.3, abs=0.15)            # end card follows the sting
-    assert m["ticker_tilt_deg"] == 5 and m["stings"] == ["end", "title"]
+    assert m["ticker_tilt_deg"] == 5
+    assert m["stings"] == ["end"]                  # shorts have no title card
     assert _mean_volume(final, 4.2, 3.0) > -40                    # the sting plays on the card
 
     m = render.render_clip(_clip(id="long-01", kind="long", duration_s=3.0), src, LANDSCAPE,
                            brand, camp, out, credits=render.Credits("Ann", "Talk"),
                            encoder="libx264")
-    assert m["ticker_tilt_deg"] == 0 and m["intro_s"] == LANDSCAPE.title_card_s
+    assert m["ticker_tilt_deg"] == 0 and m["stings"] == ["end", "title"]
+    assert m["intro_s"] == LANDSCAPE.title_card_s   # a 0.8 s sting never shortens a card
     total = float(_probe_streams(out / "long-01" / "long-01.landscape.mp4")["format"]["duration"])
     assert total == pytest.approx(1.5 + 3.0 + 4.3, abs=0.2)
 
@@ -1128,3 +1139,56 @@ def test_run_retries_once_after_a_crash(monkeypatch, tmp_path):
     with pytest.raises(render.RenderError, match="exit 1"):
         render._run(["ffmpeg"], tmp_path)
     assert len(calls) == 1                     # a reported error is not retried
+
+
+def _rgb(path: Path, t: float, x: int, y: int, size: int = 6) -> tuple[int, int, int]:
+    """Mean color of a small square of one frame."""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(path), "-frames:v", "1",
+         "-vf", f"crop={size}:{size}:{x}:{y},scale=1:1", "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    return raw[0], raw[1], raw[2]
+
+
+def _near(rgb, hex_rgb: str, tol: int = 40) -> bool:
+    want = tuple(int(hex_rgb[i:i + 2], 16) for i in (1, 3, 5))
+    return all(abs(a - b) <= tol for a, b in zip(rgb, want, strict=True))
+
+
+@needs_ffmpeg
+def test_designer_end_cards_get_the_banner_title_cards_never(tmp_path, media):
+    font = kit.find_font("DejaVu Sans")
+    _ff("-f", "lavfi", "-i", "color=c=red:s=1920x1080:r=30:d=1.5", "-c:v", "libx264",
+        "-preset", "ultrafast", str(tmp_path / "end-16x9.mp4"))
+    body = (GOOD_KIT.replace('family = "X"', 'family = "DejaVu Sans"')
+            .replace('bold = "f/X-Bold.ttf"', f'bold = "{font}"')
+            + "[ticker]\ntilt_deg = 5\non_cards = true\n"
+            + f'[cards]\nend_vertical = "{media / "end.mp4"}"\n'
+            + f'end_landscape = "{tmp_path / "end-16x9.mp4"}"\n'
+            + f'[audio]\nend = "{media / "end.mp4"}"\n')        # ignored by designer cards
+    brand = kit.load_brand(_kit(tmp_path, body))
+    camp = kit.load_campaign(_campaign(tmp_path, GOOD_CAMPAIGN))
+    src = render.probe(media / "src.mp4")
+    out = tmp_path / "out"
+    primary = brand.colors["primary"]
+
+    m = render.render_clip(_clip(duration_s=3.0), src, VERTICAL, brand, camp, out,
+                           encoder="libx264")
+    final = out / "short-01" / "short-01.vertical.mp4"
+    # First frame of the designer end card: the band (below its text line) is there.
+    spot = (VERTICAL.width // 2, VERTICAL.card_band_y + 26)
+    assert _near(_rgb(final, 3.0 + 0.04, *spot), primary)
+    assert _near(_rgb(final, 3.0 + 0.04, 40, 1700), "#ff0000")    # designer card below it
+    assert m["stings"] == []                                      # its own audio, no sting
+
+    m = render.render_clip(_clip(id="long-01", kind="long", duration_s=3.0), src, LANDSCAPE,
+                           brand, camp, out, credits=render.Credits("Ann", "Talk"),
+                           encoder="libx264")
+    final = out / "long-01" / "long-01.landscape.mp4"
+    spot = (LANDSCAPE.width // 2, LANDSCAPE.card_band_y + 20)
+    end_start = m["intro_s"] + 3.0
+    assert _near(_rgb(final, end_start + 0.04, *spot), primary)
+    # The generated title card (the intro) has no banner at the same spot.
+    assert not _near(_rgb(final, 0.75, *spot), primary)
+    assert _near(_rgb(final, 0.75, *spot), brand.colors["background"])
+    assert m["stings"] == []

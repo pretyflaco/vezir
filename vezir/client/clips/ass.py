@@ -125,8 +125,9 @@ def ticker_events(
 ) -> tuple[list[str], list[str]]:
     """Styles + events for the banner: a band and its scrolling text.
 
-    The text enters from the right edge; ``prefilled`` (short cards) starts
-    with the band already full of text instead.
+    The text enters from the right edge and the banner fades in;
+    ``prefilled`` (end cards) starts with the band already full of text and
+    visible from the first frame instead.
 
     Band and text rotate together about the band's center (``\\org`` +
     ``\\frz``), so the text rides along the tilted band; ``\\move`` makes the
@@ -141,11 +142,12 @@ def ticker_events(
     duration = max(0.0, end - start)
     travel = campaign.ticker_speed * duration
     x0, band_w = -round(w * 0.2), round(w * 1.4)   # wide enough to cover the edges when tilted
-    band = (f"{{\\fad(200,0)\\pos({x0},{center_y - h // 2}){rot}\\p1}}"
+    fade = "" if prefilled else "\\fad(200,0)"
+    band = (f"{{{fade}\\pos({x0},{center_y - h // 2}){rot}\\p1}}"
             f"m 0 0 l {band_w} 0 {band_w} {h} 0 {h}{{\\p0}}")
     # \\q2: one line, never wrapped (the line is far wider than the canvas).
     x_start = 0 if prefilled else w
-    text = (f"{{\\q2\\fad(200,0)\\move({x_start},{center_y},{round(x_start - travel)},"
+    text = (f"{{\\q2{fade}\\move({x_start},{center_y},{round(x_start - travel)},"
             f"{center_y},0,"
             f"{round(duration * 1000)}){rot}}}{ticker_line(profile, brand, campaign, travel)}")
     return styles, [
@@ -217,16 +219,42 @@ def main_script(
     return _header(profile, styles) + "\n" + "\n".join(events) + "\n"
 
 
+def card_band(
+    profile: Profile, brand: Brand, campaign: Campaign | None, duration: float,
+) -> tuple[list[str], list[str]]:
+    """The banner across an END card, when the kit asks for it (``on_cards``).
+
+    One builder for generated and designer cards alike, so the two card
+    paths can't drift apart.  Prefilled and at the kit's tilt (cards have no
+    footage to cover).  Title cards never get it: the intro stays clean.
+    """
+    if not brand.ticker_on_cards or campaign is None:
+        return [], []
+    return ticker_events(profile, brand, campaign, 0.0, duration,
+                         center_y=profile.card_band_y, tilt=brand.ticker_tilt_deg,
+                         prefilled=True)
+
+
+def card_band_script(
+    profile: Profile, brand: Brand, campaign: Campaign | None, duration: float,
+) -> str | None:
+    """A banner-only overlay for a designer motion end card, or None."""
+    styles, events = card_band(profile, brand, campaign, duration)
+    if not events:
+        return None
+    return _header(profile, styles) + "\n" + "\n".join(events) + "\n"
+
+
 def card_script(
     profile: Profile, brand: Brand, duration: float, headline: str,
     lines: Sequence[str], *, text_top: int, campaign: Campaign | None = None,
+    band: bool = False,
 ) -> str:
     """Card text as one block: headline (primary color), then lines.
 
     A single top-centered event lets libass wrap every line with the real
-    font metrics inside the profile's safe area.  With the kit's
-    ``ticker.on_cards`` the campaign banner also runs across the card, at the
-    kit's tilt (cards have no footage to cover).
+    font metrics inside the profile's safe area.  ``band`` (end cards) adds
+    the campaign banner when the kit's ``ticker.on_cards`` is set.
     """
     size = profile.caption_size
     margins = (profile.safe.x, profile.width - profile.safe.right, text_top)
@@ -247,10 +275,8 @@ def card_script(
     if parts:
         events.append(_event(0, duration, "CardHead" if headline.strip() else "CardLine",
                              "{\\fad(200,200)}" + "\\N".join(parts)))
-    if brand.ticker_on_cards and campaign is not None:
-        t_styles, t_events = ticker_events(profile, brand, campaign, 0.0, duration,
-                                           center_y=profile.card_band_y,
-                                           tilt=brand.ticker_tilt_deg, prefilled=True)
+    if band:
+        t_styles, t_events = card_band(profile, brand, campaign, duration)
         styles += t_styles
         events += t_events
     return _header(profile, styles) + "\n" + "\n".join(events) + "\n"
