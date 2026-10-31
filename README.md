@@ -279,7 +279,8 @@ ffmpeg -y <ffmpeg_args with {input}/{output}>     -> one file per clip
 clip start, for burned-in captions.  Clipping sessions skip cue frames and
 never wait in `needs_labeling`: clipped videos are usually of people with
 no voiceprint, and raw speaker labels don't affect the cut list.  You can
-still label them later.
+still label them later.  An audio-only clipping session keeps its audio even with
+`VEZIR_DELETE_AUDIO=1`, because that audio is what the cut list points at.
 
 ### Presets (deprecated)
 

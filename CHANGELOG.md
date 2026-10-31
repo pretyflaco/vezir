@@ -55,6 +55,15 @@ transcript segments, with anything the model got wrong listed under
 - **Clipping sessions skip cue-frame extraction.**  Clip selection uses
   the transcript only, and frames would spend the shared 50-file
   attachment sync cap for nothing.
+- **An audio-only clipping session keeps its audio under
+  `VEZIR_DELETE_AUDIO=1`.**  Its cut list names `<id>.ogg`/`.wav`/`.mp3` as
+  the media to cut, so both cleanup paths (end of the pipeline and
+  post-label finalize) now keep that file and delete only the merged
+  `*.part-*` fragments.  A session counts as clipping if it has the template
+  *or* has a cut list, which covers a cut list created later by a
+  template-override summary retry.  With a source video, the derived audio
+  track is still deleted; the cut list points at the MP4/MOV, which is never
+  deleted.
 - The Record tab's `iteration_plan: bool` preference becomes
   `video_template` (`iteration-plan` | `video-clipping` | `""`), migrated
   on first use.  The default is still iteration-plan.
@@ -67,7 +76,10 @@ transcript segments, with anything the model got wrong listed under
   names map `.clips.json` / `.clips.<lang>.json` explicitly, so neither
   claims the transcript's `<stem>.json`.
 
-Tests: 1542 (+20, `tests/test_video_clipping.py`).
+Tests: 1559 (+37: `tests/test_video_clipping.py` 35, `tests/test_tui_smoke.py` 2).  Every
+changed line and branch is covered (`coverage.py --branch`) except the
+`__version__` metadata fallback and the end of the Record tab's button
+`elif` chain.
 
 ## 0.27.1 — security audit validation follow-up
 

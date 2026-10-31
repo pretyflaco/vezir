@@ -676,16 +676,31 @@ def _speaker_resolution(session_dir: Path) -> tuple[list[str], list[str]]:
     return matched, unresolved
 
 
-def _delete_audio(session_dir: Path) -> None:
+_AUDIO_SUFFIXES = (".wav", ".ogg", ".mp3")
+
+
+def _delete_audio(session_dir: Path, *, keep_source_audio: bool = False) -> None:
     """Optionally delete audio (.wav, .ogg, .mp3) after artifacts are produced.
 
     Disabled by default during the pilot (see _delete_audio_enabled()).
+
+    ``keep_source_audio`` (v0.28.0) keeps the session's audio itself and
+    deletes only multi-audio ``*.part-*`` fragments, which are already merged
+    into it.  Set for an audio-only clipping session, whose cut list names
+    that audio as the media to cut (see :func:`_keeps_source_audio`).
     """
     if not _delete_audio_enabled():
         log.debug("audio deletion disabled (VEZIR_DELETE_AUDIO not set)")
         return
     for pattern in ("*.wav", "*.ogg", "*.mp3", "*.part-*"):
         for f in session_dir.glob(pattern):
+            if (
+                keep_source_audio
+                and f.suffix.lower() in _AUDIO_SUFFIXES
+                and ".part-" not in f.name
+            ):
+                log.info("keeping clip source audio: %s", f)
+                continue
             try:
                 f.unlink()
                 log.info("deleted audio: %s", f)
@@ -1060,6 +1075,23 @@ def _enrich_clips(session_dir: Path, job_id: str) -> int:
     return written
 
 
+def _keeps_source_audio(session_dir: Path, job_id: str, job: dict) -> bool:
+    """True when the session's audio is the media its cut list points at.
+
+    A clipping session — the ``video-clipping`` template, or any session
+    that has a cut list (a summary retry with a template override creates
+    one without changing ``jobs.summary_template``) — with NO source video
+    cuts its clips from the audio, so ``VEZIR_DELETE_AUDIO`` must not delete
+    it.  With a video, the audio track is derived and the video is the
+    media; deleting the audio is fine.
+    """
+    if _find_source_video(session_dir, job_id) is not None:
+        return False
+    return is_clipping(job.get("summary_template")) or bool(
+        _clips_files(session_dir, job_id)
+    )
+
+
 def _labeling_optional(job: dict) -> bool:
     """Sessions that finish without waiting for a human to name speakers.
 
@@ -1313,8 +1345,9 @@ def process_one(job: dict) -> None:
                         "job %s: sync silent failure: %s", job_id, failure,
                     )
 
-        # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1)
-        _delete_audio(sd)
+        # 5. cleanup (no-op unless VEZIR_DELETE_AUDIO=1).  An audio-only
+        # clipping session keeps its audio: the cut list points at it.
+        _delete_audio(sd, keep_source_audio=_keeps_source_audio(sd, job_id, job))
         queue.update_status(
             job_id, "done", artifacts=artifacts,
             summary_error=summary_err_msg,
@@ -1886,7 +1919,7 @@ def finalize_after_labeling(
                         session_id, failure,
                     )
         artifacts = _find_artifacts(sd)
-        _delete_audio(sd)
+        _delete_audio(sd, keep_source_audio=_keeps_source_audio(sd, session_id, job))
         # Explicit sync intent (post-label finalize / Sync now): a failed push
         # is the headline outcome -> `sync_failed`.  (The main transcribe
         # pipeline keeps `done` + a sync-err badge instead.)

@@ -465,3 +465,307 @@ def test_stream_artifact_writes_privately_and_atomically(tmp_path, monkeypatch):
     assert not miss.is_ok()
     assert not (tmp_path / "out" / "m.mp4").exists()
     assert not [p for p in (tmp_path / "out").iterdir() if p.name.startswith(".")]
+
+
+# ── review: media lifecycle with VEZIR_DELETE_AUDIO=1 ───────────────────────
+
+
+def _audio_only_clipping(tmp_data, monkeypatch, sid, *, template="video-clipping"):
+    """Audio upload (+ a merged multi-audio fragment) through process_one."""
+    from vezir.server import meet_runner, queue, worker
+
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.ogg").write_bytes(b"OggS-source")
+    (sdir / f"{sid}.part-001.ogg").write_bytes(b"OggS-part")
+    queue.enqueue(sid, github="alice", team_id="blink", summary_template=template)
+    _patch_pipeline(monkeypatch, meet_runner, sid, "SPEAKER_00")
+    monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
+    worker.process_one(queue.get(sid))
+    return sdir
+
+
+def test_audio_only_clipping_keeps_source_audio(tmp_data, monkeypatch):
+    from vezir.server import queue
+
+    sid = "01HZCLIPAUD000000000000A"
+    sdir = _audio_only_clipping(tmp_data, monkeypatch, sid)
+    assert queue.get(sid)["status"] == "done"
+    assert (sdir / f"{sid}.ogg").read_bytes() == b"OggS-source"
+    assert not (sdir / f"{sid}.part-001.ogg").exists()  # merged fragment: deleted
+    doc = json.loads((sdir / f"{sid}.clips.json").read_text())
+    assert doc["source"]["media"] == f"{sid}.ogg"
+    assert doc["source"]["media_kind"] == "audio"
+
+
+def test_audio_only_clipping_keeps_audio_after_labeling(tmp_data, monkeypatch):
+    from vezir.server import worker
+
+    sid = "01HZCLIPAUD000000000000B"
+    sdir = _audio_only_clipping(tmp_data, monkeypatch, sid)
+    worker.finalize_after_labeling(sid)
+    assert (sdir / f"{sid}.ogg").exists()
+
+
+def test_video_clipping_deletes_derived_audio_keeps_video(tmp_data, monkeypatch):
+    from vezir.server import meet_runner, queue, worker
+
+    sid = "01HZCLIPAUD000000000000C"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    queue.enqueue(sid, github="alice", team_id="blink", video=True,
+                  summary_template="video-clipping")
+    _patch_pipeline(monkeypatch, meet_runner, sid, "SPEAKER_00")
+    monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
+    worker.process_one(queue.get(sid))
+    assert not (sdir / f"{sid}.ogg").exists()   # extracted track: deleted
+    assert (sdir / f"{sid}.mp4").exists()
+    assert json.loads((sdir / f"{sid}.clips.json").read_text())["source"]["media"] == (
+        f"{sid}.mp4"
+    )
+    worker.finalize_after_labeling(sid)
+    assert (sdir / f"{sid}.mp4").exists()
+
+
+def test_retry_created_cut_list_keeps_audio_at_finalize(tmp_data, monkeypatch):
+    """A template-override retry creates clips.json without changing the job's
+    summary_template; the cut list itself must protect the audio."""
+    from vezir.server import queue, worker
+
+    sid = "01HZCLIPAUD000000000000D"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.ogg").write_bytes(b"OggS")
+    (sdir / f"{sid}.clips.json").write_text(json.dumps(_clips_doc()))
+    queue.enqueue(sid, github="alice", team_id="blink")  # no template on the row
+    monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
+    monkeypatch.setattr(worker.meet_runner, "team_has_sync_target", lambda t: False)
+    monkeypatch.setattr(worker.meet_runner, "cleanup_home_shim", lambda j: None)
+    worker.finalize_after_labeling(sid)
+    assert (sdir / f"{sid}.ogg").exists()
+
+
+def test_non_clipping_audio_still_deleted(tmp_data, monkeypatch):
+    from vezir.server import meet_runner, queue, worker
+
+    sid = "01HZCLIPAUD000000000000E"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.ogg").write_bytes(b"OggS")
+    queue.enqueue(sid, github="alice", team_id="blink")
+
+    def fake_transcribe(sd, job_id, team_id, log_path, **kwargs):
+        (sd / f"{sid}.json").write_text(json.dumps({
+            "segments": [{"start": 0.0, "end": 5.0, "text": "hi", "speaker": "Alice"}],
+            "speakers": [{"id": "Alice", "label": "Alice"}],
+        }))
+        (sd / f"{sid}.txt").write_text("[00:00:00] Alice: hi")
+        return 0
+
+    monkeypatch.setattr(meet_runner, "transcribe", fake_transcribe)
+    monkeypatch.setattr(meet_runner, "label_auto", lambda *a, **k: 0)
+    monkeypatch.setattr(meet_runner, "team_has_sync_target", lambda team_id: False)
+    monkeypatch.setattr(meet_runner, "cleanup_home_shim", lambda job_id: None)
+    monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
+    worker.process_one(queue.get(sid))
+    assert queue.get(sid)["status"] == "done"
+    assert not (sdir / f"{sid}.ogg").exists()
+
+
+def test_keeps_source_audio_rule(tmp_data):
+    from vezir.server import worker
+
+    sid = "01HZCLIPAUD000000000000F"
+    sdir = _session(tmp_data, sid)
+    assert worker._keeps_source_audio(sdir, sid, {"summary_template": "video-clipping"})
+    assert not worker._keeps_source_audio(sdir, sid, {"summary_template": "iteration-plan"})
+    assert not worker._keeps_source_audio(sdir, sid, {})
+    (sdir / f"{sid}.clips.json").write_text("{}")
+    assert worker._keeps_source_audio(sdir, sid, {})
+    (sdir / f"{sid}.mov").write_bytes(b"\x00")
+    assert not worker._keeps_source_audio(sdir, sid, {"summary_template": "video-clipping"})
+
+
+# ── review: stream_artifact retry branches ──────────────────────────────────
+
+
+def _flaky(body: bytes, fail_after: int):
+    """httpx stream body that dies with ReadTimeout after ``fail_after`` bytes."""
+    import httpx
+
+    class _Flaky(httpx.SyncByteStream):
+        def __iter__(self):
+            yield body[:fail_after]
+            raise httpx.ReadTimeout("stalled mid-stream")
+
+    return _Flaky()
+
+
+def _stream_client(monkeypatch, handler):
+    import httpx
+
+    from vezir.client.api import VezirClient
+
+    real_client = httpx.Client
+
+    def _client(*a, **k):
+        k.pop("verify", None)
+        return real_client(*a, transport=httpx.MockTransport(handler), **k)
+
+    monkeypatch.setattr(httpx, "Client", _client)
+    monkeypatch.setattr(VezirClient, "_RETRY_BACKOFF", (0.0, 0.0))
+    return VezirClient("https://vezir.example", "vzr_" + "a" * 43, team_id="blink")
+
+
+def _leftovers(d: Path) -> list[str]:
+    return sorted(p.name for p in d.iterdir() if p.name.startswith("."))
+
+
+def test_stream_artifact_retries_mid_stream_failure(tmp_path, monkeypatch):
+    import httpx
+
+    body = os.urandom(2 * (1 << 20) + 5)
+    attempts: list[int] = []
+
+    def handler(request):
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(200, stream=_flaky(body, 1 << 20))
+        return httpx.Response(200, content=body)
+
+    api = _stream_client(monkeypatch, handler)
+    dest = tmp_path / "out" / "talk.mp4"
+    res = api.stream_artifact("01CLP", "01CLP.mp4", dest)
+    assert res.is_ok() and len(attempts) == 2
+    assert dest.read_bytes() == body
+    assert _leftovers(dest.parent) == []
+
+
+def test_stream_artifact_exhausted_retries_leave_destination_alone(tmp_path, monkeypatch):
+    import httpx
+
+    body = os.urandom(1 << 20)
+
+    def handler(request):
+        return httpx.Response(200, stream=_flaky(body, 4096))
+
+    api = _stream_client(monkeypatch, handler)
+    out = tmp_path / "out"
+    out.mkdir()
+    dest = out / "talk.mp4"
+    dest.write_bytes(b"previous")
+    res = api.stream_artifact("01CLP", "01CLP.mp4", dest)
+    assert not res.is_ok()
+    assert dest.read_bytes() == b"previous"
+    assert _leftovers(out) == []
+    fresh = out / "new.mp4"
+    assert not api.stream_artifact("01CLP", "01CLP.mp4", fresh).is_ok()
+    assert not fresh.exists() and _leftovers(out) == []
+
+
+def test_stream_artifact_refreshes_on_401(tmp_path, monkeypatch):
+    import httpx
+
+    body = b"VIDEO" * 1000
+    tokens: list[str] = []
+
+    def handler(request):
+        tokens.append(request.headers["Authorization"])
+        if request.headers["Authorization"].endswith("a" * 43):
+            return httpx.Response(401, text="token expired")
+        return httpx.Response(200, content=body)
+
+    api = _stream_client(monkeypatch, handler)
+
+    def _refresh():
+        api.token = "vzr_" + "b" * 43
+        return True
+
+    monkeypatch.setattr(api, "_try_refresh", _refresh)
+    dest = tmp_path / "out" / "talk.mp4"
+    res = api.stream_artifact("01CLP", "01CLP.mp4", dest)
+    assert res.is_ok() and dest.read_bytes() == body
+    assert tokens == ["Bearer vzr_" + "a" * 43, "Bearer vzr_" + "b" * 43]
+    assert _leftovers(dest.parent) == []
+
+
+# ── remaining changed branches ──────────────────────────────────────────────
+
+
+def test_render_clips_sparse_and_malformed():
+    from vezir.client.tui.artifact_screen import render_clips
+
+    assert render_clips(json.dumps({"clips": "nope"})) == json.dumps({"clips": "nope"})
+    out = render_clips(json.dumps({
+        "error": "model output has no 'clips' list",
+        "clips": ["junk", {"id": "short-01", "duration_s": 20.0}],
+        "dropped": ["junk", {"reason": "overlaps"}],
+    }))
+    assert "error: model output has no 'clips' list" in out
+    assert "short-01" in out and " -  " in out          # no score -> "-"
+    assert "hook:" not in out and "ffmpeg" not in out
+    assert "(untitled): overlaps" in out
+
+
+def test_next_video_template_unknown_value_restarts():
+    from vezir.client.tui.record_screen import _next_video_template
+
+    assert _next_video_template("retired") == "iteration-plan"
+
+
+def test_find_artifacts_ignores_dotted_clips_names(tmp_data):
+    from vezir.server import worker
+
+    sid = "01HZCLIPS0000000000000AF"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.clips.de.x.json").write_text("{}")
+    assert not any(k.startswith("clips") for k in worker._find_artifacts(sdir))
+
+
+def test_enrich_clips_skips_malformed_entries(tmp_data, monkeypatch):
+    from vezir.server import worker
+
+    sid = "01HZCLIPS0000000000000AG"
+    sdir = _session(tmp_data, sid)
+    (sdir / f"{sid}.ogg").write_bytes(b"OggS")
+    doc = _clips_doc()
+    doc["clips"] += ["junk", {"id": "short-02", "start_s": "x"}]
+    (sdir / f"{sid}.clips.json").write_text(json.dumps(doc))
+    assert worker._enrich_clips(sdir, sid) == 1
+    out = json.loads((sdir / f"{sid}.clips.json").read_text())["clips"]
+    assert "seek_s" in out[0] and out[1] == "junk" and "seek_s" not in out[2]
+
+
+def test_mcp_get_clips_malformed_and_stream_failure(monkeypatch, tmp_path):
+    from vezir.client import mcp_server
+
+    class _BadApi(_Api):
+        def download_artifact(self, sid, name):
+            if ".de." in name:
+                return _Result(json.dumps({"clips": ["junk"]}).encode())
+            return _Result(b"[1, 2]")
+
+        def stream_artifact(self, sid, name, dest):
+            return _Result(None, False)
+
+    monkeypatch.setattr(mcp_server, "_client", _BadApi)
+    with pytest.raises(RuntimeError, match="malformed clips file"):
+        mcp_server.get_clips("01CLP")
+    assert mcp_server.get_clips("01CLP", lang="de")["clips"] == ["junk"]
+    with pytest.raises(RuntimeError, match="download failed"):
+        mcp_server.get_artifact("01CLP", "01CLP.mp4", save_path=str(tmp_path / "v.mp4"))
+
+
+def test_stream_artifact_unexpected_error_cleans_up_and_raises(tmp_path, monkeypatch):
+    import httpx
+
+    def _boom_stream():
+        class _S(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b"partial"
+                raise RuntimeError("disk exploded")
+
+        return _S()
+
+    api = _stream_client(monkeypatch, lambda request: httpx.Response(200, stream=_boom_stream()))
+    out = tmp_path / "out"
+    with pytest.raises(RuntimeError, match="disk exploded"):
+        api.stream_artifact("01CLP", "01CLP.mp4", out / "v.mp4")
+    assert not (out / "v.mp4").exists() and _leftovers(out) == []
