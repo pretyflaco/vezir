@@ -30,7 +30,7 @@ from pathlib import Path
 
 from .. import config
 from ..presets import ITERATION_PLAN, is_clipping
-from ..speakers import UNRESOLVED_RE, is_crosstalk
+from ..speakers import UNRESOLVED_RE, is_crosstalk, is_dense_utterance
 from . import meet_runner, queue
 
 log = logging.getLogger("vezir.worker")
@@ -171,24 +171,28 @@ def _tiny_speaker_thresholds() -> tuple[float, int]:
     return secs, segs
 
 
-def _speaker_segment_stats(data: dict) -> dict[str, tuple[int, float]]:
-    """Per-speaker ``(segment_count, total_speech_seconds)`` from a transcript.
+def _speaker_segment_stats(data: dict) -> dict[str, tuple[int, float, bool]]:
+    """Per-speaker ``(segment_count, total_speech_seconds, has_sentence)``.
 
-    Reads the flat ``segments`` array (each ``{start, end, speaker, ...}``).
+    Reads the flat ``segments`` array (each ``{start, end, speaker, text}``).
     Used to distinguish a substantial unlabeled participant (needs a human)
-    from a tiny noise cluster (safe to ignore).
+    from a tiny noise cluster (safe to ignore).  ``has_sentence`` is True when
+    any segment is a real sentence (:func:`vezir.speakers.is_dense_utterance`).
     """
-    stats: dict[str, tuple[int, float]] = {}
+    stats: dict[str, tuple[int, float, bool]] = {}
     for seg in data.get("segments", []) or []:
         sid = seg.get("speaker") or ""
         if not sid:
             continue
         try:
-            dur = max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
+            start, end = float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
         except (TypeError, ValueError):
-            dur = 0.0
-        count, total = stats.get(sid, (0, 0.0))
-        stats[sid] = (count + 1, total + dur)
+            start = end = 0.0
+        dur = max(0.0, end - start)
+        text = seg.get("text")
+        sentence = is_dense_utterance(start, end, text if isinstance(text, str) else None)
+        count, total, dense = stats.get(sid, (0, 0.0, False))
+        stats[sid] = (count + 1, total + dur, dense or sentence)
     return stats
 
 
@@ -550,17 +554,19 @@ def _find_artifacts(session_dir: Path) -> dict:
     return out
 
 
-def _is_tiny_speaker(sid: str, stats: dict[str, tuple[int, float]]) -> bool:
+def _is_tiny_speaker(sid: str, stats: dict[str, tuple[int, float, bool]]) -> bool:
     """True if speaker ``sid`` is a spurious tiny noise cluster.
 
     A speaker counts as tiny when its total speech and segment count are both
-    at/below the configured thresholds (see :func:`_tiny_speaker_thresholds`).
-    Such clusters are backchannel one-liners or distorted blips, not a real
-    participant that warrants a human labeling round.
+    at/below the configured thresholds (see :func:`_tiny_speaker_thresholds`)
+    and none of its segments is a real sentence.  Such clusters are
+    backchannel one-liners or distorted blips, not a real participant that
+    warrants a human labeling round.  A sentence is a person: incident
+    2026-11-02, the interviewee's only cluster was one 4.4 s, 21-word answer.
     """
     max_secs, max_segs = _tiny_speaker_thresholds()
-    count, total = stats.get(sid, (0, 0.0))
-    return total <= max_secs and count <= max_segs
+    count, total, dense = stats.get(sid, (0, 0.0, False))
+    return total <= max_secs and count <= max_segs and not dense
 
 
 def _has_unresolved_speakers(session_dir: Path) -> bool:

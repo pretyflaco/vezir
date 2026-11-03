@@ -119,6 +119,92 @@ def test_substantial_unmatched_speaker_still_needs_labeling(tmp_path):
     assert "SPEAKER_00" in unresolved
 
 
+# ── a real sentence is a person, not noise (millet >= 0.23.1) ──
+
+def test_tiny_cluster_with_a_sentence_needs_labeling(tmp_path):
+    """Incident 01M6EV6Z (58 s phone interview): the interviewee's only
+    cluster was one 4.4 s, 21-word answer.  Tiny by size, but a person."""
+    sd = _write_session(
+        tmp_path,
+        "01M6EV6ZPRPTK4QTZPCTY9JM04",
+        speakers=[
+            {"id": "SPEAKER_00", "label": None},
+            {"id": "SPEAKER_01", "label": "Kemal"},
+        ],
+        segments=[
+            _seg(1.3, 42.9, "SPEAKER_01", "so now I'm just talking here " * 20),
+            _seg(43.4, 47.8, "SPEAKER_00",
+                 "I was riding with a 14-month-old, so it wasn't the easiest "
+                 "flight, but could have been much worse."),
+        ],
+    )
+    assert worker._has_unresolved_speakers(sd) is True
+    _, unresolved = worker._speaker_resolution(sd)
+    assert unresolved == ["SPEAKER_00"]
+
+
+def test_tiny_cluster_of_fillers_is_still_noise(tmp_path):
+    """Fillers, including one Whisper stretched over silence, stay ignorable."""
+    sd = _write_session(
+        tmp_path,
+        "01KVFILLERS000000000000001",
+        speakers=[
+            {"id": "alice", "label": "alice"},
+            {"id": "SPEAKER_01", "label": None},
+        ],
+        segments=[
+            _seg(0.0, 300.0, "alice", "long"),
+            _seg(310.0, 310.4, "SPEAKER_01", "Yeah."),
+            # 6 words over 4.5 s: below 1.5 words/s.
+            _seg(320.0, 324.5, "SPEAKER_01", "Okay, okay, sure, yes, right, fine."),
+        ],
+    )
+    assert worker._has_unresolved_speakers(sd) is False
+
+
+def test_missing_or_non_string_text_is_not_a_sentence(tmp_path):
+    sd = _write_session(
+        tmp_path,
+        "01KVNOTEXT0000000000000001",
+        speakers=[
+            {"id": "alice", "label": "alice"},
+            {"id": "REMOTE", "label": None},
+        ],
+        segments=[
+            _seg(0.0, 300.0, "alice", "long"),
+            {"start": 310.0, "end": 313.0, "speaker": "REMOTE"},
+            {"start": 314.0, "end": 315.5, "speaker": "REMOTE", "text": 7},
+        ],
+    )
+    assert worker._has_unresolved_speakers(sd) is False
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "text", "dense"),
+    [
+        (0.0, 4.0, "we shipped the migration fix this morning", True),
+        (0.0, 6.7, "Yeah.", False),                          # stretched filler
+        (0.0, 1.0, "one two three four five six", False),    # < 1.5 s
+        (0.0, 5.0, "one two three four five six", False),    # 1.2 words/s
+        (0.0, 0.0, "", False),
+        (0.0, 2.0, None, False),
+    ],
+)
+def test_is_dense_utterance_mirrors_millet(start, end, text, dense):
+    """Same cases as millet's tests/test_voiceprint_gate.py::test_is_dense_utterance."""
+    from vezir.speakers import (
+        DENSE_MIN_SECONDS,
+        DENSE_MIN_WORDS,
+        DENSE_MIN_WORDS_PER_SECOND,
+        is_dense_utterance,
+    )
+
+    # millet.voiceprint: MIN_SEGMENT_DURATION, LEARN_MIN_WORDS,
+    # LEARN_MIN_WORDS_PER_SECOND.
+    assert (DENSE_MIN_SECONDS, DENSE_MIN_WORDS, DENSE_MIN_WORDS_PER_SECOND) == (1.5, 6, 1.5)
+    assert is_dense_utterance(start, end, text) is dense
+
+
 # ── env-var override ──
 
 def test_threshold_override_via_env(tmp_path, monkeypatch):
