@@ -3,6 +3,24 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased — a short real sentence is a speaker, not noise
+
+Follow-up to millet PR #36 (incident 2026-11-02, session `01M6EV6Z`: a 58 s
+phone interview came back with one speaker).  millet no longer folds a tiny
+raw cluster (<= 5 s, <= 3 segments) into the dominant speaker when it holds a
+real sentence (>= 1.5 s, >= 6 words, >= 1.5 words/s).  vezir's own copy of the
+tiny-noise gate (`worker._is_tiny_speaker`, which decides `needs_labeling`)
+had no such exception.  With the new millet such a session would have gone
+straight to `done` with an unnamed `SPEAKER_NN`, which is worse than before.
+
+* `vezir/speakers.py`: `is_dense_utterance()` mirrors millet's
+  `voiceprint.is_dense_utterance` (vezir never imports millet).
+* `worker._speaker_segment_stats` also records whether a speaker has a
+  sentence; `_is_tiny_speaker` treats such a speaker as a person, so
+  `_has_unresolved_speakers` / `_speaker_resolution` route it to a human.
+  Fillers (including a filler Whisper stretched over silence) are still noise.
+
+
 ## 0.29.0 — branded social clips (`vezir clips`)
 
 `vezir clips render` turns a video-clipping session (0.28.0) into
