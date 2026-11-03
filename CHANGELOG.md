@@ -3,7 +3,7 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased — a short real sentence is a speaker, not noise
+## 0.29.1 — a short real sentence is a speaker, not noise
 
 Follow-up to millet PR #36 (incident 2026-11-02, session `01M6EV6Z`: a 58 s
 phone interview came back with one speaker).  millet no longer folds a tiny
@@ -19,7 +19,9 @@ straight to `done` with an unnamed `SPEAKER_NN`, which is worse than before.
   sentence; `_is_tiny_speaker` treats such a speaker as a person, so
   `_has_unresolved_speakers` / `_speaker_resolution` route it to a human.
   Fillers (including a filler Whisper stretched over silence) are still noise.
-
+* `millet-pipeline` floor raised to `>=0.23.1`: per-segment speaker repair
+  after mono diarization (the actual fix for the incident) and the matching
+  millet-side tiny-fold exception.
 
 ## 0.29.0 — branded social clips (`vezir clips`)
 

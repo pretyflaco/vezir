@@ -162,7 +162,11 @@ server = [
     # Raised to >= 0.23.0 (vezir 0.28.0): the video-clipping template and its
     # <id>.clips.json cut list.  An older millet falls back to the default
     # meeting prompt for an unknown template and writes no clips file.
-    "millet-pipeline>=0.23.0",
+    # Raised to >= 0.23.1 (vezir 0.29.1): per-segment speaker repair after
+    # mono diarization, and a tiny cluster holding a real sentence is no
+    # longer folded into the dominant speaker.  vezir 0.29.1's needs_labeling
+    # gate expects the latter (worker._is_tiny_speaker).
+    "millet-pipeline>=0.23.1",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",
