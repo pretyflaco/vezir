@@ -40,10 +40,10 @@ def _seg(start, end, speaker, text="x"):
 # ── tiny noise is ignored ──
 
 def test_tiny_remote_with_large_unmatched_speaker_is_resolved(tmp_path):
-    """01KV8G41 case: big unmatched SPEAKER_00 + tiny REMOTE blip."""
+    """01JXCZHW case: big unmatched SPEAKER_00 + tiny REMOTE blip."""
     sd = _write_session(
         tmp_path,
-        "01KV8G41525G2VTZJB2JCBS2DK",
+        "01JXCZHWKFFZMR05A9D744DN5M",
         speakers=[
             {"id": "YOU", "label": "YOU"},
             {"id": "REMOTE", "label": None},
@@ -67,10 +67,10 @@ def test_tiny_remote_with_large_unmatched_speaker_is_resolved(tmp_path):
 
 
 def test_tiny_remote_with_named_speaker_is_resolved(tmp_path):
-    """765s YOU + 0.2s REMOTE (01KRZQYS case) → resolved, routes to done."""
+    """765s YOU + 0.2s REMOTE (01JKF3F9 case) → resolved, routes to done."""
     sd = _write_session(
         tmp_path,
-        "01KRZQYS774V1A2403F6NBHD0R",
+        "01JKF3F98GGQ4RXZ7KQB78ZTF5",
         speakers=[
             {"id": "REMOTE", "label": None},
             {"id": "alice", "label": "alice"},
@@ -90,7 +90,7 @@ def test_all_noise_session_is_resolved(tmp_path):
     """A session that is only a tiny SPEAKER_00 blip → done, not stuck."""
     sd = _write_session(
         tmp_path,
-        "01KVQSH0RPZ1BEMFK188KW4SPK",
+        "01JX61G71M3W3839BGGDX1YQZF",
         speakers=[{"id": "SPEAKER_00", "label": None}],
         segments=[_seg(0.0, 0.2, "SPEAKER_00", "noise")],
     )
@@ -103,7 +103,7 @@ def test_substantial_unmatched_speaker_still_needs_labeling(tmp_path):
     """A real unlabeled participant (37.7s) must still route to needs_labeling."""
     sd = _write_session(
         tmp_path,
-        "01KV81WT6B086BQ69YS3H27R7G",
+        "01J5Q2SJ46ZK5XS85E5GNMP574",
         speakers=[
             {"id": "YOU", "label": "YOU"},
             {"id": "SPEAKER_00", "label": None},
@@ -122,14 +122,14 @@ def test_substantial_unmatched_speaker_still_needs_labeling(tmp_path):
 # ── a real sentence is a person, not noise (millet >= 0.23.1) ──
 
 def test_tiny_cluster_with_a_sentence_needs_labeling(tmp_path):
-    """Incident 01M6EV6Z (58 s phone interview): the interviewee's only
+    """Incident 01JY3ZGY (58 s phone interview): the interviewee's only
     cluster was one 4.4 s, 21-word answer.  Tiny by size, but a person."""
     sd = _write_session(
         tmp_path,
-        "01M6EV6ZPRPTK4QTZPCTY9JM04",
+        "01JY3ZGY0SSH9JHX41C83RF95E",
         speakers=[
             {"id": "SPEAKER_00", "label": None},
-            {"id": "SPEAKER_01", "label": "Kemal"},
+            {"id": "SPEAKER_01", "label": "Nora"},
         ],
         segments=[
             _seg(1.3, 42.9, "SPEAKER_01", "so now I'm just talking here " * 20),
@@ -295,18 +295,18 @@ def test_missing_or_bad_transcript_treated_resolved(tmp_path, missing):
 # It is resolved (never blocks done) but it is not a person.
 
 def test_crosstalk_does_not_block_done(tmp_path):
-    """01M3RS442M3XX4D2AGK80641A7: every participant matched + a 10-segment
+    """01JFRC3N09J6R3SS03CS3PBMNJ: every participant matched + a 10-segment
     filler bucket.  Pre-0.21.4 the raw REMOTE forced needs_labeling."""
     sd = _write_session(
         tmp_path,
-        "01M3RS442M3XX4D2AGK80641A7",
+        "01JFRC3N09J6R3SS03CS3PBMNJ",
         speakers=[
-            {"id": "Kemal", "label": "Kemal"},
+            {"id": "Nora", "label": "Nora"},
             {"id": "CROSSTALK", "label": "CROSSTALK"},
-            {"id": "Lukas", "label": "Lukas"},
+            {"id": "Pia", "label": "Pia"},
         ],
         segments=(
-            [_seg(0.0, 400.0, "Kemal", "long"), _seg(400.0, 900.0, "Lukas", "long")]
+            [_seg(0.0, 400.0, "Nora", "long"), _seg(400.0, 900.0, "Pia", "long")]
             + [_seg(1000.0 + i * 60, 1000.3 + i * 60, "CROSSTALK", "Bye.")
                for i in range(10)]
         ),
@@ -315,7 +315,7 @@ def test_crosstalk_does_not_block_done(tmp_path):
     matched, unresolved = worker._speaker_resolution(sd)
     assert unresolved == []
     # Resolved, but not reported as a matched person.
-    assert sorted(matched) == ["Kemal", "Lukas"]
+    assert sorted(matched) == ["Nora", "Pia"]
 
 
 def test_crosstalk_with_real_unknown_still_needs_labeling(tmp_path):
@@ -323,12 +323,12 @@ def test_crosstalk_with_real_unknown_still_needs_labeling(tmp_path):
         tmp_path,
         "01KVCROSSTALKANDUNKNOWN000",
         speakers=[
-            {"id": "Kemal", "label": "Kemal"},
+            {"id": "Nora", "label": "Nora"},
             {"id": "CROSSTALK", "label": "CROSSTALK"},
             {"id": "SPEAKER_03", "label": None},
         ],
         segments=[
-            _seg(0.0, 400.0, "Kemal", "long"),
+            _seg(0.0, 400.0, "Nora", "long"),
             _seg(410.0, 470.0, "SPEAKER_03", "a real guest talking"),
             _seg(500.0, 500.3, "CROSSTALK", "Yeah."),
         ],

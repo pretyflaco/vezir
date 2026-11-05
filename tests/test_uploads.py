@@ -31,11 +31,11 @@ def client_and_token(tmp_data):
 
 def _bearer(token: str) -> dict:
     # v0.7.0: every team-scoped endpoint (incl. /upload) needs X-Team-Id.
-    # The conftest shim adds 'alice' to 'blink' on issue() so this
+    # The conftest shim adds 'alice' to 'team-a' on issue() so this
     # combination always validates.
     return {
         "Authorization": f"Bearer {token}",
-        "X-Team-Id": "blink",
+        "X-Team-Id": "team-a",
     }
 
 
@@ -365,7 +365,7 @@ def test_cli_upload_existing_file(monkeypatch, tmp_path):
             # 2026-06-20.  (VEZIR_TEAM_ID alone doesn't help here: env team
             # scope is only honored when URL+token also come from env.)
             "--team",
-            "blink",
+            "team-a",
         ],
     )
 
@@ -413,7 +413,7 @@ def test_cli_upload_compresses_wav_when_requested(monkeypatch, tmp_path):
             "--token",
             "vzr_test",
             "--team",
-            "blink",  # hermetic (see test above)
+            "team-a",  # hermetic (see test above)
         ],
     )
 
@@ -570,7 +570,7 @@ def test_cli_upload_multi_orders_dir_by_filename(monkeypatch, tmp_path):
             "--dir", str(d),
             "--server", "http://server.test",
             "--token", "vzr_test",
-            "--team", "blink",
+            "--team", "team-a",
             "--title", "Edwin feedback",
             "--no-auto-label",
         ],
@@ -595,7 +595,7 @@ def test_cli_upload_multi_errors_without_files(monkeypatch, tmp_path):
             "upload-multi",
             "--server", "http://server.test",
             "--token", "vzr_test",
-            "--team", "blink",
+            "--team", "team-a",
         ],
     )
     assert result.exit_code != 0

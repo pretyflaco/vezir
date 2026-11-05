@@ -19,7 +19,7 @@ def test_env_for_meet_sets_hf_hub_offline(tmp_path, monkeypatch):
         "XDG_CONFIG_DIRS",
     ):
         monkeypatch.setenv(key, str(tmp_path / "operator-config"))
-    env = meet_runner._env_for_meet(tmp_path / "HOME", "blink")
+    env = meet_runner._env_for_meet(tmp_path / "HOME", "team-a")
     assert env["HF_HUB_OFFLINE"] == "1"
     assert env["HOME"] == str(tmp_path / "HOME")
     for key in (
@@ -96,7 +96,7 @@ def test_transcribe_runs_built_args(monkeypatch, tmp_path):
     session_dir = _session_dir(tmp_path)
     log_path = tmp_path / "worker.log"
 
-    rc = meet_runner.transcribe(session_dir, "job-1", "blink", log_path)
+    rc = meet_runner.transcribe(session_dir, "job-1", "team-a", log_path)
 
     assert rc == 0
     assert captured["args"] == [
@@ -108,7 +108,7 @@ def test_transcribe_runs_built_args(monkeypatch, tmp_path):
         str(session_dir),
     ]
     assert captured["job_id"] == "job-1"
-    assert captured["team_id"] == "blink"
+    assert captured["team_id"] == "team-a"
     assert captured["log_path"] == log_path
 
 
@@ -164,7 +164,7 @@ def test_apply_labels_json_forwards_template(monkeypatch, tmp_path):
 
     session_dir = _session_dir(tmp_path)
     rc = meet_runner.apply_labels_json(
-        session_dir, "job-1", "blink", tmp_path / "w.log",
+        session_dir, "job-1", "team-a", tmp_path / "w.log",
         label_map={}, regenerate_summary=True,
         summary_template="iteration-plan",
     )
@@ -190,7 +190,7 @@ def test_apply_labels_json_template_skipped_on_old_millet(monkeypatch, tmp_path)
         lambda args, job_id, team_id, log_path=None: captured.update(args=args) or 0,
     )
     meet_runner.apply_labels_json(
-        _session_dir(tmp_path), "job-1", "blink", tmp_path / "w.log",
+        _session_dir(tmp_path), "job-1", "team-a", tmp_path / "w.log",
         label_map={}, regenerate_summary=True,
         summary_template="iteration-plan",
     )
@@ -339,7 +339,7 @@ def test_build_transcribe_args_adds_default_language(monkeypatch, tmp_path):
     monkeypatch.setattr(meet_runner.config, "meet_supports_option", lambda opt: True)
     monkeypatch.setattr(meet_runner.config, "team_sync_config_path",
                         lambda team_id: tmp_path / "nonexistent.json")
-    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="blink")
+    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="team-a")
     assert "--default-language" in args
     assert args[args.index("--default-language") + 1] == "en"
 
@@ -361,7 +361,7 @@ def test_build_transcribe_args_no_default_language_when_unset(monkeypatch, tmp_p
     monkeypatch.setattr(meet_runner.config, "meet_default_language", lambda: None)
     monkeypatch.setattr(meet_runner.config, "team_sync_config_path",
                         lambda team_id: tmp_path / "nope.json")
-    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="blink")
+    args = meet_runner.build_transcribe_args(_session_dir(tmp_path), team_id="team-a")
     assert "--default-language" not in args
 
 
@@ -396,7 +396,7 @@ def test_sync_does_not_force_on_git_error(monkeypatch, tmp_path):
     --force --meeting-type (which created duplicate folders)."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
-    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "team-a")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     calls = []
 
@@ -410,7 +410,7 @@ def test_sync_does_not_force_on_git_error(monkeypatch, tmp_path):
         return 1
 
     monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
-    rc = meet_runner.sync(sd, "01X", "blink", log_path)
+    rc = meet_runner.sync(sd, "01X", "team-a", log_path)
     assert rc != 0
     # Only ONE invocation (no --force retry).
     assert len(calls) == 1
@@ -421,7 +421,7 @@ def test_sync_forces_when_skipped(monkeypatch, tmp_path):
     """When step-1 is genuinely Skipped (no schedule match), force-retry."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
-    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "team-a")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: "Dev Sync")
     calls = []
@@ -437,7 +437,7 @@ def test_sync_forces_when_skipped(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
-    rc = meet_runner.sync(sd, "01X", "blink", log_path)
+    rc = meet_runner.sync(sd, "01X", "team-a", log_path)
     assert rc == 0
     assert len(calls) == 2
     assert "--force" in calls[1]
@@ -451,7 +451,7 @@ def test_sync_override_skips_detection_and_forces_folder(monkeypatch, tmp_path):
     NOT attempt schedule detection (no plain `sync` call first)."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
-    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "team-a")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: None)
     calls = []
@@ -462,7 +462,7 @@ def test_sync_override_skips_detection_and_forces_folder(monkeypatch, tmp_path):
 
     monkeypatch.setattr(meet_runner, "run_meet", fake_run_meet)
     rc = meet_runner.sync(
-        sd, "01X", "blink", log_path, meeting_type="Post Scrum"
+        sd, "01X", "team-a", log_path, meeting_type="Post Scrum"
     )
     assert rc == 0
     # Exactly one invocation: the forced override (no detection step).
@@ -478,7 +478,7 @@ def test_sync_passes_title_to_ensure_session_json(monkeypatch, tmp_path):
     """sync() fetches the job title and forwards it to ensure_session_json."""
     sd = _session_dir(tmp_path)
     log_path = tmp_path / "job.log"
-    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "blink")
+    monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "team-a")
     captured = {}
 
     def fake_ensure(session_dir, session_id, title=None):
@@ -488,7 +488,7 @@ def test_sync_passes_title_to_ensure_session_json(monkeypatch, tmp_path):
     monkeypatch.setattr(meet_runner, "ensure_session_json", fake_ensure)
     monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: "Weekly Sync")
     monkeypatch.setattr(meet_runner, "run_meet", lambda *a, **k: 0)
-    meet_runner.sync(sd, "01X", "blink", log_path, meeting_type="x")
+    meet_runner.sync(sd, "01X", "team-a", log_path, meeting_type="x")
     assert captured["title"] == "Weekly Sync"
 
 

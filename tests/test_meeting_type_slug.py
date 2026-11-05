@@ -40,7 +40,7 @@ _LONG_TITLE = (
 )
 
 # A valid-length ULID whose HHMMSS + random suffix mirror the reported case.
-_SESSION_ID = "01KX0TJZH0RMBM9EMWF0RSB2CA"
+_SESSION_ID = "01JY7NKZ3RDBCJWD748BYN0W1D"
 
 
 def test_sync_slug_caps_at_64_and_is_valid():
@@ -62,7 +62,7 @@ def test_meeting_type_for_long_base_is_valid():
     assert len(mtype) <= 64, f"{mtype} is {len(mtype)} chars"
     assert _FOLDER_SLUG_RE.match(mtype), mtype
     # The disambiguating suffix must survive the truncation intact.
-    assert mtype.endswith("Z-RSB2CA")
+    assert mtype.endswith("Z-" + _SESSION_ID[-6:])
 
 
 def test_meeting_type_for_truncation_strips_trailing_separator():
@@ -85,5 +85,5 @@ def test_meeting_type_for_empty_base_falls_back():
 def test_meeting_type_for_normal_base_preserved():
     mtype = meet_runner._meeting_type_for(_SESSION_ID, base="dev-sync")
     assert mtype.startswith("dev-sync-")
-    assert mtype.endswith("Z-RSB2CA")
+    assert mtype.endswith("Z-" + _SESSION_ID[-6:])
     assert _FOLDER_SLUG_RE.match(mtype), mtype

@@ -337,8 +337,8 @@ class _ReviewHost:
 
         results: list = []
         params = dict(
-            name="meeting-1", audio_path=None, team="blink",
-            teams=["blink", "twentyone"], title=None,
+            name="meeting-1", audio_path=None, team="team-a",
+            teams=["team-a", "team-b"], title=None,
             auto_label=True, sync=True, personal=False,
         )
         params.update(kw)
@@ -377,7 +377,7 @@ async def test_review_screen_escape_keeps_local(staging):
         await pilot.press("escape")
         await pilot.pause()
     assert results[0].action == "hold"
-    assert results[0].team == "blink"
+    assert results[0].team == "team-a"
 
 
 async def test_review_screen_upload_carries_choices(staging):
@@ -386,7 +386,7 @@ async def test_review_screen_upload_carries_choices(staging):
     app, results = _ReviewHost.make()
     async with app.run_test() as pilot:  # default 80x24 must fit
         await pilot.pause()
-        app.screen.query_one("#review-team", Select).value = "twentyone"
+        app.screen.query_one("#review-team", Select).value = "team-b"
         app.screen.query_one("#review-title", Input).value = "Bounty"
         await pilot.pause()
         await pilot.click("#review-personal")
@@ -395,7 +395,7 @@ async def test_review_screen_upload_carries_choices(staging):
         await pilot.click("#review-upload")
         await pilot.pause()
     r = results[0]
-    assert (r.action, r.team, r.title) == ("upload", "twentyone", "Bounty")
+    assert (r.action, r.team, r.title) == ("upload", "team-b", "Bounty")
     assert r.personal is True and r.sync is False and r.auto_label is False
 
 
@@ -432,9 +432,9 @@ def test_send_held_attachments(staging, tmp_path, monkeypatch):
         return [{"name": "slides.pdf"}]
 
     monkeypatch.setattr(uploader, "upload_attachments", fake)
-    out = attachments.send_held_attachments("u", "t", "01S", rec, "twentyone")
+    out = attachments.send_held_attachments("u", "t", "01S", rec, "team-b")
     assert out == [{"name": "slides.pdf"}]
-    assert sent == {"sid": "01S", "names": ["slides.pdf"], "team": "twentyone"}
+    assert sent == {"sid": "01S", "names": ["slides.pdf"], "team": "team-b"}
 
 
 def test_record_screen_line_shows_folder_and_count(staging, monkeypatch):

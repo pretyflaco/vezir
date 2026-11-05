@@ -34,11 +34,14 @@ def tmp_data(monkeypatch):
 
 @pytest.fixture
 def client(tmp_data):
+    from conftest import create_test_teams
     from fastapi.testclient import TestClient
 
     from vezir.server.app import create_app
 
-    return TestClient(create_app(), follow_redirects=False)
+    tc = TestClient(create_app(), follow_redirects=False)
+    create_test_teams()
+    return tc
 
 
 def _canonical_id(event: dict) -> str:
@@ -130,9 +133,9 @@ def test_session_jwt_works_on_team_scoped_route(client, tmp_data):
     """A nostr session must traverse require_team_context like a token."""
     from vezir.server import nostr_members, queue
 
-    # The 0.6.0 migration already seeds a 'blink' team; reuse it and add
+    # The 0.6.0 migration already seeds a 'team-a' team; reuse it and add
     # a membership for alice so X-Team-Id validates.
-    team = queue.get_team("blink")
+    team = queue.get_team("team-a")
     queue.add_membership("alice", team["id"], role="scribe", added_by="test")
 
     priv = PrivateKey()

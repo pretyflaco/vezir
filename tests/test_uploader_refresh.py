@@ -87,7 +87,7 @@ def test_resumable_refreshes_on_401_create(mock_transport, tmp_path):
         return "fresh"
 
     result = uploader.upload_resumable(
-        "http://stub", "stale", audio, team_id="blink",
+        "http://stub", "stale", audio, team_id="team-a",
         chunk_bytes=8192, refresh_cb=refresh_cb,
     )
     assert result["session_id"] == "S1"
@@ -109,7 +109,7 @@ def test_resumable_401_without_refresh_token_raises(mock_transport, tmp_path):
 
     with pytest.raises(httpx.HTTPStatusError):
         uploader.upload_resumable(
-            "http://stub", "stale", audio, team_id="blink",
+            "http://stub", "stale", audio, team_id="team-a",
             refresh_cb=lambda: None,
         )
 
@@ -135,7 +135,7 @@ def test_oneshot_upload_refreshes_on_401(mock_transport, tmp_path):
         return "fresh"
 
     result = uploader.upload(
-        "http://stub", "stale", audio, team_id="blink", refresh_cb=refresh_cb,
+        "http://stub", "stale", audio, team_id="team-a", refresh_cb=refresh_cb,
     )
     assert result["session_id"] == "S1"
     assert calls["n"] == 1
@@ -164,7 +164,7 @@ def test_multi_upload_refreshes_on_401(mock_transport, tmp_path):
         return "fresh"
 
     result = uploader.upload_multi(
-        "http://stub", "stale", [a1, a2], team_id="blink", refresh_cb=refresh_cb,
+        "http://stub", "stale", [a1, a2], team_id="team-a", refresh_cb=refresh_cb,
     )
     assert result["session_id"] == "S1"
     assert calls["n"] == 1

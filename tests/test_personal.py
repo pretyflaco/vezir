@@ -28,7 +28,7 @@ def client_factory(tmp_data):
     return _make
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {
         "Authorization": f"Bearer {token}",
         "X-Team-Id": team,
@@ -95,11 +95,11 @@ def test_api_sessions_hides_other_users_personal(client_factory):
     bob_tok = auth.issue("bob")
 
     # alice uploads a personal session
-    queue.enqueue("01PERSONAL", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PERSONAL", "alice", personal=True, team_id="team-a")
     # bob's non-personal (visible to alice and bob)
-    queue.enqueue("01TEAM", "alice", personal=False, team_id="blink")
+    queue.enqueue("01TEAM", "alice", personal=False, team_id="team-a")
     # bob's session, non-personal
-    queue.enqueue("01BOB", "bob", personal=False, team_id="blink")
+    queue.enqueue("01BOB", "bob", personal=False, team_id="team-a")
 
     # alice sees all three (her personal + both team)
     resp = client.get("/api/sessions", headers=_bearer(alice_tok))
@@ -124,7 +124,7 @@ def test_detail_of_other_users_personal_is_404(client_factory):
     auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     resp = client.get("/api/sessions/01PRIV", headers=_bearer(bob_tok))
     assert resp.status_code == 404
@@ -135,7 +135,7 @@ def test_owner_can_read_own_personal(client_factory):
     client = client_factory()
     alice_tok = auth.issue("alice")
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     resp = client.get("/api/sessions/01PRIV", headers=_bearer(alice_tok))
     assert resp.status_code == 200
@@ -148,7 +148,7 @@ def test_artifact_of_other_users_personal_is_404(client_factory):
     auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     resp = client.get(
         "/artifact/01PRIV/transcript.md", headers=_bearer(bob_tok)
@@ -164,7 +164,7 @@ def test_sync_now_of_other_users_personal_is_404(client_factory):
     auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     resp = client.post("/session/01PRIV/sync", headers=_bearer(bob_tok))
     assert resp.status_code == 404
@@ -180,7 +180,7 @@ def test_admin_can_read_others_personal(client_factory):
     auth.issue("alice")
     admin_tok = auth.issue("carol", is_admin=True)
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     resp = client.get("/api/sessions/01PRIV", headers=_bearer(admin_tok))
     assert resp.status_code == 200
@@ -195,7 +195,7 @@ def test_share_makes_personal_visible(client_factory):
     alice_tok = auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     # bob can't see it
     resp = client.get("/api/sessions", headers=_bearer(bob_tok))
@@ -224,7 +224,7 @@ def test_share_only_by_uploader(client_factory):
     auth.issue("alice")
     bob_tok = auth.issue("bob")
 
-    queue.enqueue("01PRIV", "alice", personal=True, team_id="blink")
+    queue.enqueue("01PRIV", "alice", personal=True, team_id="team-a")
 
     # bob can't share alice's personal session
     resp = client.post("/api/sessions/01PRIV/share", headers=_bearer(bob_tok))
@@ -236,7 +236,7 @@ def test_share_idempotent_on_already_shared(client_factory):
     client = client_factory()
     tok = auth.issue("alice")
 
-    queue.enqueue("01PUB", "alice", personal=False, team_id="blink")
+    queue.enqueue("01PUB", "alice", personal=False, team_id="team-a")
 
     resp = client.post("/api/sessions/01PUB/share", headers=_bearer(tok))
     assert resp.status_code == 200
@@ -260,20 +260,20 @@ def test_api_team_returns_handles(client_factory, tmp_data):
 
     from vezir.server import auth, queue
     client = client_factory()
-    tok = auth.issue("alice")  # default team_id='blink' via conftest shim
+    tok = auth.issue("alice")  # default team_id='team-a' via conftest shim
 
     # v0.7.4: per-team dirs are keyed by the team uuid.
-    blink_uuid = queue.get_team("blink")["id"]
-    roster_path = tmp_data / "teams" / blink_uuid / "roster.json"
+    team_a_uuid = queue.get_team("team-a")["id"]
+    roster_path = tmp_data / "teams" / team_a_uuid / "roster.json"
     roster_path.parent.mkdir(parents=True, exist_ok=True)
     roster_path.write_text(json.dumps([
-        {"github": "kasita", "name": "Kasita"},
-        {"github": "pretyflaco"},
+        {"github": "ivan", "name": "Ivan"},
+        {"github": "judy"},
     ]))
 
     resp = client.get("/api/team", headers=_bearer(tok))
     assert resp.status_code == 200
-    assert resp.json()["team"] == ["kasita", "pretyflaco"]
+    assert resp.json()["team"] == ["ivan", "judy"]
 
 
 def test_api_team_requires_bearer(client_factory):

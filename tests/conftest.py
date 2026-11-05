@@ -39,12 +39,12 @@ def _install_auth_issue_shim() -> None:
     """Wrap ``auth.issue`` to translate legacy ``team_id=`` into a membership.
 
     Pre-v0.7.0 tests routinely call ``auth.issue("alice")`` or
-    ``auth.issue("alice", team_id="blink")``.  In v0.7.0 the second
+    ``auth.issue("alice", team_id="team-a")``.  In v0.7.0 the second
     form is gone, but rewriting every test site is mechanical noise.
     This shim:
 
       * accepts the legacy ``team_id=`` keyword,
-      * auto-creates the team if missing (defaults to ``'blink'``),
+      * auto-creates the team if missing (defaults to ``'team-a'``),
       * adds a membership row for the issuing handle so subsequent
         ``X-Team-Id`` requests validate.
 
@@ -61,7 +61,7 @@ def _install_auth_issue_shim() -> None:
     def _shimmed_issue(github, team_id=None, **kwargs):  # type: ignore[no-untyped-def]
         # v0.7.0 issue() signature dropped team_id; capture it here
         # for the membership shim and DROP it before calling through.
-        team = team_id or "blink"
+        team = team_id or "team-a"
         if _queue.get_team(team) is None:
             _queue.create_team(team, f"{team.capitalize()} (test default)")
         role = "admin" if kwargs.get("is_admin") else "scribe"
@@ -106,6 +106,20 @@ def _install_create_session_shim() -> None:
         return _sa._create_session_raw(github, npub, is_admin, auth_method)
 
     _sa.create_session = _shimmed  # type: ignore[assignment]
+
+
+def create_test_teams(*slugs: str) -> None:
+    """Create the named teams (default ``team-a`` + ``team-b``) if missing.
+
+    Fresh data dirs seed no teams (the v0.6.0 migration only moves legacy
+    single-team data), so app-level tests that address teams by slug create
+    them here, after ``create_app()`` has run the migrations.
+    """
+    from vezir.server import queue as _queue
+
+    for slug in slugs or ("team-a", "team-b"):
+        if _queue.get_team(slug) is None:
+            _queue.create_team(slug, slug.replace("-", " ").title())
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: ARG001

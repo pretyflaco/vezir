@@ -235,7 +235,7 @@ def test_apply_labels_json_builds_expected_args(tmp_data, monkeypatch, tmp_path)
     sdir.mkdir()
     rc = meet_runner.apply_labels_json(
         sdir, "01JOB", "team-uuid", tmp_path / "job.log",
-        label_map={"REMOTE_0": "kasita"},
+        label_map={"REMOTE_0": "ivan"},
         update_profiles=True,
     )
     assert rc == 0
@@ -331,14 +331,14 @@ def client_and_token(tmp_data):
     return TestClient(app, follow_redirects=False), token
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {"Authorization": f"Bearer {token}", "X-Team-Id": team}
 
 
 def _seed_labelable_session(session_id: str = "01LBL") -> None:
     from vezir.server import queue
 
-    queue.enqueue(session_id, github="alice", team_id="blink")
+    queue.enqueue(session_id, github="alice", team_id="team-a")
     queue.update_status(session_id, "needs_labeling")
 
 
@@ -356,16 +356,16 @@ def test_label_post_applies_via_subprocess_and_queues_finalize(
         resp = client.post(
             "/api/label/01LBL",
             headers=_bearer(token),
-            json={"labels": {"REMOTE_0": "kasita"}},
+            json={"labels": {"REMOTE_0": "ivan"}},
         )
     assert resp.status_code == 200, resp.text
     assert mock_apply.called
     _args, kwargs = mock_apply.call_args
-    assert kwargs.get("label_map") == {"REMOTE_0": "kasita"}
+    assert kwargs.get("label_map") == {"REMOTE_0": "ivan"}
     assert kwargs.get("regenerate_summary") is False
     args, kwargs = mock_enqueue.call_args
     assert args == ("finalize_labels", "01LBL")
-    assert kwargs.get("label_map") == {"REMOTE_0": "kasita"}
+    assert kwargs.get("label_map") == {"REMOTE_0": "ivan"}
 
 
 def test_label_post_surfaces_subprocess_failure(client_and_token, tmp_data):
@@ -378,7 +378,7 @@ def test_label_post_surfaces_subprocess_failure(client_and_token, tmp_data):
         resp = client.post(
             "/api/label/01LBL",
             headers=_bearer(token),
-            json={"labels": {"REMOTE_0": "kasita"}},
+            json={"labels": {"REMOTE_0": "ivan"}},
         )
     assert resp.status_code == 502
     assert not mock_enqueue.called
@@ -405,7 +405,7 @@ def test_label_post_never_mutates_process_home(client_and_token, tmp_data):
         client.post(
             "/api/label/01LBL",
             headers=_bearer(token),
-            json={"labels": {"REMOTE_0": "kasita"}},
+            json={"labels": {"REMOTE_0": "ivan"}},
         )
     assert observed == [home_before]
     assert _os.environ.get("HOME") == home_before

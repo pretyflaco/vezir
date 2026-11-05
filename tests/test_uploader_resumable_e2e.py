@@ -43,7 +43,7 @@ def live_server(monkeypatch):
     from vezir.server import auth
     from vezir.server.app import create_app
 
-    token = auth.issue("alice")  # conftest shim memberships alice -> blink
+    token = auth.issue("alice")  # conftest shim memberships alice -> team-a
     app = create_app()
     port = _free_port()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
@@ -79,10 +79,10 @@ def test_resumable_e2e_happy_path(live_server):
         audio = Path(td) / "m.wav"
         _wav(audio, seconds=2)
 
-        assert uploader.server_supports_resumable(base, token, team_id="blink")
+        assert uploader.server_supports_resumable(base, token, team_id="team-a")
 
         result = uploader.upload_resumable(
-            base, token, audio, team_id="blink", chunk_bytes=8192,
+            base, token, audio, team_id="team-a", chunk_bytes=8192,
         )
         session_id = result["session_id"]
         out = data_dir / "sessions" / session_id / f"{session_id}.wav"
@@ -98,7 +98,7 @@ def test_legacy_upload_carries_team_header(live_server):
     with tempfile.TemporaryDirectory() as td:
         audio = Path(td) / "m.wav"
         _wav(audio, seconds=1)
-        result = uploader.upload(base, token, audio, team_id="blink")
+        result = uploader.upload(base, token, audio, team_id="team-a")
         assert "session_id" in result
 
 
@@ -154,7 +154,7 @@ def test_resumable_client_honors_429_retry_after(monkeypatch, tmp_path):
     monkeypatch.setattr(uploader.time, "sleep", lambda *_a, **_k: None)
 
     result = uploader.upload_resumable(
-        "http://stub", "vzr_x", audio, team_id="blink", chunk_bytes=8192,
+        "http://stub", "vzr_x", audio, team_id="team-a", chunk_bytes=8192,
     )
     assert result["session_id"] == "S1"
     assert state["rate_limited_once"] is True  # the 429 path was exercised

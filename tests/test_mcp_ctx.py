@@ -270,7 +270,7 @@ def test_get_artifact_missing_session_errors(fake_client):
 def _ctx_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_" + "x" * 43)
-    monkeypatch.setenv("VEZIR_TEAM_ID", "blink")
+    monkeypatch.setenv("VEZIR_TEAM_ID", "team-a")
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "vezir-meetings"))
 
 
@@ -287,7 +287,7 @@ def test_ctx_by_title_prints_context(monkeypatch, tmp_path):
         "vezir.client.api.VezirClient", lambda *a, **k: api,
     )
     # Pre-seed the pulled artifacts so no pull happens.
-    out = tmp_path / "vezir-meetings" / "blink"
+    out = tmp_path / "vezir-meetings" / "team-a"
     sess_dir = out / "meeting-20260824-100000_BRAINSTORM_PHOENIX"
     sess_dir.mkdir(parents=True)
     (sess_dir / "session.json").write_text(json.dumps({"session_id": "01AAA"}))
@@ -355,7 +355,7 @@ def test_ctx_path_flag_prints_dir(monkeypatch, tmp_path):
         "vezir.client.api.VezirClient", lambda *a, **k: api,
     )
     sess_dir = (
-        tmp_path / "vezir-meetings" / "blink"
+        tmp_path / "vezir-meetings" / "team-a"
         / "meeting-20260824-100000_BRAINSTORM_PHOENIX"
     )
     sess_dir.mkdir(parents=True)

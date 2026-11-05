@@ -66,6 +66,6 @@ def test_unicode_roundtrip():
     b = PrivateKey()
     a_pub = a.public_key_xonly.format().hex()
     b_pub = b.public_key_xonly.format().hex()
-    msg = "café — milfort ☕ 日本語"
+    msg = "café — trent ☕ 日本語"
     ct = nip04.encrypt(msg, a.to_hex(), b_pub)
     assert nip04.decrypt(ct, b.to_hex(), a_pub) == msg

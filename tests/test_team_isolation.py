@@ -45,7 +45,10 @@ def client_factory(tmp_data):
     from vezir.server.app import create_app
 
     def _make():
-        return TestClient(create_app(), follow_redirects=False)
+        from conftest import create_test_teams
+        tc = TestClient(create_app(), follow_redirects=False)
+        create_test_teams()
+        return tc
 
     return _make
 
@@ -72,7 +75,7 @@ def _issue_for(github: str, team: str) -> str:
 
     Wraps the shimmed auth.issue but pins the team_id so the membership
     lands in the team we care about (instead of the shim's default
-    'blink').
+    'team-a').
     """
     from vezir.server import auth
     return auth.issue(github, team_id=team)
@@ -81,16 +84,14 @@ def _issue_for(github: str, team: str) -> str:
 # ── Migration seeded both teams; verify they exist ──────────────────────────
 
 
-def test_migration_seeds_blink_and_twentyone(client_factory):
-    """Confirm the seed migration ran and the two teams exist."""
-    client_factory()  # triggers create_app() -> run_pending_migrations()
+def test_fresh_install_seeds_no_teams(tmp_data):
+    """A fresh data dir gets no teams from the migrations: there is no
+    single-team data to move, and no built-in team names."""
     from vezir.server import queue
-    # v0.7.4: teams keyed by uuid; slug is the human identifier.
-    teams = {t["slug"]: t for t in queue.list_teams()}
-    assert "blink" in teams
-    assert "twentyone" in teams
-    assert teams["blink"]["name"] == "Blink"
-    assert teams["twentyone"]["name"] == "Twentyone"
+    from vezir.server.app import create_app
+
+    create_app()  # runs run_pending_migrations()
+    assert queue.list_teams() == []
 
 
 # ── Upload routes the session to the X-Team-Id team ───────────────────────
@@ -99,33 +100,33 @@ def test_migration_seeds_blink_and_twentyone(client_factory):
 def test_upload_routes_to_team_from_header(client_factory):
     client = client_factory()
     from vezir.server import queue
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
 
     resp = client.post(
         "/upload",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
         files={"audio": ("x.wav", _tiny_wav(), "audio/wav")},
     )
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
     row = queue.get(sid)
-    assert row["team_id"] == queue.get_team("blink")["id"]
+    assert row["team_id"] == queue.get_team("team-a")["id"]
 
 
-def test_upload_routes_to_twentyone_when_header_says_so(client_factory):
+def test_upload_routes_to_team_b_when_header_says_so(client_factory):
     client = client_factory()
     from vezir.server import queue
-    tok = _issue_for("alice", "twentyone")
+    tok = _issue_for("alice", "team-b")
 
     resp = client.post(
         "/upload",
-        headers=_headers(tok, "twentyone"),
+        headers=_headers(tok, "team-b"),
         files={"audio": ("x.wav", _tiny_wav(), "audio/wav")},
     )
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
     row = queue.get(sid)
-    assert row["team_id"] == queue.get_team("twentyone")["id"]
+    assert row["team_id"] == queue.get_team("team-b")["id"]
 
 
 # ── /api/sessions visibility filter ────────────────────────────────────────
@@ -137,26 +138,26 @@ def test_api_sessions_shows_only_own_team(client_factory):
 
     # alice is a member of both teams (one token covers both via
     # X-Team-Id).
-    tok = _issue_for("alice", "blink")
-    _ = _issue_for("alice", "twentyone")  # adds another membership
+    tok = _issue_for("alice", "team-a")
+    _ = _issue_for("alice", "team-b")  # adds another membership
 
     # Seed: one job per team.
-    queue.enqueue("01BLINK1", "alice", team_id="blink", title="blink-meeting")
-    queue.enqueue("01TWENT1", "alice", team_id="twentyone", title="twentyone-meeting")
+    queue.enqueue("01TEAMA1", "alice", team_id="team-a", title="team-a-meeting")
+    queue.enqueue("01TWENT1", "alice", team_id="team-b", title="team-b-meeting")
 
-    # X-Team-Id: blink -> only blink session.
-    r1 = client.get("/api/sessions", headers=_headers(tok, "blink"))
+    # X-Team-Id: team-a -> only team-a session.
+    r1 = client.get("/api/sessions", headers=_headers(tok, "team-a"))
     assert r1.status_code == 200
-    blink_ids = {s["id"] for s in r1.json()["sessions"]}
-    assert "01BLINK1" in blink_ids
-    assert "01TWENT1" not in blink_ids
+    team_a_ids = {s["id"] for s in r1.json()["sessions"]}
+    assert "01TEAMA1" in team_a_ids
+    assert "01TWENT1" not in team_a_ids
 
-    # X-Team-Id: twentyone -> only twentyone session.
-    r2 = client.get("/api/sessions", headers=_headers(tok, "twentyone"))
+    # X-Team-Id: team-b -> only team-b session.
+    r2 = client.get("/api/sessions", headers=_headers(tok, "team-b"))
     assert r2.status_code == 200
-    twentyone_ids = {s["id"] for s in r2.json()["sessions"]}
-    assert "01TWENT1" in twentyone_ids
-    assert "01BLINK1" not in twentyone_ids
+    team_b_ids = {s["id"] for s in r2.json()["sessions"]}
+    assert "01TWENT1" in team_b_ids
+    assert "01TEAMA1" not in team_b_ids
 
 
 def test_api_sessions_personal_still_works_within_team(client_factory):
@@ -166,16 +167,16 @@ def test_api_sessions_personal_still_works_within_team(client_factory):
     client = client_factory()
     from vezir.server import queue
 
-    alice_tok = _issue_for("alice", "blink")
-    bob_tok = _issue_for("bob", "blink")
-    carol_tok = _issue_for("carol", "twentyone")
+    alice_tok = _issue_for("alice", "team-a")
+    bob_tok = _issue_for("bob", "team-a")
+    carol_tok = _issue_for("carol", "team-b")
 
     queue.enqueue(
-        "01APRIV", "alice", team_id="blink",
+        "01APRIV", "alice", team_id="team-a",
         title="alice priv", personal=True,
     )
     queue.enqueue(
-        "01ATEAM", "alice", team_id="blink",
+        "01ATEAM", "alice", team_id="team-a",
         title="alice team", personal=False,
     )
 
@@ -183,23 +184,23 @@ def test_api_sessions_personal_still_works_within_team(client_factory):
     ids_alice = {
         s["id"]
         for s in client.get(
-            "/api/sessions", headers=_headers(alice_tok, "blink"),
+            "/api/sessions", headers=_headers(alice_tok, "team-a"),
         ).json()["sessions"]
     }
     assert ids_alice == {"01APRIV", "01ATEAM"}
 
-    # Bob (blink) sees only the team session.
+    # Bob (team-a) sees only the team session.
     ids_bob = {
         s["id"]
         for s in client.get(
-            "/api/sessions", headers=_headers(bob_tok, "blink"),
+            "/api/sessions", headers=_headers(bob_tok, "team-a"),
         ).json()["sessions"]
     }
     assert ids_bob == {"01ATEAM"}
 
-    # Carol (twentyone) is not a member of blink -> 403.
+    # Carol (team-b) is not a member of team-a -> 403.
     r_carol = client.get(
-        "/api/sessions", headers=_headers(carol_tok, "blink"),
+        "/api/sessions", headers=_headers(carol_tok, "team-a"),
     )
     assert r_carol.status_code == 403
 
@@ -214,19 +215,19 @@ def test_api_session_detail_cross_team_returns_404(client_factory):
     client = client_factory()
     from vezir.server import queue
 
-    tok = _issue_for("alice", "blink")
-    _ = _issue_for("alice", "twentyone")
+    tok = _issue_for("alice", "team-a")
+    _ = _issue_for("alice", "team-b")
 
-    queue.enqueue("01BLINKX", "alice", team_id="blink", title="blink")
+    queue.enqueue("01TEAMAX", "alice", team_id="team-a", title="team-a")
 
-    # blink scope sees it
-    r1 = client.get("/api/sessions/01BLINKX", headers=_headers(tok, "blink"))
+    # team-a scope sees it
+    r1 = client.get("/api/sessions/01TEAMAX", headers=_headers(tok, "team-a"))
     assert r1.status_code == 200
 
-    # twentyone scope: same human, but session is in a different team
+    # team-b scope: same human, but session is in a different team
     # -> 404 (not 403, to avoid leaking existence)
     r2 = client.get(
-        "/api/sessions/01BLINKX", headers=_headers(tok, "twentyone"),
+        "/api/sessions/01TEAMAX", headers=_headers(tok, "team-b"),
     )
     assert r2.status_code == 404
 
@@ -234,10 +235,10 @@ def test_api_session_detail_cross_team_returns_404(client_factory):
 def test_api_session_detail_unknown_session_404(client_factory):
     """Unknown session id returns 404 regardless of team."""
     client = client_factory()
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
     r = client.get(
         "/api/sessions/01NOPE0000000000000000000",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
     )
     assert r.status_code == 404
 
@@ -246,18 +247,18 @@ def test_api_session_detail_unknown_session_404(client_factory):
 
 
 def test_share_cross_team_returns_404(client_factory):
-    """A twentyone-scoped request cannot share a blink-owned personal session."""
+    """A team-b-scoped request cannot share a team-a-owned personal session."""
     client = client_factory()
     from vezir.server import queue
     queue.enqueue(
-        "01PRIV2", "alice", team_id="blink",
-        title="blink priv", personal=True,
+        "01PRIV2", "alice", team_id="team-a",
+        title="team-a priv", personal=True,
     )
 
-    tok = _issue_for("alice", "twentyone")
+    tok = _issue_for("alice", "team-b")
     r = client.post(
         "/api/sessions/01PRIV2/share",
-        headers=_headers(tok, "twentyone"),
+        headers=_headers(tok, "team-b"),
     )
     assert r.status_code == 404
 
@@ -268,13 +269,13 @@ def test_share_cross_team_returns_404(client_factory):
 def test_retry_summary_cross_team_returns_404(client_factory):
     client = client_factory()
     from vezir.server import queue
-    queue.enqueue("01DONE", "alice", team_id="blink", title="blink done")
+    queue.enqueue("01DONE", "alice", team_id="team-a", title="team-a done")
     queue.update_status("01DONE", "done", summary_error="LLM hiccup")
 
-    tok = _issue_for("alice", "twentyone")
+    tok = _issue_for("alice", "team-b")
     r = client.post(
         "/api/sessions/01DONE/retry-summary",
-        headers=_headers(tok, "twentyone"),
+        headers=_headers(tok, "team-b"),
     )
     assert r.status_code == 404
 
@@ -289,7 +290,7 @@ def test_retry_summary_template_accepted_on_successful_session(
     session's summary already succeeded (no summary_error)."""
     client = client_factory()
     from vezir.server import queue, worker
-    queue.enqueue("01TMPLDONE", "alice", team_id="blink", title="demo")
+    queue.enqueue("01TMPLDONE", "alice", team_id="team-a", title="demo")
     queue.update_status("01TMPLDONE", "done")
 
     captured: dict = {}
@@ -298,10 +299,10 @@ def test_retry_summary_template_accepted_on_successful_session(
         lambda kind, sid, **kw: captured.update(kind=kind, sid=sid, **kw) or True,
     )
 
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
     r = client.post(
         "/api/sessions/01TMPLDONE/retry-summary",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
         json={"template": "iteration-plan"},
     )
     assert r.status_code == 200, r.text
@@ -312,13 +313,13 @@ def test_retry_summary_template_accepted_on_successful_session(
 def test_retry_summary_template_shape_validated(client_factory):
     client = client_factory()
     from vezir.server import queue
-    queue.enqueue("01TMPLBAD", "alice", team_id="blink", title="demo")
+    queue.enqueue("01TMPLBAD", "alice", team_id="team-a", title="demo")
     queue.update_status("01TMPLBAD", "done")
 
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
     r = client.post(
         "/api/sessions/01TMPLBAD/retry-summary",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
         json={"template": "../evil"},
     )
     assert r.status_code == 400
@@ -327,13 +328,13 @@ def test_retry_summary_template_shape_validated(client_factory):
 def test_retry_summary_plain_still_requires_summary_error(client_factory):
     client = client_factory()
     from vezir.server import queue
-    queue.enqueue("01PLAIN", "alice", team_id="blink", title="demo")
+    queue.enqueue("01PLAIN", "alice", team_id="team-a", title="demo")
     queue.update_status("01PLAIN", "done")
 
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
     r = client.post(
         "/api/sessions/01PLAIN/retry-summary",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
         json={},
     )
     assert r.status_code == 409
@@ -347,16 +348,16 @@ def test_non_member_request_is_403(client_factory):
     is rejected at the auth layer with 403, before any visibility check.
     """
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    # alice is NOT in twentyone here (we only added blink membership)
-    r = client.get("/api/sessions", headers=_headers(tok, "twentyone"))
+    tok = _issue_for("alice", "team-a")
+    # alice is NOT in team-b here (we only added team-a membership)
+    r = client.get("/api/sessions", headers=_headers(tok, "team-b"))
     assert r.status_code == 403
 
 
 def test_missing_x_team_id_is_400(client_factory):
     """v0.7.0: team-scoped endpoints require the X-Team-Id header."""
     client = client_factory()
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
     r = client.get(
         "/api/sessions",
         headers={"Authorization": f"Bearer {tok}"},
@@ -410,8 +411,8 @@ def test_enqueue_rejects_empty_team_id(client_factory):
 def test_validate_team_id_accepts_seeds(client_factory):
     client_factory()
     from vezir.server import queue
-    queue.validate_team_id("blink")
-    queue.validate_team_id("twentyone")
+    queue.validate_team_id("team-a")
+    queue.validate_team_id("team-b")
 
 
 @pytest.mark.parametrize(
@@ -419,10 +420,10 @@ def test_validate_team_id_accepts_seeds(client_factory):
     [
         "",
         "ab",  # too short (2 chars)
-        "Blink",  # uppercase
-        "1blink",  # starts with digit
-        "-blink",  # starts with hyphen
-        "blink!",  # special char
+        "Team A",  # uppercase
+        "1team",  # starts with digit
+        "-team-a",  # starts with hyphen
+        "team-a!",  # special char
         "a" * 33,  # too long
     ],
 )

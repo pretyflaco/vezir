@@ -177,7 +177,7 @@ def _mock_api_me(monkeypatch, memberships):
         return httpx.Response(
             200,
             json={
-                "github": "pretyflaco",
+                "github": "judy",
                 "is_admin": True,
                 "memberships": memberships,
                 "alternate_urls": [],
@@ -195,18 +195,18 @@ async def test_refresh_identity_slug_matches_uuid_membership(
     memberships WITHOUT being rewritten to the UUID (the v0.7.4 bug
     that broke the TUI team switcher)."""
     _mock_api_me(monkeypatch, [
-        {"team_id": "5e0d4eecd0e24b2a8dbc517adb486199", "slug": "blink",
-         "role": "scribe", "team_name": "Blink"},
+        {"team_id": "5e0d4eecd0e24b2a8dbc517adb486199", "slug": "team-a",
+         "role": "scribe", "team_name": "Team A"},
     ])
     async with app.run_test():
-        app.active_team_id = "blink"  # slug, as configured in teams.json
+        app.active_team_id = "team-a"  # slug, as configured in teams.json
         # v0.12.1: _refresh_identity is now a thread worker; wait for it.
         app._refresh_identity()
         await app.workers.wait_for_complete()
         # active_team_id stays the slug, not the UUID.
-        assert app.active_team_id == "blink"
+        assert app.active_team_id == "team-a"
         # Label resolves to the human team name.
-        assert app.team_label == "Blink"
+        assert app.team_label == "Team A"
 
 
 async def test_refresh_identity_fallback_keeps_slug_not_uuid(
@@ -231,11 +231,11 @@ async def test_refresh_identity_fallback_keeps_slug_not_uuid(
 
 
 _MEMBERSHIPS_3 = [
-    {"team_id": "uuid-blink", "slug": "blink", "role": "scribe",
-     "team_name": "Blink"},
-    {"team_id": "uuid-21", "slug": "twentyone", "role": "admin",
-     "team_name": "Twentyone"},
-    {"team_id": "uuid-abct", "slug": "abcapetown", "role": "admin",
+    {"team_id": "uuid-team-a", "slug": "team-a", "role": "scribe",
+     "team_name": "Team A"},
+    {"team_id": "uuid-21", "slug": "team-b", "role": "admin",
+     "team_name": "Team B"},
+    {"team_id": "uuid-abct", "slug": "team-c", "role": "admin",
      "team_name": "AB Cape Town"},
 ]
 
@@ -247,14 +247,14 @@ async def test_all_teams_merges_discovered_memberships(app, mock_server):
         app.memberships = list(_MEMBERSHIPS_3)
         teams = app.all_teams()
         slugs = [t["slug"] for t in teams]
-        assert slugs == ["abcapetown", "blink", "twentyone"]  # slug-sorted
+        assert slugs == ["team-a", "team-b", "team-c"]  # slug-sorted
         # All discovered, all inherit the current token.
         assert all(t["source"] == "discovered" for t in teams)
         assert all(t["token"] == app.token for t in teams)
         # Labels come from team_name; roles preserved.
-        blink = next(t for t in teams if t["slug"] == "blink")
-        assert blink["label"] == "Blink"
-        assert blink["role"] == "scribe"
+        team_a = next(t for t in teams if t["slug"] == "team-a")
+        assert team_a["label"] == "Team A"
+        assert team_a["role"] == "scribe"
 
 
 async def test_team_slug_for_maps_uuid_to_slug(app, mock_server):
@@ -264,10 +264,10 @@ async def test_team_slug_for_maps_uuid_to_slug(app, mock_server):
     async with app.run_test():
         app.memberships = list(_MEMBERSHIPS_3)
         # UUID -> slug.
-        assert app.team_slug_for("uuid-blink") == "blink"
-        assert app.team_slug_for("uuid-21") == "twentyone"
+        assert app.team_slug_for("uuid-team-a") == "team-a"
+        assert app.team_slug_for("uuid-21") == "team-b"
         # Already a slug -> unchanged.
-        assert app.team_slug_for("blink") == "blink"
+        assert app.team_slug_for("team-a") == "team-a"
         # Unknown id -> returned as-is (global-scan fallback covers it).
         assert app.team_slug_for("uuid-unknown") == "uuid-unknown"
         # None -> None.
@@ -281,9 +281,9 @@ async def test_all_teams_config_overrides_discovered(app, mock_server, monkeypat
     async with app.run_test():
         app.memberships = list(_MEMBERSHIPS_3)
         monkeypatch.setattr(cfg_mod, "load_teams_config", lambda: {
-            "teams": [{"id": "blink", "url": "https://other",
-                       "token": "vzr_other", "label": "Blink HQ"}],
-            "active": "blink",
+            "teams": [{"id": "team-a", "url": "https://other",
+                       "token": "vzr_other", "label": "Team A HQ"}],
+            "active": "team-a",
         })
         # app.all_teams reads load_teams_config via its own import site.
         monkeypatch.setattr(
@@ -291,13 +291,13 @@ async def test_all_teams_config_overrides_discovered(app, mock_server, monkeypat
             cfg_mod.load_teams_config,
         )
         teams = app.all_teams()
-        blink = next(t for t in teams if t["slug"] == "blink")
-        assert blink["source"] == "config"
-        assert blink["url"] == "https://other"
-        assert blink["token"] == "vzr_other"
-        assert blink["label"] == "Blink HQ"
+        team_a = next(t for t in teams if t["slug"] == "team-a")
+        assert team_a["source"] == "config"
+        assert team_a["url"] == "https://other"
+        assert team_a["token"] == "vzr_other"
+        assert team_a["label"] == "Team A HQ"
         # Role still enriched from the discovered membership.
-        assert blink["role"] == "scribe"
+        assert team_a["role"] == "scribe"
 
 
 async def test_switch_to_discovered_team_preserves_token(app, mock_server):
@@ -306,15 +306,15 @@ async def test_switch_to_discovered_team_preserves_token(app, mock_server):
     async with app.run_test():
         app.memberships = list(_MEMBERSHIPS_3)
         original_token = app.token
-        ok = app.switch_to_team("twentyone")
+        ok = app.switch_to_team("team-b")
         assert ok is True
-        assert app.active_team_id == "twentyone"
+        assert app.active_team_id == "team-b"
         assert app.token == original_token       # token unchanged
         assert app.api.token == original_token
-        assert app.api.team_id == "twentyone"     # X-Team-Id updated
+        assert app.api.team_id == "team-b"     # X-Team-Id updated
         # Discovered-only selection is in-memory, not persisted.
-        assert app._discovered_active == "twentyone"
-        assert app.cred_source == "discovered:twentyone"
+        assert app._discovered_active == "team-b"
+        assert app.cred_source == "discovered:team-b"
 
 
 async def test_ctrl_t_cycles_all_discovered_teams(app, mock_server):
@@ -322,14 +322,14 @@ async def test_ctrl_t_cycles_all_discovered_teams(app, mock_server):
     fix for the laptop showing only manually-added teams."""
     async with app.run_test() as pilot:
         app.memberships = list(_MEMBERSHIPS_3)
-        app.active_team_id = "abcapetown"  # first in slug-sorted order
+        app.active_team_id = "team-c"  # first in slug-sorted order
         visited = []
         for _ in range(3):
             await pilot.press("ctrl+t")
             await pilot.pause()
             visited.append(app.active_team_id)
-        # slug-sorted: abcapetown -> blink -> twentyone -> abcapetown
-        assert visited == ["blink", "twentyone", "abcapetown"]
+        # slug-sorted: team-c -> team-a -> team-b -> team-c
+        assert visited == ["team-a", "team-b", "team-c"]
 
 
 async def test_teams_tab_lists_memberships(app, mock_server):
@@ -362,10 +362,10 @@ async def test_teams_tab_single_membership_still_lists(app, mock_server):
 async def test_ctrl_t_single_team_is_noop(app, mock_server):
     async with app.run_test() as pilot:
         app.memberships = [_MEMBERSHIPS_3[0]]
-        app.active_team_id = "blink"
+        app.active_team_id = "team-a"
         await pilot.press("ctrl+t")
         await pilot.pause()
-        assert app.active_team_id == "blink"  # unchanged
+        assert app.active_team_id == "team-a"  # unchanged
 
 
 # ─── sessions screen ──────────────────────────────────────────────────────────
@@ -814,7 +814,7 @@ async def test_label_screen_renders_without_crash(app, mock_server, monkeypatch)
             {"id": "SPEAKER_01", "channel": "system",
              "sample_text": "Yes I agree"},
         ],
-        "team": ["alice", "bob", "kasita"],
+        "team": ["alice", "bob", "ivan"],
         "audio_available": True,
     }
     async with app.run_test() as pilot:
@@ -911,7 +911,7 @@ async def test_label_screen_inputs_have_visible_text_area(
             {"id": "SPEAKER_00", "channel": "mic",
              "sample_text": "Hello team"},
         ],
-        "team": ["alice", "bob", "kasita"],
+        "team": ["alice", "bob", "ivan"],
         "audio_available": True,
     }
     async with app.run_test(size=(120, 40)) as pilot:
@@ -962,7 +962,7 @@ async def test_no_enter_binding_on_detail_screen(app, mock_server):
     """DetailScreen must NOT bind `enter` -- DataTable already handles it,
     and a screen-level binding causes a double-push of ArtifactScreen.
 
-    Background: the muscle smoke on 2026-05-23 froze the TUI on PDF
+    Background: a smoke test froze the TUI on PDF
     click.  Root cause was the DataTable's built-in
     `enter -> select_cursor` firing alongside our screen-level
     `Binding('enter', 'open_selected_artifact')`, pushing
@@ -1826,7 +1826,7 @@ async def test_record_body_video_upload_sends_template(app, mock_server, monkeyp
         await app.mount(body)
         await pilot.pause(0.2)
         body._kick_upload(vid, ReviewResult(
-            action="upload", team="blink", title=None,
+            action="upload", team="team-a", title=None,
             auto_label=True, sync=True, personal=False,
         ))
         for _ in range(30):
@@ -1922,13 +1922,13 @@ async def test_detail_move_session_flow(app, mock_server, monkeypatch, tmp_path)
     from vezir.client import api
 
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "rec"))
-    local_dir = tmp_path / "rec" / "blink" / "meeting-1"
+    local_dir = tmp_path / "rec" / "team-a" / "meeting-1"
     local_dir.mkdir(parents=True)
     (local_dir / "session.json").write_text(_json.dumps({"session_id": "01MV"}))
-    (tmp_path / "rec" / "twentyone").mkdir()
+    (tmp_path / "rec" / "team-b").mkdir()
     mock_server["memberships"] = [
-        {"team_id": "u1", "slug": "blink", "role": "member"},
-        {"team_id": "u2", "slug": "twentyone", "role": "member"},
+        {"team_id": "u1", "slug": "team-a", "role": "member"},
+        {"team_id": "u2", "slug": "team-b", "role": "member"},
     ]
     mock_server["sessions"] = [{
         "id": "01MV", "status": "done", "title": "wrong team", "github": "tester",
@@ -1939,14 +1939,14 @@ async def test_detail_move_session_flow(app, mock_server, monkeypatch, tmp_path)
     def fake_move(self, sid, to_team, *, sync=False):
         calls.append((self.team_id, sid, to_team, sync))
         return api.ApiResult.success({
-            "ok": True, "from_team": "blink", "to_team": to_team, "moved": True,
+            "ok": True, "from_team": "team-a", "to_team": to_team, "moved": True,
             "was_synced": True, "sync_queued": sync, "warning": "copy stays",
         })
 
     monkeypatch.setattr(api.VezirClient, "move_session", fake_move)
     async with app.run_test(size=(120, 40)) as pilot:
-        app.active_team_id = "blink"
-        app.api.team_id = "blink"
+        app.active_team_id = "team-a"
+        app.api.team_id = "team-a"
         for _ in range(20):
             await pilot.pause(0.05)
             if app.memberships:
@@ -1960,7 +1960,7 @@ async def test_detail_move_session_flow(app, mock_server, monkeypatch, tmp_path)
         app.screen.action_move_session()
         await pilot.pause(0.1)
         assert app.screen.__class__.__name__ == "TeamPickScreen"
-        await pilot.press("enter")  # only choice: twentyone
+        await pilot.press("enter")  # only choice: team-b
         await pilot.pause(0.1)
         assert app.screen.__class__.__name__ == "MoveConfirmScreen"
         assert app.screen.focused.id == "move-cancel"
@@ -1970,8 +1970,8 @@ async def test_detail_move_session_flow(app, mock_server, monkeypatch, tmp_path)
             if app.screen.__class__.__name__ == "MainScreen":
                 break
         assert app.screen.__class__.__name__ == "MainScreen"
-    assert calls == [("blink", "01MV", "twentyone", True)]
-    assert (tmp_path / "rec" / "twentyone" / "meeting-1").is_dir()
+    assert calls == [("team-a", "01MV", "team-b", True)]
+    assert (tmp_path / "rec" / "team-b" / "meeting-1").is_dir()
     assert not local_dir.exists()
 
 
@@ -2013,7 +2013,7 @@ async def test_record_body_video_template_cycle(app, mock_server, monkeypatch, t
         assert "iteration_plan" not in prefs
 
         body._kick_upload(vid, ReviewResult(
-            action="upload", team="blink", title=None,
+            action="upload", team="team-a", title=None,
             auto_label=True, sync=True, personal=False,
         ))
         for _ in range(30):

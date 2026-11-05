@@ -16,55 +16,55 @@ def tmp_data(monkeypatch):
 
 def test_create_team_returns_uuid_not_slug(tmp_data):
     from vezir.server import queue
-    uuid = queue.create_team("blink", "Blink")
-    assert uuid != "blink"
+    uuid = queue.create_team("team-a", "Team A")
+    assert uuid != "team-a"
     assert len(uuid) == 32  # uuid4().hex
-    row = queue.get_team("blink")
+    row = queue.get_team("team-a")
     assert row["id"] == uuid
-    assert row["slug"] == "blink"
+    assert row["slug"] == "team-a"
 
 
 def test_resolve_team_uuid_accepts_slug_and_uuid(tmp_data):
     from vezir.server import queue
-    uuid = queue.create_team("blink", "Blink")
-    assert queue.resolve_team_uuid("blink") == uuid
+    uuid = queue.create_team("team-a", "Team A")
+    assert queue.resolve_team_uuid("team-a") == uuid
     assert queue.resolve_team_uuid(uuid) == uuid
     assert queue.resolve_team_uuid("ghost") is None
 
 
 def test_rename_slug_preserves_uuid_and_data(tmp_data):
     from vezir.server import queue
-    uuid = queue.create_team("blink", "Blink")
-    queue.enqueue("01J", github="alice", title="t", team_id="blink")
-    queue.add_membership("alice", "blink", role="scribe")
+    uuid = queue.create_team("team-a", "Team A")
+    queue.enqueue("01J", github="alice", title="t", team_id="team-a")
+    queue.add_membership("alice", "team-a", role="scribe")
 
-    queue.rename_team_slug("blink", "blinkbitcoin")
+    queue.rename_team_slug("team-a", "renamed-team")
 
     # uuid unchanged; slug updated.
-    row = queue.get_team("blinkbitcoin")
+    row = queue.get_team("renamed-team")
     assert row["id"] == uuid
-    assert row["slug"] == "blinkbitcoin"
+    assert row["slug"] == "renamed-team"
     # Old slug no longer resolves.
-    assert queue.get_team("blink") is None
+    assert queue.get_team("team-a") is None
     # Job + membership still attached (keyed by uuid, untouched).
     assert queue.get("01J")["team_id"] == uuid
     assert queue.is_member("alice", uuid)
-    assert queue.is_member("alice", "blinkbitcoin")  # resolves new slug
+    assert queue.is_member("alice", "renamed-team")  # resolves new slug
 
 
 def test_rename_rejects_collision(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.create_team("twentyone", "Twentyone")
+    queue.create_team("team-a", "Team A")
+    queue.create_team("team-b", "Team B")
     with pytest.raises(ValueError, match="already in use"):
-        queue.rename_team_slug("blink", "twentyone")
+        queue.rename_team_slug("team-a", "team-b")
 
 
 def test_rename_rejects_bad_slug(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
     with pytest.raises(ValueError):
-        queue.rename_team_slug("blink", "Bad Slug")
+        queue.rename_team_slug("team-a", "Bad Slug")
 
 
 def test_rename_unknown_team(tmp_data):
@@ -96,39 +96,39 @@ def test_migration_assigns_uuid_and_rewrites_fks(tmp_data):
             " PRIMARY KEY (session_id, team_id));"
         )
         conn.execute(
-            "INSERT INTO teams (id, name, created_at) VALUES ('blink','Blink','x')"
+            "INSERT INTO teams (id, name, created_at) VALUES ('team-a','Team A','x')"
         )
         conn.execute(
             "INSERT INTO jobs (id, github, team_id, status, created_at, updated_at)"
-            " VALUES ('01J','alice','blink','queued','x','x')"
+            " VALUES ('01J','alice','team-a','queued','x','x')"
         )
         conn.execute(
             "INSERT INTO memberships (github, team_id, role, added_at)"
-            " VALUES ('alice','blink','scribe','x')"
+            " VALUES ('alice','team-a','scribe','x')"
         )
         conn.commit()
     finally:
         conn.close()
 
     # Place a legacy on-disk team dir at the slug path.
-    (config.teams_dir() / "blink").mkdir(parents=True, exist_ok=True)
-    (config.teams_dir() / "blink" / "roster.json").write_text("[]")
+    (config.teams_dir() / "team-a").mkdir(parents=True, exist_ok=True)
+    (config.teams_dir() / "team-a" / "roster.json").write_text("[]")
 
     summary = migrations.migrate_0_7_4()
     assert summary["teams"]["teams_remapped"] == 1
     assert summary["teams"]["dirs_renamed"] == 1
 
     from vezir.server import queue
-    row = queue.get_team("blink")  # resolves by slug
+    row = queue.get_team("team-a")  # resolves by slug
     assert row is not None
     uuid = row["id"]
-    assert uuid != "blink"
+    assert uuid != "team-a"
     # FKs rewritten to uuid.
     assert queue.get("01J")["team_id"] == uuid
     assert queue.is_member("alice", uuid)
     # On-disk dir renamed.
     assert (config.teams_dir() / uuid).is_dir()
-    assert not (config.teams_dir() / "blink").exists()
+    assert not (config.teams_dir() / "team-a").exists()
 
 
 def test_rename_via_cli(tmp_data):
@@ -136,11 +136,11 @@ def test_rename_via_cli(tmp_data):
 
     from vezir.cli import main
     from vezir.server import queue
-    uuid = queue.create_team("blink", "Blink")
+    uuid = queue.create_team("team-a", "Team A")
 
     runner = CliRunner()
     result = runner.invoke(
-        main, ["team", "rename", "--id", "blink", "--new-slug", "blinkbitcoin"],
+        main, ["team", "rename", "--id", "team-a", "--new-slug", "renamed-team"],
     )
     assert result.exit_code == 0, result.output
-    assert queue.get_team("blinkbitcoin")["id"] == uuid
+    assert queue.get_team("renamed-team")["id"] == uuid

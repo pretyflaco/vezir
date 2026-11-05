@@ -92,7 +92,7 @@ class _Session:
     status = "done"
     github = "alice"
     created_at = "2026-08-15T10:00:00Z"
-    team_id = "blink"
+    team_id = "team-a"
     artifacts = {"summary": "01PULL.summary.md"}
 
 

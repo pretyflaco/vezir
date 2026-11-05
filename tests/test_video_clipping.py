@@ -229,7 +229,7 @@ def test_process_one_clipping_session(tmp_data, monkeypatch):
     sid = "01HZCLIPPROC00000000000A"
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
-    queue.enqueue(sid, github="alice", team_id="blink", video=True,
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True,
                   summary_template="video-clipping")
     # Unnamed speaker: a podcast guest with no voiceprint.
     fake, run = _patch_pipeline(monkeypatch, meet_runner, sid, "SPEAKER_00", "3.5")
@@ -258,7 +258,7 @@ def test_unresolved_speakers_still_gate_other_templates(tmp_data, monkeypatch):
     sid = "01HZCLIPPROC00000000000B"
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.mp4").write_bytes(b"\x00")
-    queue.enqueue(sid, github="alice", team_id="blink", video=True)
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True)
     _patch_pipeline(monkeypatch, meet_runner, sid, "SPEAKER_00")
     worker.process_one(queue.get(sid))
     assert queue.get(sid)["status"] == "needs_labeling"
@@ -269,9 +269,9 @@ def test_reauto_label_does_not_gate_clipping(tmp_data, monkeypatch):
 
     sid = "01HZCLIPPROC00000000000C"
     sdir = _session(tmp_data, sid)
-    queue.enqueue(sid, github="alice", team_id="blink", video=True,
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True,
                   summary_template="video-clipping")
-    _fake_millet(sid, "SPEAKER_00")(sdir, sid, "blink", None)
+    _fake_millet(sid, "SPEAKER_00")(sdir, sid, "team-a", None)
     monkeypatch.setattr(meet_runner, "label_auto", lambda *a, **k: 0)
     monkeypatch.setattr(meet_runner, "cleanup_home_shim", lambda job_id: None)
     assert worker.reauto_label_session(sid, force=True)["status"] == "done"
@@ -283,7 +283,7 @@ def test_retry_summary_enriches_rewritten_clips(tmp_data, monkeypatch):
     sid = "01HZCLIPPROC00000000000D"
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.mp4").write_bytes(b"\x00")
-    queue.enqueue(sid, github="alice", team_id="blink", video=True)
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True)
 
     def fake_apply(sd, job_id, team_id, log_path, **kwargs):
         assert kwargs["summary_template"] == "video-clipping"
@@ -448,7 +448,7 @@ def test_stream_artifact_writes_privately_and_atomically(tmp_path, monkeypatch):
         return real_client(*a, transport=httpx.MockTransport(handler), **k)
 
     monkeypatch.setattr(httpx, "Client", _client)
-    api = VezirClient("https://vezir.example", "vzr_" + "x" * 43, team_id="blink")
+    api = VezirClient("https://vezir.example", "vzr_" + "x" * 43, team_id="team-a")
     target = tmp_path / "victim"
     target.write_bytes(b"keep")
     dest = tmp_path / "out" / "talk.mp4"
@@ -477,7 +477,7 @@ def _audio_only_clipping(tmp_data, monkeypatch, sid, *, template="video-clipping
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.ogg").write_bytes(b"OggS-source")
     (sdir / f"{sid}.part-001.ogg").write_bytes(b"OggS-part")
-    queue.enqueue(sid, github="alice", team_id="blink", summary_template=template)
+    queue.enqueue(sid, github="alice", team_id="team-a", summary_template=template)
     _patch_pipeline(monkeypatch, meet_runner, sid, "SPEAKER_00")
     monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
     worker.process_one(queue.get(sid))
@@ -512,7 +512,7 @@ def test_video_clipping_deletes_derived_audio_keeps_video(tmp_data, monkeypatch)
     sid = "01HZCLIPAUD000000000000C"
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
-    queue.enqueue(sid, github="alice", team_id="blink", video=True,
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True,
                   summary_template="video-clipping")
     _patch_pipeline(monkeypatch, meet_runner, sid, "SPEAKER_00")
     monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
@@ -535,7 +535,7 @@ def test_retry_created_cut_list_keeps_audio_at_finalize(tmp_data, monkeypatch):
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.ogg").write_bytes(b"OggS")
     (sdir / f"{sid}.clips.json").write_text(json.dumps(_clips_doc()))
-    queue.enqueue(sid, github="alice", team_id="blink")  # no template on the row
+    queue.enqueue(sid, github="alice", team_id="team-a")  # no template on the row
     monkeypatch.setenv("VEZIR_DELETE_AUDIO", "1")
     monkeypatch.setattr(worker.meet_runner, "team_has_sync_target", lambda t: False)
     monkeypatch.setattr(worker.meet_runner, "cleanup_home_shim", lambda j: None)
@@ -549,7 +549,7 @@ def test_non_clipping_audio_still_deleted(tmp_data, monkeypatch):
     sid = "01HZCLIPAUD000000000000E"
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.ogg").write_bytes(b"OggS")
-    queue.enqueue(sid, github="alice", team_id="blink")
+    queue.enqueue(sid, github="alice", team_id="team-a")
 
     def fake_transcribe(sd, job_id, team_id, log_path, **kwargs):
         (sd / f"{sid}.json").write_text(json.dumps({
@@ -611,7 +611,7 @@ def _stream_client(monkeypatch, handler):
 
     monkeypatch.setattr(httpx, "Client", _client)
     monkeypatch.setattr(VezirClient, "_RETRY_BACKOFF", (0.0, 0.0))
-    return VezirClient("https://vezir.example", "vzr_" + "a" * 43, team_id="blink")
+    return VezirClient("https://vezir.example", "vzr_" + "a" * 43, team_id="team-a")
 
 
 def _leftovers(d: Path) -> list[str]:

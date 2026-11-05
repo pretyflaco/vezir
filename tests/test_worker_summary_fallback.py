@@ -98,8 +98,8 @@ def test_provenance_lang_suffixed_meta(tmp_path):
 
 
 def test_update_status_summary_fallback_roundtrip(tmp_data):
-    queue.create_team("blink", "Blink (test)")
-    team_id = queue.get_team("blink")["id"]
+    queue.create_team("team-a", "Team A (test)")
+    team_id = queue.get_team("team-a")["id"]
     queue.enqueue("01SIDAAAA", github="alice", team_id=team_id)
 
     queue.update_status("01SIDAAAA", "done", summary_fallback="openai/kimi-k3")
@@ -123,8 +123,8 @@ def test_migrate_0_14_0_idempotent(tmp_data):
     second = migrations.migrate_0_14_0()
     assert second == {"already_applied": True}
     # Column is usable after the migration.
-    queue.create_team("blink", "Blink (test)")
-    team_id = queue.get_team("blink")["id"]
+    queue.create_team("team-a", "Team A (test)")
+    team_id = queue.get_team("team-a")["id"]
     queue.enqueue("01SIDBBBB", github="alice", team_id=team_id)
     queue.update_status(
         "01SIDBBBB", "done", summary_fallback="openai/kimi-k3",
@@ -137,8 +137,8 @@ def test_migrate_0_14_0_idempotent(tmp_data):
 
 def test_pipeline_records_summary_fallback(tmp_data, monkeypatch):
     sid = "01KWFALLBACK0000000000001"
-    queue.create_team("blink", "Blink (test)")
-    team_id = queue.get_team("blink")["id"]
+    queue.create_team("team-a", "Team A (test)")
+    team_id = queue.get_team("team-a")["id"]
     queue.enqueue(sid, github="alice", team_id=team_id, title="fallback demo")
     job = queue.get(sid)
 
@@ -176,8 +176,8 @@ def test_pipeline_records_summary_fallback(tmp_data, monkeypatch):
 
 def test_pipeline_no_fallback_leaves_column_null(tmp_data, monkeypatch):
     sid = "01KWNOFALLBACK000000000001"
-    queue.create_team("blink", "Blink (test)")
-    team_id = queue.get_team("blink")["id"]
+    queue.create_team("team-a", "Team A (test)")
+    team_id = queue.get_team("team-a")["id"]
     queue.enqueue(sid, github="alice", team_id=team_id, title="normal run")
     job = queue.get(sid)
 

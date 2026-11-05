@@ -16,8 +16,8 @@ def tmp_data(monkeypatch):
 
 def test_enqueue_and_claim(tmp_data):
     from vezir.server import queue
-    queue.enqueue("01HZ000000000000000000ABCD", github="alice", title="t1", team_id="blink")
-    queue.enqueue("01HZ000000000000000000ABCE", github="bob", title="t2", team_id="blink")
+    queue.enqueue("01HZ000000000000000000ABCD", github="alice", title="t1", team_id="team-a")
+    queue.enqueue("01HZ000000000000000000ABCE", github="bob", title="t2", team_id="team-a")
 
     job = queue.claim_next()
     assert job is not None
@@ -32,7 +32,7 @@ def test_enqueue_and_claim(tmp_data):
 
 def test_status_transitions(tmp_data):
     from vezir.server import queue
-    queue.enqueue("01HZ0000000000000000000XYZ", github="alice", team_id="blink")
+    queue.enqueue("01HZ0000000000000000000XYZ", github="alice", team_id="team-a")
     queue.update_status("01HZ0000000000000000000XYZ", "needs_labeling",
                         artifacts={"pdf": "x.pdf"})
     row = queue.get("01HZ0000000000000000000XYZ")
@@ -42,7 +42,7 @@ def test_status_transitions(tmp_data):
 
 def test_invalid_status(tmp_data):
     from vezir.server import queue
-    queue.enqueue("01HZ000000000000000000NOPE", github="alice", team_id="blink")
+    queue.enqueue("01HZ000000000000000000NOPE", github="alice", team_id="team-a")
     with pytest.raises(ValueError):
         queue.update_status("01HZ000000000000000000NOPE", "bogus")
 
@@ -50,11 +50,11 @@ def test_invalid_status(tmp_data):
 def test_multi_audio_flag_roundtrips(tmp_data):
     from vezir.server import queue
     queue.enqueue(
-        "01HZ00000000000000MULTI001", github="alice", team_id="blink",
+        "01HZ00000000000000MULTI001", github="alice", team_id="team-a",
         multi_audio=True,
     )
     queue.enqueue(
-        "01HZ00000000000000SINGLE01", github="alice", team_id="blink",
+        "01HZ00000000000000SINGLE01", github="alice", team_id="team-a",
     )
     assert queue.get("01HZ00000000000000MULTI001")["multi_audio"] == 1
     # Default is 0 (single-file / legacy rows).
@@ -65,11 +65,11 @@ def test_video_and_template_roundtrip(tmp_data):
     """v0.18.0 columns: jobs.video + jobs.summary_template."""
     from vezir.server import queue
     queue.enqueue(
-        "01HZ00000000000000VIDEO001", github="alice", team_id="blink",
+        "01HZ00000000000000VIDEO001", github="alice", team_id="team-a",
         video=True, summary_template="iteration-plan",
     )
     queue.enqueue(
-        "01HZ00000000000000AUDIO001", github="alice", team_id="blink",
+        "01HZ00000000000000AUDIO001", github="alice", team_id="team-a",
     )
     row = queue.get("01HZ00000000000000VIDEO001")
     assert row["video"] == 1
@@ -82,13 +82,13 @@ def test_video_and_template_roundtrip(tmp_data):
 def test_summary_template_trimmed_and_bounded(tmp_data):
     from vezir.server import queue
     queue.enqueue(
-        "01HZ00000000000000TMPL0001", github="alice", team_id="blink",
+        "01HZ00000000000000TMPL0001", github="alice", team_id="team-a",
         summary_template="  " + "t" * 100 + "  ",
     )
     stored = queue.get("01HZ00000000000000TMPL0001")["summary_template"]
     assert stored is not None and len(stored) == 64
     queue.enqueue(
-        "01HZ00000000000000TMPL0002", github="alice", team_id="blink",
+        "01HZ00000000000000TMPL0002", github="alice", team_id="team-a",
         summary_template="   ",
     )
     assert queue.get("01HZ00000000000000TMPL0002")["summary_template"] is None
@@ -102,11 +102,11 @@ def test_empty_is_a_valid_status(tmp_data):
 def test_client_agent_roundtrips(tmp_data):
     from vezir.server import queue
     queue.enqueue(
-        "01HZ0000000000000AGENT0001", github="alice", team_id="blink",
+        "01HZ0000000000000AGENT0001", github="alice", team_id="team-a",
         client_agent="vezir-cli/0.11.1",
     )
     queue.enqueue(
-        "01HZ0000000000000AGENT0002", github="alice", team_id="blink",
+        "01HZ0000000000000AGENT0002", github="alice", team_id="team-a",
     )
     assert queue.get("01HZ0000000000000AGENT0001")["client_agent"] == "vezir-cli/0.11.1"
     # Default is NULL (legacy rows / clients that send no User-Agent).
@@ -116,7 +116,7 @@ def test_client_agent_roundtrips(tmp_data):
 def test_client_agent_trimmed(tmp_data):
     from vezir.server import queue
     queue.enqueue(
-        "01HZ0000000000000AGENT0003", github="alice", team_id="blink",
+        "01HZ0000000000000AGENT0003", github="alice", team_id="team-a",
         client_agent="  " + "x" * 300 + "  ",
     )
     stored = queue.get("01HZ0000000000000AGENT0003")["client_agent"]
@@ -127,7 +127,7 @@ def test_connection_pragmas(tmp_data):
     """WAL + busy_timeout + foreign_keys are applied on every connection."""
     from vezir.server import queue
     # Force the DB into existence + a connection through the public path.
-    queue.enqueue("01HZ00000000000000000PRAG", github="alice", team_id="blink")
+    queue.enqueue("01HZ00000000000000000PRAG", github="alice", team_id="team-a")
     with queue._conn() as c:
         assert c.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         # busy_timeout is reported in milliseconds.
@@ -142,8 +142,8 @@ def test_foreign_keys_enforced(tmp_data):
     import sqlite3
 
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01HZ0000000000000000FKJOB", github="alice", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01HZ0000000000000000FKJOB", github="alice", team_id="team-a")
     # Sharing a session with a non-existent team must violate the FK.
     with pytest.raises(sqlite3.IntegrityError):
         with queue._conn() as c:
@@ -158,13 +158,13 @@ def test_concurrent_writers_no_lost_update(tmp_data):
     import threading
 
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
 
     errors: list[Exception] = []
 
     def worker(n: int) -> None:
         try:
-            queue.enqueue(f"01HZ00000000000000CONC{n:04d}", github="alice", team_id="blink")
+            queue.enqueue(f"01HZ00000000000000CONC{n:04d}", github="alice", team_id="team-a")
         except Exception as exc:  # pragma: no cover - failure path
             errors.append(exc)
 
@@ -175,5 +175,5 @@ def test_concurrent_writers_no_lost_update(tmp_data):
         t.join()
 
     assert not errors, f"concurrent enqueue raised: {errors}"
-    rows = queue.list_recent(team_id="blink", limit=100)
+    rows = queue.list_recent(team_id="team-a", limit=100)
     assert len([r for r in rows if r["id"].startswith("01HZ00000000000000CONC")]) == 25

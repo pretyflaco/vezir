@@ -143,8 +143,8 @@ class TestPipelineOrdering:
         """The whole point: the summary must see the frames."""
         from vezir.server import queue
 
-        queue.create_team("blink", "Blink (test)")
-        team_id = queue.get_team("blink")["id"]
+        queue.create_team("team-a", "Team A (test)")
+        team_id = queue.get_team("team-a")["id"]
         job_id = "01SIDDEFER"
         queue.enqueue(
             job_id, github="alice", team_id=team_id,
@@ -154,7 +154,7 @@ class TestPipelineOrdering:
 
         sd = tmp_data / "sessions" / job_id
         sd.mkdir(parents=True, exist_ok=True)
-        (sd / f"{job_id}.txt").write_text("[00:00:01] Kemal: hi")
+        (sd / f"{job_id}.txt").write_text("[00:00:01] Nora: hi")
         (sd / f"{job_id}.json").write_text('{"segments": [], "language": "en"}')
         order: list[str] = []
 
@@ -195,7 +195,7 @@ class TestPipelineOrdering:
 
 # ── retry-summary artifact naming — v0.22.3 ────────────────────────────────
 #
-# Incident 2026-09-17 (session 01M2P6FTRG4WAKKE5T7TV6HNFM): a language
+# a language
 # retry ('en') on an iteration-plan session succeeded in millet — which
 # writes <base>.<template>.<lang>.md — but vezir's belt-and-suspenders
 # check globbed only for .summary.en.md, false-failed the retry, and
@@ -279,8 +279,8 @@ class TestRetrySummaryOnTemplateSession:
     def _setup(self, tmp_data):
         from vezir.server import queue
 
-        queue.create_team("blink", "Blink (test)")
-        team_id = queue.get_team("blink")["id"]
+        queue.create_team("team-a", "Team A (test)")
+        team_id = queue.get_team("team-a")["id"]
         job_id = "01SIDRETRY"
         queue.enqueue(
             job_id, github="alice", team_id=team_id,

@@ -167,10 +167,10 @@ def test_poll_status_sends_team_id_header(monkeypatch):
     monkeypatch.setattr(httpx, "get", fake_get)
 
     status = scribe.poll_status(
-        "http://x", "vzr_tok", "01SESS", timeout=5, team_id="blink",
+        "http://x", "vzr_tok", "01SESS", timeout=5, team_id="team-a",
     )
     assert status == "done"
-    assert captured["headers"].get("X-Team-Id") == "blink"
+    assert captured["headers"].get("X-Team-Id") == "team-a"
     assert captured["headers"].get("Authorization") == "Bearer vzr_tok"
     # trust was resolved (verify passed through, not left to httpx default)
     assert "verify" in captured

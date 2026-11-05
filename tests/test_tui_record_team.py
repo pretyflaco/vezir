@@ -1,7 +1,7 @@
 """Record tab: the destination team belongs to the recording (0.25.0).
 
-Incident 2026-10-02: a meeting recorded under `blink` had to go to
-`twentyone`.  Stop uploaded to the team the recording started in, Escape
+a meeting recorded under `team-a` had to go to
+`team-b`.  Stop uploaded to the team the recording started in, Escape
 on the attachment prompt uploaded too, and switching teams was refused
 while paused.  These tests pin the fix end to end with a fake recorder:
 team selector → journal at start → change while recording → review on Stop
@@ -18,8 +18,8 @@ import httpx
 import pytest
 
 MEMBERSHIPS = [
-    {"team_id": "uuid-blink", "slug": "blink", "role": "member", "team_name": "Blink"},
-    {"team_id": "uuid-21", "slug": "twentyone", "role": "member", "team_name": "21"},
+    {"team_id": "uuid-team-a", "slug": "team-a", "role": "member", "team_name": "Team A"},
+    {"team_id": "uuid-21", "slug": "team-b", "role": "member", "team_name": "21"},
 ]
 
 
@@ -101,7 +101,7 @@ class FakeSession:
 def app(server, monkeypatch, tmp_path):
     monkeypatch.setenv("VEZIR_URL", "http://test")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_" + "x" * 43)
-    monkeypatch.setenv("VEZIR_TEAM_ID", "blink")
+    monkeypatch.setenv("VEZIR_TEAM_ID", "team-a")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "rec"))
@@ -157,8 +157,8 @@ async def _start(app, pilot):
     from textual.widgets import Select
 
     body = _body(app)
-    assert await _wait(pilot, lambda: "twentyone" in body._team_opts)
-    assert body.query_one("#team-select", Select).value == "blink"
+    assert await _wait(pilot, lambda: "team-b" in body._team_opts)
+    assert body.query_one("#team-select", Select).value == "team-a"
     body.action_toggle_record()
     assert await _wait(pilot, lambda: body.is_recording)
     return body
@@ -169,12 +169,12 @@ async def test_selector_defaults_to_active_team_and_follows_idle_switch(app, upl
 
     async with app.run_test(size=(120, 40)) as pilot:
         body = _body(app)
-        await _wait(pilot, lambda: "twentyone" in body._team_opts)
-        assert body.destination_team == "blink"
-        app.switch_to_team("twentyone")
+        await _wait(pilot, lambda: "team-b" in body._team_opts)
+        assert body.destination_team == "team-a"
+        app.switch_to_team("team-b")
         await pilot.pause()
-        assert body.destination_team == "twentyone"
-        assert body.query_one("#team-select", Select).value == "twentyone"
+        assert body.destination_team == "team-b"
+        assert body.query_one("#team-select", Select).value == "team-b"
 
 
 async def test_journal_carries_team_from_start_and_follows_changes(app, uploads, tmp_path):
@@ -184,18 +184,18 @@ async def test_journal_carries_team_from_start_and_follows_changes(app, uploads,
 
     async with app.run_test(size=(120, 40)) as pilot:
         body = await _start(app, pilot)
-        rec_dir = tmp_path / "rec" / "blink" / "meeting-20261002-123316"
+        rec_dir = tmp_path / "rec" / "team-a" / "meeting-20261002-123316"
         assert upload_journal.read(rec_dir) == {
-            **upload_journal.read(rec_dir), "status": "recording", "team_id": "blink",
+            **upload_journal.read(rec_dir), "status": "recording", "team_id": "team-a",
         }
         body.action_toggle_pause()
-        body.query_one("#team-select", Select).value = "twentyone"
+        body.query_one("#team-select", Select).value = "team-b"
         await pilot.pause()
         # Destination is journaled; the folder is NOT moved under a recorder.
-        assert upload_journal.read(rec_dir)["team_id"] == "twentyone"
+        assert upload_journal.read(rec_dir)["team_id"] == "team-b"
         assert rec_dir.is_dir()
         # A crash now would be salvaged to the right team.
-        assert recovery.resolve_team(rec_dir) == "twentyone"
+        assert recovery.resolve_team(rec_dir) == "team-b"
 
 
 async def test_stop_review_upload_moves_folder_and_targets_chosen_team(
@@ -207,26 +207,26 @@ async def test_stop_review_upload_moves_folder_and_targets_chosen_team(
 
     async with app.run_test(size=(120, 40)) as pilot:
         body = await _start(app, pilot)
-        body.query_one("#team-select", Select).value = "twentyone"
+        body.query_one("#team-select", Select).value = "team-b"
         await pilot.pause()
         body.action_toggle_record()  # Stop
         assert await _wait(pilot, lambda: app.screen.__class__.__name__ == "UploadReviewScreen")
         assert await _wait(
-            pilot, lambda: app.screen.query_one("#review-team", Select).value == "twentyone",
+            pilot, lambda: app.screen.query_one("#review-team", Select).value == "team-b",
         )
         await pilot.pause()
         app.screen.action_upload()
         assert await _wait(pilot, lambda: bool(uploads))
         await _wait(pilot, lambda: bool(server["session_headers"]))
 
-    new_dir = tmp_path / "rec" / "twentyone" / "meeting-20261002-123316"
-    assert not (tmp_path / "rec" / "blink" / "meeting-20261002-123316").exists()
-    assert uploads[0]["team_id"] == "twentyone"
+    new_dir = tmp_path / "rec" / "team-b" / "meeting-20261002-123316"
+    assert not (tmp_path / "rec" / "team-a" / "meeting-20261002-123316").exists()
+    assert uploads[0]["team_id"] == "team-b"
     assert uploads[0]["audio_path"].parent == new_dir
     assert upload_journal.read(new_dir)["status"] == "done"
-    assert json.loads((new_dir / "session.json").read_text())["team_id"] == "twentyone"
+    assert json.loads((new_dir / "session.json").read_text())["team_id"] == "team-b"
     # Status polling asks the session's team, not the app-wide active one.
-    assert server["session_headers"][0] == "twentyone"
+    assert server["session_headers"][0] == "team-b"
 
 
 async def test_stop_then_escape_keeps_local_with_attachments(app, uploads, tmp_path):
@@ -243,10 +243,10 @@ async def test_stop_then_escape_keeps_local_with_attachments(app, uploads, tmp_p
         await pilot.pause(0.2)
         assert "kept local" in body.status_text
 
-    rec_dir = tmp_path / "rec" / "blink" / "meeting-20261002-123316"
+    rec_dir = tmp_path / "rec" / "team-a" / "meeting-20261002-123316"
     assert uploads == []
     j = upload_journal.read(rec_dir)
-    assert j["status"] == "held" and j["team_id"] == "blink"
+    assert j["status"] == "held" and j["team_id"] == "team-a"
     assert j["pending_attachments"] is True
     assert (rec_dir / "attachments" / "slides.pdf").exists()
     assert not list(staging.iterdir())  # won't ride along with the next meeting
@@ -257,10 +257,10 @@ async def test_stop_then_escape_keeps_local_with_attachments(app, uploads, tmp_p
 async def test_global_switch_allowed_while_recording_keeps_destination(app, uploads):
     async with app.run_test(size=(120, 40)) as pilot:
         body = await _start(app, pilot)
-        assert app.switch_to_team("twentyone") is True
+        assert app.switch_to_team("team-b") is True
         await pilot.pause()
-        assert app.active_team_id == "twentyone"
-        assert body.destination_team == "blink"  # the recording keeps its team
+        assert app.active_team_id == "team-b"
+        assert body.destination_team == "team-a"  # the recording keeps its team
 
 
 async def test_crash_during_review_is_pending(app, uploads, tmp_path):
@@ -271,5 +271,5 @@ async def test_crash_during_review_is_pending(app, uploads, tmp_path):
         body = await _start(app, pilot)
         body.action_toggle_record()
         assert await _wait(pilot, lambda: app.screen.__class__.__name__ == "UploadReviewScreen")
-        rec_dir = tmp_path / "rec" / "blink" / "meeting-20261002-123316"
+        rec_dir = tmp_path / "rec" / "team-a" / "meeting-20261002-123316"
         assert upload_journal.read(rec_dir)["status"] == "pending"

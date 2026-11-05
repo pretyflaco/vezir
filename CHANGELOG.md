@@ -3,6 +3,27 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased — fresh installs seed no teams; neutral test fixtures
+
+* **Migrations `0.6.0-multi-team` / `0.6.2-per-team-voiceprints` no longer
+  seed built-in teams.**  They created two named teams, routed one handle's
+  jobs and tokens to the second, revoked another handle's unlabeled tokens
+  and seeded rosters and empty voiceprint DBs — on every fresh install,
+  including everyone else's.  Now:
+  * a fresh data dir gets nothing; create teams with `vezir team create`;
+  * pre-0.6.0 single-team data (team-less jobs and tokens, `team.json`, a
+    central `speaker_profiles.json`) moves into one team, slug `default`
+    (`migrations.LEGACY_TEAM_SLUG`), created only when such data exists;
+    smoke-test jobs are still deleted;
+  * a data dir where these migrations already ran is not touched (they are
+    recorded in `schema_migrations`), so existing servers see no change.
+* Tests use neutral fixtures: `team-a`…`team-e`, made-up handles and names,
+  synthetic session ids.  `tests/conftest.py` gains `create_test_teams()`
+  for app-level tests, since fresh test data dirs now have no teams.
+  New `tests/test_migrations_legacy.py`: fresh install, single-team data,
+  voiceprint-only data, and an already-migrated data dir left byte-for-byte
+  unchanged.
+
 ## Unreleased — no deployment- or organization-specific references
 
 * **LICENSE:** the copyright holder is corrected to `twentyone.ist`, the

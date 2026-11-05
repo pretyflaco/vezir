@@ -528,7 +528,7 @@ def test_amber_non_echoed_id_and_no_get_pubkey():
 
 def test_get_public_key_used_for_user_pubkey():
     """After connect, the client resolves the user pubkey via
-    get_public_key (the proven blink flow), not by waiting for a signed
+    get_public_key (the proven flow), not by waiting for a signed
     event.  FakeSigner's user key == signer key, so they match here, but
     the point is wait_for_connection returns BEFORE any sign_event."""
     signer = FakeSigner()
