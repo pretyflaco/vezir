@@ -72,9 +72,9 @@ def test_c1_teams_json_wins_over_client(monkeypatch, tmp_data):
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     _write_json(teams_config_path(), {
-        "teams": [{"id": "blink", "url": "https://teams.example",
+        "teams": [{"id": "team-a", "url": "https://teams.example",
                    "token": "vzr_teams12345678901234567890123456789012"}],
-        "active": "blink",
+        "active": "team-a",
     })
     _write_json(client_config_path(), {
         "url": "https://client.example",
@@ -94,9 +94,9 @@ def test_c1_url_disagreement_env_vs_teams(monkeypatch, tmp_data):
     monkeypatch.setenv("VEZIR_URL", "https://env.example")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_env12345678901234567890123456789012x")
     _write_json(teams_config_path(), {
-        "teams": [{"id": "blink", "url": "https://different.example",
+        "teams": [{"id": "team-a", "url": "https://different.example",
                    "token": "vzr_teams12345678901234567890123456789012"}],
-        "active": "blink",
+        "active": "team-a",
     })
     r = _Results()
     _check_credential_resolution(r)
@@ -121,7 +121,7 @@ def test_c3_teams_json_orphaned_active(monkeypatch, tmp_data):
     from vezir.doctor import _check_teams_json_schema, _Results
 
     _write_json(teams_config_path(), {
-        "teams": [{"id": "blink", "url": "u", "token": "t"}],
+        "teams": [{"id": "team-a", "url": "u", "token": "t"}],
         "active": "ghost",
     })
     r = _Results()
@@ -218,19 +218,19 @@ def test_c9_slug_configured_matches_uuid_membership(tmp_data):
     """
     from vezir.doctor import _check_token_membership, _Results
 
-    mems = [_uuid_membership("blink", "5e0d4eecd0e24b2a8dbc517adb486199")]
+    mems = [_uuid_membership("team-a", "aaaa1111aaaa4aaa8aaa111111111111")]
     r = _Results()
-    _check_token_membership(r, "blink", mems, github="pretyflaco", role="admin")
+    _check_token_membership(r, "team-a", mems, github="judy", role="admin")
     assert all(sev != "ERROR" for sev, _ in r.rows)
     # Summary shows the slug, not the raw UUID.
-    assert any("blink(admin)" in msg for _, msg in r.rows)
+    assert any("team-a(admin)" in msg for _, msg in r.rows)
 
 
 def test_c9_uuid_configured_matches_uuid_membership(tmp_data):
     from vezir.doctor import _check_token_membership, _Results
 
-    uuid = "5e0d4eecd0e24b2a8dbc517adb486199"
-    mems = [_uuid_membership("blink", uuid)]
+    uuid = "aaaa1111aaaa4aaa8aaa111111111111"
+    mems = [_uuid_membership("team-a", uuid)]
     r = _Results()
     _check_token_membership(r, uuid, mems)
     assert all(sev != "ERROR" for sev, _ in r.rows)
@@ -239,7 +239,7 @@ def test_c9_uuid_configured_matches_uuid_membership(tmp_data):
 def test_c9_genuinely_missing_team_still_errors(tmp_data):
     from vezir.doctor import _check_token_membership, _Results
 
-    mems = [_uuid_membership("blink", "5e0d4eecd0e24b2a8dbc517adb486199")]
+    mems = [_uuid_membership("team-a", "aaaa1111aaaa4aaa8aaa111111111111")]
     r = _Results()
     _check_token_membership(r, "startups", mems)
     assert any(sev == "ERROR" and "not in this token" in msg
@@ -528,7 +528,7 @@ def test_s7_stale_job_detected(monkeypatch, tmp_data):
     )
     conn.execute(
         "INSERT INTO jobs VALUES (?, ?, ?, ?, ?)",
-        ("STALE01", "transcribing", old_ts, "alice", "blink"),
+        ("STALE01", "transcribing", old_ts, "alice", "team-a"),
     )
     conn.commit()
     conn.close()
@@ -555,7 +555,7 @@ def test_s7_no_stale_jobs(monkeypatch, tmp_data):
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     conn.execute(
         "INSERT INTO jobs VALUES (?, ?, ?, ?, ?)",
-        ("FRESH01", "transcribing", now, "alice", "blink"),
+        ("FRESH01", "transcribing", now, "alice", "team-a"),
     )
     conn.commit()
     conn.close()

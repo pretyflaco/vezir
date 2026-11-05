@@ -501,7 +501,7 @@ def _find_artifacts(session_dir: Path) -> dict:
             out[f"summary_{lang}"] = p.name
     # Template summaries (v0.18.0, e.g. millet --summary-template
     # iteration-plan): <base>.<template>.md, and with a language override
-    # <base>.<template>.<lang>.md (incident 2026-09-17: the language-qualified
+    # <base>.<template>.<lang>.md (the language-qualified
     # name was invisible to the artifact map, so the summary existed on disk
     # but the TUI/pull never listed it).  Template names are shape-validated,
     # not membership-checked, so discover generically: any top-level .md that
@@ -1593,7 +1593,7 @@ def retry_summary_for_session(
             # appeared.  millet names it by run shape — a template session
             # writes <base>.<template>[.<lang>].md, never .summary.*.md —
             # so the template picks the family and the language only
-            # qualifies it.  (Incident 2026-09-17: an 'en' retry on an
+            # qualifies it.  (An 'en' retry on an
             # iteration-plan session false-failed globbing for
             # .summary.en.md while millet had actually succeeded.)
             elif language_override or requested_template or requested_preset:

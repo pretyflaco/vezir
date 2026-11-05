@@ -668,7 +668,7 @@ def move_session(
 ):
     """Move a session to another team the caller belongs to.
 
-    Incident 2026-10-02: a meeting recorded under the wrong team could only
+    A meeting recorded under the wrong team could only
     be moved by the server admin (`vezir session move`, a DB-level CLI).
     Now its uploader can.  Authorization mirrors delete/retitle — admin OR
     original uploader (cross-team / someone else's personal → 404, other

@@ -28,7 +28,7 @@ def mock_server(monkeypatch):
                 "github": "tester", "is_admin": False,
                 "memberships": [
                     {"team_id": "u1", "slug": "startups", "role": "member"},
-                    {"team_id": "u2", "slug": "twentyone", "role": "member"},
+                    {"team_id": "u2", "slug": "team-b", "role": "member"},
                 ],
                 "alternate_urls": [],
             })
@@ -66,7 +66,7 @@ def _make_interrupted(home: Path, team: str = "startups") -> Path:
     d = home / "vezir-meetings" / team / "meeting-20260928-135948"
     d.mkdir(parents=True)
     (d / "meeting-20260928-135948.chunk-000.wav").write_bytes(b"\x00" * 2048)
-    (home / "vezir-meetings" / "twentyone").mkdir(exist_ok=True)
+    (home / "vezir-meetings" / "team-b").mkdir(exist_ok=True)
     return d
 
 
@@ -122,7 +122,7 @@ async def test_held_recordings_do_not_nag_at_launch(app, tmp_path):
 
 
 async def test_outbox_upload_to_other_team(app, tmp_path, monkeypatch):
-    """u → review (pick twentyone) → salvage gets the chosen team + options."""
+    """u → review (pick team-b) → salvage gets the chosen team + options."""
     from textual.widgets import Select
 
     _make_interrupted(tmp_path)
@@ -138,13 +138,13 @@ async def test_outbox_upload_to_other_team(app, tmp_path, monkeypatch):
         assert await _wait(pilot, lambda: bool(body._recs) and bool(app.memberships))
         body.action_upload()
         assert await _wait(pilot, lambda: app.screen.__class__.__name__ == "UploadReviewScreen")
-        app.screen.query_one("#review-team", Select).value = "twentyone"
+        app.screen.query_one("#review-team", Select).value = "team-b"
         await pilot.pause()
         app.screen.query_one("#review-sync").press()
         await pilot.pause()
         app.screen.action_upload()
         assert await _wait(pilot, lambda: bool(sent))
-    assert sent["team"] == "twentyone"
+    assert sent["team"] == "team-b"
     assert sent["sync"] is False
     assert sent["kind"] == "interrupted"  # chunks get stitched
 
@@ -157,18 +157,18 @@ async def test_outbox_move_hold_discard(app, tmp_path):
         body = _outbox(app)
         assert await _wait(pilot, lambda: bool(body._recs) and bool(app.memberships))
 
-        # t → pick twentyone → folder moves.
+        # t → pick team-b → folder moves.
         body.action_move_team()
         assert await _wait(pilot, lambda: app.screen.__class__.__name__ == "TeamPickScreen")
         from textual.widgets import OptionList
 
         lst = app.screen.query_one("#team-pick-list", OptionList)
         ids = [lst.get_option_at_index(i).id for i in range(lst.option_count)]
-        lst.highlighted = ids.index("twentyone")
+        lst.highlighted = ids.index("team-b")
         await pilot.press("enter")
-        moved = tmp_path / "vezir-meetings" / "twentyone" / d.name
+        moved = tmp_path / "vezir-meetings" / "team-b" / d.name
         assert await _wait(pilot, lambda: moved.is_dir())
-        assert await _wait(pilot, lambda: body._recs and body._recs[0].team == "twentyone")
+        assert await _wait(pilot, lambda: body._recs and body._recs[0].team == "team-b")
 
         # h → held; no longer offered at launch.
         body.action_hold()
@@ -180,7 +180,7 @@ async def test_outbox_move_hold_discard(app, tmp_path):
         assert await _wait(pilot, lambda: app.screen.__class__.__name__ == "ConfirmScreen")
         app.screen.query_one("#confirm-yes").press()
         assert await _wait(pilot, lambda: not moved.exists())
-        assert (tmp_path / "vezir-meetings" / ".trash" / "twentyone" / d.name).is_dir()
+        assert (tmp_path / "vezir-meetings" / ".trash" / "team-b" / d.name).is_dir()
 
 
 async def test_outbox_discard_defaults_to_no(app, tmp_path):
@@ -212,12 +212,12 @@ async def test_stray_session_folder_is_not_a_team(app, tmp_path):
     async with app.run_test(size=(120, 40)) as pilot:
         assert await _wait(pilot, lambda: bool(app.memberships))
         choices = team_choices(app)
-        assert choices == ["startups", "twentyone"]  # not oldteam, not the stray
+        assert choices == ["startups", "team-b"]  # not oldteam, not the stray
         from textual.widgets import Select
 
         from vezir.client.tui.record_screen import RecordBody
         body = app.screen_stack[1].query_one(RecordBody)
         sel = body.query_one("#team-select", Select)
-        await _wait(pilot, lambda: body._team_opts == ["startups", "twentyone"])
+        await _wait(pilot, lambda: body._team_opts == ["startups", "team-b"])
         labels = [str(o[0]) for o in sel._options]
         assert not any("meeting-" in lbl or lbl == "team" for lbl in labels)

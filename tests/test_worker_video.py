@@ -409,7 +409,7 @@ def test_process_one_video_pipeline(tmp_data, monkeypatch):
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
 
-    queue.enqueue(sid, github="alice", team_id="blink", video=True,
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True,
                   summary_template="iteration-plan")
 
     calls: list[str] = []
@@ -464,7 +464,7 @@ def test_process_one_video_extraction_failure_errors_job(tmp_data, monkeypatch):
     sdir = _session(tmp_data, sid)
     (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
 
-    queue.enqueue(sid, github="alice", team_id="blink", video=True)
+    queue.enqueue(sid, github="alice", team_id="team-a", video=True)
 
     def _run(cmd, stdout=None, stderr=None):
         class _R:

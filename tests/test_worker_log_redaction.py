@@ -26,7 +26,7 @@ def test_pat_in_url_is_redacted(tmp_log):
     tmp_log.write_text(
         "cloning...\n"
         "fatal: unable to access "
-        "'https://ghp_SECRETTOKEN1234@github.com/blink/team.git': "
+        "'https://ghp_SECRETTOKEN1234@github.com/team-a/team.git': "
         "The requested URL returned error: 403\n"
     )
     tail = worker._last_log_lines(tmp_log)
@@ -51,8 +51,8 @@ def test_plain_url_without_credentials_is_untouched(tmp_log):
     from vezir.server import worker
 
     tmp_log.write_text(
-        "fatal: unable to access 'https://github.com/blink/team.git'\n"
+        "fatal: unable to access 'https://github.com/team-a/team.git'\n"
     )
     tail = worker._last_log_lines(tmp_log)
-    assert "https://github.com/blink/team.git" in tail
+    assert "https://github.com/team-a/team.git" in tail
     assert "***" not in tail

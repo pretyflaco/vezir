@@ -40,11 +40,11 @@ def test_full_lifecycle_pending_uploading_done(tmp_path):
     upload_journal.mark_pending(d, title=None, team_id="startups")
     upload_journal.mark_uploading(d)
     assert upload_journal.read(d)["status"] == "uploading"
-    upload_journal.mark_done(d, "01M3M05SG4ZQ373YK9R763MFCX")
+    upload_journal.mark_done(d, "01JCXBXYKTHAMQ461XX4T02F1X")
 
     state = upload_journal.read(d)
     assert state["status"] == "done"
-    assert state["session_id"] == "01M3M05SG4ZQ373YK9R763MFCX"
+    assert state["session_id"] == "01JCXBXYKTHAMQ461XX4T02F1X"
     assert "error" not in state
 
 

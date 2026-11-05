@@ -82,10 +82,10 @@ def _attach(client, token, team, sid, files):
 
 def test_upload_list_download_round_trip(client_factory, tmp_data):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
-    resp = _attach(client, tok, "blink", sid, [
+    resp = _attach(client, tok, "team-a", sid, [
         ("files", ("slides.pdf", b"%PDF-1.4 deck", "application/pdf")),
         ("files", ("board.png", b"\x89PNG shot", "image/png")),
     ])
@@ -94,7 +94,7 @@ def test_upload_list_download_round_trip(client_factory, tmp_data):
     assert names == ["slides.pdf", "board.png"]
 
     listed = client.get(
-        f"/api/sessions/{sid}/attachments", headers=_headers(tok, "blink")
+        f"/api/sessions/{sid}/attachments", headers=_headers(tok, "team-a")
     )
     assert listed.status_code == 200
     by_name = {a["name"]: a for a in listed.json()["attachments"]}
@@ -104,7 +104,7 @@ def test_upload_list_download_round_trip(client_factory, tmp_data):
 
     got = client.get(
         f"/api/sessions/{sid}/attachments/slides.pdf",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
     )
     assert got.status_code == 200
     assert got.content == b"%PDF-1.4 deck"
@@ -117,9 +117,9 @@ def test_stored_in_the_directory_millet_sync_pushes_from(client_factory, tmp_dat
     from millet import sync as millet_sync
 
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
-    _attach(client, tok, "blink", sid, [
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
+    _attach(client, tok, "team-a", sid, [
         ("files", ("agenda.md", b"# agenda", "text/markdown")),
     ])
 
@@ -133,9 +133,9 @@ def test_stored_in_the_directory_millet_sync_pushes_from(client_factory, tmp_dat
 
 def test_stored_attachment_is_private(client_factory, tmp_data):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
-    _attach(client, tok, "blink", sid, [("files", ("a.txt", b"x", "text/plain"))])
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
+    _attach(client, tok, "team-a", sid, [("files", ("a.txt", b"x", "text/plain"))])
 
     stored = tmp_data / "sessions" / sid / "attachments" / "a.txt"
     assert stored.stat().st_mode & 0o077 == 0
@@ -143,11 +143,11 @@ def test_stored_attachment_is_private(client_factory, tmp_data):
 
 def test_list_is_empty_for_session_without_attachments(client_factory):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
     resp = client.get(
-        f"/api/sessions/{sid}/attachments", headers=_headers(tok, "blink")
+        f"/api/sessions/{sid}/attachments", headers=_headers(tok, "team-a")
     )
     assert resp.status_code == 200
     assert resp.json()["attachments"] == []
@@ -158,14 +158,14 @@ def test_list_is_empty_for_session_without_attachments(client_factory):
 
 def test_cross_team_upload_and_read_are_404(client_factory):
     client = client_factory()
-    alice = _issue_for("alice", "blink")
-    sid = _upload_session(client, alice, "blink")
-    _attach(client, alice, "blink", sid, [("files", ("a.txt", b"x", "text/plain"))])
+    alice = _issue_for("alice", "team-a")
+    sid = _upload_session(client, alice, "team-a")
+    _attach(client, alice, "team-a", sid, [("files", ("a.txt", b"x", "text/plain"))])
 
-    mallory = _issue_for("mallory", "twentyone")
-    hdr = _headers(mallory, "twentyone")
+    mallory = _issue_for("mallory", "team-b")
+    hdr = _headers(mallory, "team-b")
     assert _attach(
-        client, mallory, "twentyone", sid, [("files", ("b.txt", b"y", "text/plain"))]
+        client, mallory, "team-b", sid, [("files", ("b.txt", b"y", "text/plain"))]
     ).status_code == 404
     assert client.get(f"/api/sessions/{sid}/attachments", headers=hdr).status_code == 404
     assert client.get(
@@ -175,12 +175,12 @@ def test_cross_team_upload_and_read_are_404(client_factory):
 
 def test_personal_session_hidden_from_same_team_member(client_factory):
     client = client_factory()
-    alice = _issue_for("alice", "blink")
-    sid = _upload_session(client, alice, "blink", personal=True)
-    _attach(client, alice, "blink", sid, [("files", ("a.txt", b"x", "text/plain"))])
+    alice = _issue_for("alice", "team-a")
+    sid = _upload_session(client, alice, "team-a", personal=True)
+    _attach(client, alice, "team-a", sid, [("files", ("a.txt", b"x", "text/plain"))])
 
-    bob = _issue_for("bob", "blink")
-    hdr = _headers(bob, "blink")
+    bob = _issue_for("bob", "team-a")
+    hdr = _headers(bob, "team-a")
     assert client.get(f"/api/sessions/{sid}/attachments", headers=hdr).status_code == 404
     assert client.get(
         f"/api/sessions/{sid}/attachments/a.txt", headers=hdr
@@ -189,18 +189,18 @@ def test_personal_session_hidden_from_same_team_member(client_factory):
 
 def test_unknown_session_is_404(client_factory):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
+    tok = _issue_for("alice", "team-a")
     resp = client.get(
         "/api/sessions/01NOPENOPENOPENOPENOPENOPE/attachments",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
     )
     assert resp.status_code == 404
 
 
 def test_requires_auth(client_factory):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
     assert client.get(f"/api/sessions/{sid}/attachments").status_code in (401, 403)
 
 
@@ -209,10 +209,10 @@ def test_requires_auth(client_factory):
 
 def test_traversal_and_control_chars_are_flattened(client_factory, tmp_data):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
-    resp = _attach(client, tok, "blink", sid, [
+    resp = _attach(client, tok, "team-a", sid, [
         ("files", ("../../../etc/passwd", b"root:x", "text/plain")),
         ("files", ("C:\\Users\\bob\\deck.pptx", b"deck", None)),
     ])
@@ -258,54 +258,54 @@ def test_long_name_is_capped_but_keeps_extension(client_factory):
 
 def test_download_rejects_traversal_name(client_factory):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
-    _attach(client, tok, "blink", sid, [("files", ("a.txt", b"x", "text/plain"))])
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
+    _attach(client, tok, "team-a", sid, [("files", ("a.txt", b"x", "text/plain"))])
 
     resp = client.get(
         f"/api/sessions/{sid}/attachments/..%2F..%2Fteam.json",
-        headers=_headers(tok, "blink"),
+        headers=_headers(tok, "team-a"),
     )
     assert resp.status_code in (400, 404)
 
 
 def test_download_does_not_follow_symlink(client_factory, tmp_data):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
-    _attach(client, tok, "blink", sid, [("files", ("a.txt", b"x", "text/plain"))])
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
+    _attach(client, tok, "team-a", sid, [("files", ("a.txt", b"x", "text/plain"))])
 
     secret = tmp_data / "secret.txt"
     secret.write_text("token")
     (tmp_data / "sessions" / sid / "attachments" / "link.txt").symlink_to(secret)
 
     resp = client.get(
-        f"/api/sessions/{sid}/attachments/link.txt", headers=_headers(tok, "blink")
+        f"/api/sessions/{sid}/attachments/link.txt", headers=_headers(tok, "team-a")
     )
     assert resp.status_code == 404
     # …and it is not listed either.
     listed = client.get(
-        f"/api/sessions/{sid}/attachments", headers=_headers(tok, "blink")
+        f"/api/sessions/{sid}/attachments", headers=_headers(tok, "team-a")
     )
     assert [a["name"] for a in listed.json()["attachments"]] == ["a.txt"]
 
 
 def test_same_name_twice_does_not_clobber(client_factory):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
-    _attach(client, tok, "blink", sid, [("files", ("shot.png", b"first", "image/png"))])
+    _attach(client, tok, "team-a", sid, [("files", ("shot.png", b"first", "image/png"))])
     resp = _attach(
-        client, tok, "blink", sid, [("files", ("shot.png", b"second", "image/png"))]
+        client, tok, "team-a", sid, [("files", ("shot.png", b"second", "image/png"))]
     )
     assert resp.json()["attachments"][0]["name"] == "shot_2.png"
 
     first = client.get(
-        f"/api/sessions/{sid}/attachments/shot.png", headers=_headers(tok, "blink")
+        f"/api/sessions/{sid}/attachments/shot.png", headers=_headers(tok, "team-a")
     )
     second = client.get(
-        f"/api/sessions/{sid}/attachments/shot_2.png", headers=_headers(tok, "blink")
+        f"/api/sessions/{sid}/attachments/shot_2.png", headers=_headers(tok, "team-a")
     )
     assert first.content == b"first"
     assert second.content == b"second"
@@ -317,10 +317,10 @@ def test_same_name_twice_does_not_clobber(client_factory):
 def test_count_cap_rejects_and_stores_nothing(client_factory, monkeypatch, tmp_data):
     monkeypatch.setenv("VEZIR_MAX_ATTACHMENTS", "2")
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
-    resp = _attach(client, tok, "blink", sid, [
+    resp = _attach(client, tok, "team-a", sid, [
         ("files", (f"f{i}.txt", b"x", "text/plain")) for i in range(3)
     ])
     assert resp.status_code == 413
@@ -330,25 +330,25 @@ def test_count_cap_rejects_and_stores_nothing(client_factory, monkeypatch, tmp_d
 def test_count_cap_counts_already_stored_files(client_factory, monkeypatch):
     monkeypatch.setenv("VEZIR_MAX_ATTACHMENTS", "2")
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
-    assert _attach(client, tok, "blink", sid, [
+    assert _attach(client, tok, "team-a", sid, [
         ("files", ("a.txt", b"x", "text/plain")),
         ("files", ("b.txt", b"x", "text/plain")),
     ]).status_code == 200
     assert _attach(
-        client, tok, "blink", sid, [("files", ("c.txt", b"x", "text/plain"))]
+        client, tok, "team-a", sid, [("files", ("c.txt", b"x", "text/plain"))]
     ).status_code == 413
 
 
 def test_total_byte_cap_cleans_up_partial_writes(client_factory, monkeypatch, tmp_data):
     monkeypatch.setenv("VEZIR_MAX_ATTACHMENT_BYTES", "64")
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
 
-    resp = _attach(client, tok, "blink", sid, [
+    resp = _attach(client, tok, "team-a", sid, [
         ("files", ("small.txt", b"x" * 32, "text/plain")),
         ("files", ("big.txt", b"x" * 128, "text/plain")),
     ])
@@ -360,13 +360,13 @@ def test_total_byte_cap_cleans_up_partial_writes(client_factory, monkeypatch, tm
 
 def test_per_file_cap_is_max_upload_bytes(client_factory, monkeypatch, tmp_data):
     client = client_factory()
-    tok = _issue_for("alice", "blink")
-    sid = _upload_session(client, tok, "blink")
+    tok = _issue_for("alice", "team-a")
+    sid = _upload_session(client, tok, "team-a")
     # Set the cap only after the audio upload, which it would otherwise reject.
     monkeypatch.setenv("VEZIR_MAX_UPLOAD_BYTES", "16")
 
     resp = _attach(
-        client, tok, "blink", sid, [("files", ("big.txt", b"x" * 64, "text/plain"))]
+        client, tok, "team-a", sid, [("files", ("big.txt", b"x" * 64, "text/plain"))]
     )
     assert resp.status_code == 413
     adir = tmp_data / "sessions" / sid / "attachments"

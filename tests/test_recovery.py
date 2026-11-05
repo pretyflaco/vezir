@@ -282,15 +282,15 @@ def test_recordings_roots_enumerates_disk(monkeypatch, tmp_path):
 
 
 def test_resolve_team_precedence(tmp_path):
-    d = tmp_path / "blink" / "meeting-20261002-123316"
+    d = tmp_path / "team-a" / "meeting-20261002-123316"
     d.mkdir(parents=True)
-    assert recovery.resolve_team(d) == "blink"  # folder
+    assert recovery.resolve_team(d) == "team-a"  # folder
     (d / "meeting-20261002-123316.session.json").write_text(
-        json.dumps({"vezir_team": "twentyone"})
+        json.dumps({"vezir_team": "team-b"})
     )
-    assert recovery.resolve_team(d, "blink") == "twentyone"  # meta beats folder
+    assert recovery.resolve_team(d, "team-a") == "team-b"  # meta beats folder
     upload_journal.mark_pending(d, title=None, team_id="startups")
-    assert recovery.resolve_team(d, "blink") == "startups"  # journal beats meta
+    assert recovery.resolve_team(d, "team-a") == "startups"  # journal beats meta
 
 
 def _stub_uploader(monkeypatch, sent):
@@ -308,47 +308,47 @@ def _stub_uploader(monkeypatch, sent):
 def test_salvage_pending_upload_to_other_team(monkeypatch, tmp_path):
     """Changing the team moves the folder AND re-roots the audio path."""
     base = tmp_path / "rec"
-    src = base / "blink" / "meeting-1"
+    src = base / "team-a" / "meeting-1"
     src.mkdir(parents=True)
     (src / "meeting-1.ogg").write_bytes(b"OggS")
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(base))
     sent: dict = {}
     _stub_uploader(monkeypatch, sent)
     rec = recovery.RecoverableSession(
-        session_dir=src, team_id="blink", kind="pending_upload", started_at=None,
+        session_dir=src, team_id="team-a", kind="pending_upload", started_at=None,
         total_bytes=4, recorder_pid=None, audio_path=src / "meeting-1.ogg",
         title_hint=None, detail="",
     )
     statuses: list = []
     sid = recovery.salvage(
-        rec, server_url="https://srv", token="t", team="twentyone",
+        rec, server_url="https://srv", token="t", team="team-b",
         auto_label=False, sync=True, personal=True, on_status=statuses.append,
     )
-    dest = base / "twentyone" / "meeting-1"
+    dest = base / "team-b" / "meeting-1"
     assert sid == "01S"
     assert sent["audio_path"] == dest / "meeting-1.ogg"
-    assert sent["team_id"] == "twentyone"
+    assert sent["team_id"] == "team-b"
     assert sent["auto_label"] is False
     assert sent["sync"] is False  # personal forces it off
     assert any("moving" in s for s in statuses)
     assert upload_journal.read(dest)["status"] == "done"
-    assert json.loads((dest / "session.json").read_text())["team_id"] == "twentyone"
+    assert json.loads((dest / "session.json").read_text())["team_id"] == "team-b"
 
 
 def test_salvage_refuses_move_before_stopping_orphan(monkeypatch, tmp_path):
     """An orphan that won't die must not have its folder moved under it."""
     base = tmp_path / "rec"
-    src = base / "blink" / "meeting-1"
+    src = base / "team-a" / "meeting-1"
     src.mkdir(parents=True)
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(base))
     monkeypatch.setattr(recovery, "stop_orphaned", lambda rec: False)
     rec = recovery.RecoverableSession(
-        session_dir=src, team_id="blink", kind="orphaned", started_at=None,
+        session_dir=src, team_id="team-a", kind="orphaned", started_at=None,
         total_bytes=0, recorder_pid=12345, audio_path=None,
         title_hint=None, detail="",
     )
     with pytest.raises(RuntimeError, match="did not exit"):
-        recovery.salvage(rec, server_url="https://srv", token="t", team="twentyone")
+        recovery.salvage(rec, server_url="https://srv", token="t", team="team-b")
     assert src.exists()
 
 

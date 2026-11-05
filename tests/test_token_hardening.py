@@ -47,7 +47,7 @@ def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _team_headers(token: str, team: str = "blink") -> dict:
+def _team_headers(token: str, team: str = "team-a") -> dict:
     return {
         "Authorization": f"Bearer {token}",
         "X-Team-Id": team,
@@ -254,7 +254,7 @@ def test_api_sessions_rejects_non_member(client_factory):
     access control."""
     from vezir.server import auth
     client = client_factory()
-    tok = auth.issue("alice")  # the conftest shim memberships alice into 'blink'
+    tok = auth.issue("alice")  # the conftest shim memberships alice into 'team-a'
     resp = client.get(
         "/api/sessions",
         headers={
@@ -268,7 +268,7 @@ def test_api_sessions_rejects_non_member(client_factory):
 def test_api_sessions_accepts_member(client_factory):
     from vezir.server import auth
     client = client_factory()
-    tok = auth.issue("alice")  # auto-memberships into 'blink'
+    tok = auth.issue("alice")  # auto-memberships into 'team-a'
     resp = client.get("/api/sessions", headers=_team_headers(tok))
     assert resp.status_code == 200
     assert "sessions" in resp.json()
@@ -311,9 +311,9 @@ def test_upload_rate_limit_per_token(client_factory, ratelimit_enabled, tmp_data
             break
     assert saw_429
 
-    # Bob still has a fresh bucket.  bob also needs membership in blink.
+    # Bob still has a fresh bucket.  bob also needs membership in team-a.
     from vezir.server import queue
-    queue.add_membership("bob", "blink", role="scribe")
+    queue.add_membership("bob", "team-a", role="scribe")
     resp = client.post(
         "/upload",
         headers=_team_headers(tok_b),

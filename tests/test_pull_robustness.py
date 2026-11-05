@@ -40,7 +40,7 @@ def test_download_retries_transient_errors(monkeypatch):
         return orig(*args, **kwargs)
 
     monkeypatch.setattr(api_mod.httpx, "Client", factory)
-    client = VezirClient("https://test", "vzr_tok", team_id="blink")
+    client = VezirClient("https://test", "vzr_tok", team_id="team-a")
     result = client.download_artifact("01X", "x.pdf")
     assert result.is_ok()
     assert result.ok == b"pdf-bytes"
@@ -66,7 +66,7 @@ def test_download_gives_up_after_retries(monkeypatch):
         return orig(*args, **kwargs)
 
     monkeypatch.setattr(api_mod.httpx, "Client", factory)
-    client = VezirClient("https://test", "vzr_tok", team_id="blink")
+    client = VezirClient("https://test", "vzr_tok", team_id="team-a")
     result = client.download_artifact("01X", "x.pdf")
     assert not result.is_ok()
     # 1 initial + 3 backoff retries.
@@ -93,7 +93,7 @@ def test_http_errors_are_not_retried(monkeypatch):
         return orig(*args, **kwargs)
 
     monkeypatch.setattr(api_mod.httpx, "Client", factory)
-    client = VezirClient("https://test", "vzr_tok", team_id="blink")
+    client = VezirClient("https://test", "vzr_tok", team_id="team-a")
     result = client.download_artifact("01X", "x.pdf")
     assert not result.is_ok()
     assert calls["n"] == 1
@@ -119,7 +119,7 @@ def test_pull_tops_up_missing_artifacts(tmp_path, monkeypatch):
     from vezir.client import pull as pull_mod
     from vezir.client.artifacts import _friendly_name
 
-    team_dir = tmp_path / "blink"
+    team_dir = tmp_path / "team-a"
     rec = team_dir / "meeting-20260605-123757_WEEKLY"
     rec.mkdir(parents=True)
 
@@ -129,7 +129,7 @@ def test_pull_tops_up_missing_artifacts(tmp_path, monkeypatch):
         title = "Weekly"
         github = "alice"
         created_at = "2026-06-05T12:37:57Z"
-        team_id = "blink"
+        team_id = "team-a"
         artifacts = {
             "txt": "01PARTIAL.txt",
             "pdf": "01PARTIAL.pdf",
@@ -174,7 +174,7 @@ def test_pull_still_skips_complete_sessions(tmp_path, monkeypatch):
     from vezir.client import pull as pull_mod
     from vezir.client.artifacts import _friendly_name
 
-    team_dir = tmp_path / "blink"
+    team_dir = tmp_path / "team-a"
     rec = team_dir / "meeting-20260605-123757_WEEKLY"
     rec.mkdir(parents=True)
 
@@ -184,7 +184,7 @@ def test_pull_still_skips_complete_sessions(tmp_path, monkeypatch):
         title = "Weekly"
         github = "alice"
         created_at = "2026-06-05T12:37:57Z"
-        team_id = "blink"
+        team_id = "team-a"
         artifacts = {"txt": "01FULL.txt", "pdf": "01FULL.pdf"}
 
     session = _S()

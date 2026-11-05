@@ -69,7 +69,7 @@ def test_safe_team_dir_rejects(bad):
     assert config.safe_team_dir(bad) is None
 
 
-@pytest.mark.parametrize("good", ["blink", "team-01", "default", "__vezir_probe__", "a.b"])
+@pytest.mark.parametrize("good", ["team-a", "team-01", "default", "__vezir_probe__", "a.b"])
 def test_safe_team_dir_accepts(good):
     assert config.safe_team_dir(good) == good
 
@@ -101,7 +101,7 @@ def test_recordings_dir_rejects_unsafe_team(monkeypatch, tmp_path, bad):
 
 def test_recordings_dir_accepts_valid_slug(monkeypatch, tmp_path):
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path))
-    assert config.recordings_dir("blink") == tmp_path / "blink"
+    assert config.recordings_dir("team-a") == tmp_path / "team-a"
     # Internal probe value used by recovery/local keeps working.
     assert config.recordings_dir("__vezir_probe__").parent == tmp_path
 
@@ -110,7 +110,7 @@ def test_move_session_dir_refuses_server_supplied_traversal(monkeypatch, tmp_pat
     from vezir.client import recovery
 
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(tmp_path / "rec"))
-    src = tmp_path / "rec" / "blink" / "meeting-20260101-000000"
+    src = tmp_path / "rec" / "team-a" / "meeting-20260101-000000"
     src.mkdir(parents=True)
     (src / "x.wav").write_bytes(b"RIFF")
     with pytest.raises(ValueError):
@@ -346,7 +346,7 @@ def test_upload_journal_is_private(tmp_path):
     try:
         sdir = tmp_path / "meeting"
         sdir.mkdir()
-        upload_journal.mark_recording(sdir, team_id="blink")
+        upload_journal.mark_recording(sdir, team_id="team-a")
         j = sdir / ".upload.json"
         assert j.exists() and _mode(j) == 0o600
     finally:
@@ -373,20 +373,20 @@ def test_adding_bearer_over_nostr_login_clears_session_identity(tmp_home):
     JWT and _try_refresh would POST the dead refresh token."""
     from vezir.client import config as ccfg
 
-    ccfg.add_team_credentials("blink", "https://s.example", "eyJ.jwt.x")
+    ccfg.add_team_credentials("team-a", "https://s.example", "eyJ.jwt.x")
     cfg = ccfg.load_teams_config()
-    entry = next(t for t in cfg["teams"] if t["id"] == "blink")
+    entry = next(t for t in cfg["teams"] if t["id"] == "team-a")
     entry.update(auth="nostr", npub="ab" * 32, refresh_token="vzrt_old",
                  expires_at=1.0, refresh_expires_at=2.0)
     ccfg.save_teams_config(cfg)
 
-    ccfg.add_team_credentials("blink", "https://s.example", "vzr_machine")
-    entry = next(t for t in ccfg.load_teams_config()["teams"] if t["id"] == "blink")
+    ccfg.add_team_credentials("team-a", "https://s.example", "vzr_machine")
+    entry = next(t for t in ccfg.load_teams_config()["teams"] if t["id"] == "team-a")
     assert entry["token"] == "vzr_machine"
     for k in ("auth", "npub", "refresh_token", "expires_at", "refresh_expires_at"):
         assert k not in entry
     assert ccfg.identity_key(entry) is None
-    assert ccfg.team_refresh_token("blink") is None
+    assert ccfg.team_refresh_token("team-a") is None
 
 
 def test_refresh_token_never_leaves_its_origin(tmp_home, monkeypatch):
@@ -396,9 +396,9 @@ def test_refresh_token_never_leaves_its_origin(tmp_home, monkeypatch):
     import vezir.client.api as api_mod
     from vezir.client import config as ccfg
 
-    ccfg.add_team_credentials("blink", "https://issuer.example", "eyJ.jwt.x")
+    ccfg.add_team_credentials("team-a", "https://issuer.example", "eyJ.jwt.x")
     cfg = ccfg.load_teams_config()
-    entry = next(t for t in cfg["teams"] if t["id"] == "blink")
+    entry = next(t for t in cfg["teams"] if t["id"] == "team-a")
     entry.update(auth="nostr", npub="ab" * 32, refresh_token="vzrt_secret")
     ccfg.save_teams_config(cfg)
 
@@ -417,10 +417,10 @@ def test_refresh_token_never_leaves_its_origin(tmp_home, monkeypatch):
     monkeypatch.setattr(api_mod.httpx, "Client", factory)
 
     # Different origin: nothing is sent.
-    assert api_mod.refresh_session("https://attacker.example", team="blink") is None
+    assert api_mod.refresh_session("https://attacker.example", team="team-a") is None
     assert posted == []
     # Same origin (trailing slash / case differences are fine): refresh runs.
-    assert api_mod.refresh_session("https://ISSUER.example/", team="blink") == "new"
+    assert api_mod.refresh_session("https://ISSUER.example/", team="team-a") == "new"
     assert posted and b"vzrt_secret" in posted[0][1]
     assert posted[0][0].lower().startswith("https://issuer.example/")
 

@@ -1,6 +1,6 @@
 """Local recordings: everything on this machine, whatever its state (0.24.0).
 
-Backs ``vezir local list|upload|move|discard``.  Incident 2026-10-02: a
+Backs ``vezir local list|upload|move|discard``.  A
 paused recording had to go to a different team than the one it was started
 in.  Every piece existed — chunk stitching, the upload journal, the
 recovery scan — but only inside the TUI, and the team was implied by the

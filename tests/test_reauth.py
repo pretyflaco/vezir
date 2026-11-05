@@ -59,7 +59,7 @@ def test_set_team_session_stores_expiry(home):
 
     now = time.time()
     cc.set_team_session(
-        "blink", "http://s", "jwt-1", "npub1", expires_at=now + 3600,
+        "team-a", "http://s", "jwt-1", "npub1", expires_at=now + 3600,
     )
     assert abs(cc.active_team_expiry() - (now + 3600)) < 2
 
@@ -68,7 +68,7 @@ def test_active_team_expiry_none_when_absent(home):
     from vezir.client import config as cc
 
     # Login without expiry (older flow) → no stored expiry.
-    cc.set_team_session("blink", "http://s", "jwt-1", "npub1")
+    cc.set_team_session("team-a", "http://s", "jwt-1", "npub1")
     assert cc.active_team_expiry() is None
 
 
@@ -82,9 +82,9 @@ def test_set_team_session_update_preserves_when_none(home):
     from vezir.client import config as cc
 
     now = time.time()
-    cc.set_team_session("blink", "http://s", "jwt-1", "n", expires_at=now + 100)
+    cc.set_team_session("team-a", "http://s", "jwt-1", "n", expires_at=now + 100)
     # Re-login WITHOUT expiry must not wipe the stored one.
-    cc.set_team_session("blink", "http://s", "jwt-2", "n")
+    cc.set_team_session("team-a", "http://s", "jwt-2", "n")
     assert cc.active_team_expiry() is not None
     assert abs(cc.active_team_expiry() - (now + 100)) < 2
 
@@ -95,7 +95,7 @@ def test_set_team_session_stores_refresh_token(home):
     from vezir.client import config as cc
 
     cc.set_team_session(
-        "blink", "http://s", "jwt-1", "n",
+        "team-a", "http://s", "jwt-1", "n",
         refresh_token="vzrt_abc", refresh_expires_at=time.time() + 604800,
     )
     assert cc.active_team_refresh_token() == "vzrt_abc"
@@ -104,25 +104,25 @@ def test_set_team_session_stores_refresh_token(home):
 def test_active_team_refresh_token_none_without_refresh(home):
     from vezir.client import config as cc
 
-    cc.set_team_session("blink", "http://s", "jwt-1", "n")
+    cc.set_team_session("team-a", "http://s", "jwt-1", "n")
     assert cc.active_team_refresh_token() is None
 
 
 def test_set_team_session_rotates_refresh_token(home):
     from vezir.client import config as cc
 
-    cc.set_team_session("blink", "http://s", "jwt-1", "n", refresh_token="vzrt_1")
+    cc.set_team_session("team-a", "http://s", "jwt-1", "n", refresh_token="vzrt_1")
     # A refresh rotates the token; the new value replaces the old.
-    cc.set_team_session("blink", "http://s", "jwt-2", "n", refresh_token="vzrt_2")
+    cc.set_team_session("team-a", "http://s", "jwt-2", "n", refresh_token="vzrt_2")
     assert cc.active_team_refresh_token() == "vzrt_2"
 
 
 def test_set_team_session_update_preserves_refresh_when_none(home):
     from vezir.client import config as cc
 
-    cc.set_team_session("blink", "http://s", "jwt-1", "n", refresh_token="vzrt_1")
+    cc.set_team_session("team-a", "http://s", "jwt-1", "n", refresh_token="vzrt_1")
     # An expiry-only update must not wipe the stored refresh token.
-    cc.set_team_session("blink", "http://s", "jwt-2", "n", expires_at=time.time())
+    cc.set_team_session("team-a", "http://s", "jwt-2", "n", expires_at=time.time())
     assert cc.active_team_refresh_token() == "vzrt_1"
 
 
@@ -133,7 +133,7 @@ class _Harness:
     dismissal result."""
 
     @staticmethod
-    def make(server_url="http://s", team="blink"):
+    def make(server_url="http://s", team="team-a"):
         from textual.app import App
 
         from vezir.client.tui.reauth_screen import ReauthScreen
@@ -287,7 +287,7 @@ async def test_reauth_stale_worker_message_ignored(monkeypatch):
     worker's late reply race a freshly started Google attempt."""
     from vezir.client.tui.reauth_screen import ReauthDone, ReauthScreen
 
-    screen = ReauthScreen("http://s", "blink")
+    screen = ReauthScreen("http://s", "team-a")
     screen._gen = 5
     # A late message tagged with an old generation is dropped.
     stale = ReauthDone({"session_jwt": "stale"}, gen=4)
@@ -310,7 +310,7 @@ async def test_reauth_qr_is_plain_compact_unicode(monkeypatch):
         "nostrconnect://" + "ab" * 32
         + "?relay=wss://relay.damus.io&relay=wss://nos.lol"
         + "&metadata=%7B%22name%22%3A%22vezir%22%2C%22url%22%3A"
-        + "%22https%3A%2F%2Fvezir.twentyone.ist%22%7D"
+        + "%22https%3A%2F%2Fvezir.example.com%22%7D"
     )
 
     class _FakeClient:

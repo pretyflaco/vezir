@@ -192,8 +192,8 @@ prints a single context document (header + summary + transcript) to stdout:
 
 ```bash
 vezir ctx "brainstorm phoenix" | opencode run "summarize the decisions"
-opencode run "$(vezir ctx 01M0TS2SWWD15JT0VQHNDREFKH)"   # inline as prompt
-vezir ctx 01M0TS2SWWD15JT0VQHNDREFKH --path              # just the artifacts dir
+opencode run "$(vezir ctx 01J0000000000000000000CTX0)"   # inline as prompt
+vezir ctx 01J0000000000000000000CTX0 --path              # just the artifacts dir
 ```
 
 ## Summarization: private by default

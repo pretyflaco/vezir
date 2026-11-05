@@ -17,13 +17,13 @@ def test_runtime_dirs_and_tokens_are_private(monkeypatch):
         from vezir.server import auth, queue, voiceprints
 
         config.ensure_dirs()
-        # The auth.issue shim in conftest auto-creates the 'blink' team
+        # The auth.issue shim in conftest auto-creates the 'team-a' team
         # if it doesn't exist, so this also guarantees the team row is
         # in place for the per-team voiceprint DB below.
         auth.issue("alice")
-        queue.enqueue("01TEST", github="alice", title="test", team_id="blink")
+        queue.enqueue("01TEST", github="alice", title="test", team_id="team-a")
         # v0.6.2+: voiceprint DBs are per-team.
-        voiceprints.ensure_db_exists("blink")
+        voiceprints.ensure_db_exists("team-a")
 
         assert _mode(Path(d)) == 0o700
         assert _mode(Path(d) / "sessions") == 0o700
@@ -33,7 +33,7 @@ def test_runtime_dirs_and_tokens_are_private(monkeypatch):
         # the standalone tokens.json store is gone.
         assert _mode(Path(d) / "vezir.sqlite") == 0o600
         # v0.6.2+: per-team voiceprint DB.
-        assert _mode(Path(d) / "teams" / "blink" / "speaker_profiles.json") == 0o600
+        assert _mode(Path(d) / "teams" / "team-a" / "speaker_profiles.json") == 0o600
 
 
 def test_secure_write_text_creates_private_parent_and_file(tmp_path):

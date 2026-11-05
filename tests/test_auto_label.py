@@ -33,16 +33,16 @@ def client_and_token(tmp_data):
     return TestClient(app, follow_redirects=False), token
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {"Authorization": f"Bearer {token}", "X-Team-Id": team}
 
 
 def _seed_session(session_id: str, status: str = "needs_labeling", **kwargs):
     from vezir.server import queue
 
-    if queue.get_team("blink") is None:
-        queue.create_team("blink", "Blink")
-    queue.enqueue(session_id, "alice", team_id="blink", **kwargs)
+    if queue.get_team("team-a") is None:
+        queue.create_team("team-a", "Team A")
+    queue.enqueue(session_id, "alice", team_id="team-a", **kwargs)
     queue.update_status(session_id, status)
 
 
@@ -176,7 +176,7 @@ def test_reauto_force_overrides_opt_out(tmp_data, monkeypatch):
     assert res["error"] is None
     assert res["status"] == "done"
     assert [sid for sid, _tid in rc_calls] == ["01OPT"]
-    assert rc_calls[0][1] not in ("", None, "blink") or rc_calls[0][1] == "blink"
+    assert rc_calls[0][1] not in ("", None, "team-a") or rc_calls[0][1] == "team-a"
 
 
 # ── TUI wiring ──────────────────────────────────────────────────────────────

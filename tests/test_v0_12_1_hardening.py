@@ -87,7 +87,7 @@ def client_and_token(tmp_data):
 
 
 def _bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}", "X-Team-Id": "blink"}
+    return {"Authorization": f"Bearer {token}", "X-Team-Id": "team-a"}
 
 
 def test_whitespace_only_bearer_is_401_not_500(client_and_token):
@@ -105,7 +105,7 @@ def test_sessions_limit_is_clamped(client_and_token):
 
     client, token = client_and_token
     for i in range(3):
-        queue.enqueue(f"01ROW{i:015d}", "alice", personal=False, team_id="blink")
+        queue.enqueue(f"01ROW{i:015d}", "alice", personal=False, team_id="team-a")
 
     r = client.get("/api/sessions?limit=-1", headers=_bearer(token))
     assert r.status_code == 200
@@ -120,10 +120,11 @@ def test_sync_meeting_type_slug_validated(tmp_data):
     from vezir.server import queue
     from vezir.server.app import create_app
 
-    create_app()  # runs migrations that seed the 'blink' team
-    queue.update_team_sync("blink", sync_meeting_type="My Standup!")
-    row = queue.get_team("blink")
+    create_app()  # runs migrations; a fresh install seeds no teams
+    queue.create_team("team-a", "Team A")
+    queue.update_team_sync("team-a", sync_meeting_type="My Standup!")
+    row = queue.get_team("team-a")
     assert row["sync_meeting_type"] == "my-standup"
 
     with pytest.raises(ValueError):
-        queue.update_team_sync("blink", sync_meeting_type="!!!")
+        queue.update_team_sync("team-a", sync_meeting_type="!!!")

@@ -35,7 +35,7 @@ def client(tmp_data):
     return TestClient(create_app(), follow_redirects=False)
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {
         "Authorization": f"Bearer {token}",
         "X-Team-Id": team,
@@ -62,7 +62,7 @@ def _issue_raw(github, team_id, **kwargs):
     return auth._issue_raw(github, **kwargs)
 
 
-def _upload(client, token, team="blink"):
+def _upload(client, token, team="team-a"):
     resp = client.post(
         "/upload",
         headers=_bearer(token, team=team),
@@ -77,8 +77,8 @@ def _upload(client, token, team="blink"):
 
 def test_set_title_updates_row(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01SID", github="alice", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01SID", github="alice", team_id="team-a")
 
     queue.set_title("01SID", "Weekly sync")
     assert queue.get("01SID")["title"] == "Weekly sync"
@@ -86,8 +86,8 @@ def test_set_title_updates_row(tmp_data):
 
 def test_set_title_change_existing(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01SID", github="alice", title="old", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01SID", github="alice", title="old", team_id="team-a")
 
     queue.set_title("01SID", "new")
     assert queue.get("01SID")["title"] == "new"
@@ -95,8 +95,8 @@ def test_set_title_change_existing(tmp_data):
 
 def test_set_title_blank_clears_to_null(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01SID", github="alice", title="old", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01SID", github="alice", title="old", team_id="team-a")
 
     queue.set_title("01SID", "   ")
     assert queue.get("01SID")["title"] is None
@@ -110,7 +110,7 @@ def test_set_title_blank_clears_to_null(tmp_data):
 
 def test_uploader_can_retitle_own_session(client):
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
+    uploader_tok = _issue_raw("alice", team_id="team-a")
 
     sid = _upload(client, uploader_tok)
     resp = client.post(
@@ -125,8 +125,8 @@ def test_uploader_can_retitle_own_session(client):
 
 def test_admin_can_retitle_any_session(client):
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
-    admin_tok = _issue_raw("boss", team_id="blink", is_admin=True)
+    uploader_tok = _issue_raw("alice", team_id="team-a")
+    admin_tok = _issue_raw("boss", team_id="team-a", is_admin=True)
 
     sid = _upload(client, uploader_tok)
     resp = client.post(
@@ -140,7 +140,7 @@ def test_admin_can_retitle_any_session(client):
 
 def test_retitle_empty_clears(client):
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
+    uploader_tok = _issue_raw("alice", team_id="team-a")
 
     sid = _upload(client, uploader_tok)
     queue.set_title(sid, "something")
@@ -156,8 +156,8 @@ def test_retitle_empty_clears(client):
 
 def test_non_owner_non_admin_gets_403(client):
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
-    other_tok = _issue_raw("bob", team_id="blink")  # member, not owner/admin
+    uploader_tok = _issue_raw("alice", team_id="team-a")
+    other_tok = _issue_raw("bob", team_id="team-a")  # member, not owner/admin
 
     sid = _upload(client, uploader_tok)
     resp = client.post(
@@ -171,13 +171,13 @@ def test_non_owner_non_admin_gets_403(client):
 
 def test_cross_team_retitle_gets_404(client):
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
-    t21_admin = _issue_raw("bob", team_id="twentyone", is_admin=True)
+    uploader_tok = _issue_raw("alice", team_id="team-a")
+    t21_admin = _issue_raw("bob", team_id="team-b", is_admin=True)
 
     sid = _upload(client, uploader_tok)
     resp = client.post(
         f"/api/sessions/{sid}/title",
-        headers=_bearer(t21_admin, team="twentyone"),
+        headers=_bearer(t21_admin, team="team-b"),
         json={"title": "leak?"},
     )
     assert resp.status_code == 404
@@ -185,7 +185,7 @@ def test_cross_team_retitle_gets_404(client):
 
 
 def test_retitle_missing_session_404(client):
-    admin_tok = _issue_raw("boss", team_id="blink", is_admin=True)
+    admin_tok = _issue_raw("boss", team_id="team-a", is_admin=True)
     resp = client.post(
         "/api/sessions/NOPE/title",
         headers=_bearer(admin_tok),
@@ -196,7 +196,7 @@ def test_retitle_missing_session_404(client):
 
 def test_retitle_synced_session_returns_warning(client):
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
+    uploader_tok = _issue_raw("alice", team_id="team-a")
 
     sid = _upload(client, uploader_tok)
     # Upload defaults sync_enabled=True; mark it done so it counts as synced.
@@ -219,7 +219,7 @@ def test_client_set_title_builds_correct_request():
     """set_title POSTs to the title path with a JSON body carrying title."""
     from vezir.client.api import ApiResult, VezirClient
 
-    api = VezirClient("http://testserver", "vzr_" + "a" * 40, team_id="blink")
+    api = VezirClient("http://testserver", "vzr_" + "a" * 40, team_id="team-a")
     captured = {}
 
     def _fake_post(path, json=None, **kwargs):
@@ -240,7 +240,7 @@ def test_client_set_title_builds_correct_request():
 def test_cli_session_set_title(client, monkeypatch):
     """The CLI command hits the server and updates the title."""
     from vezir.server import queue
-    uploader_tok = _issue_raw("alice", team_id="blink")
+    uploader_tok = _issue_raw("alice", team_id="team-a")
     sid = _upload(client, uploader_tok)
 
     # Point the client API's _post at the in-process TestClient app.
@@ -251,7 +251,7 @@ def test_cli_session_set_title(client, monkeypatch):
         resp = client.post(
             path,
             headers={"Authorization": f"Bearer {self.token}",
-                     "X-Team-Id": self.team_id or "blink"},
+                     "X-Team-Id": self.team_id or "team-a"},
             json=json,
         )
         if resp.status_code >= 400:
@@ -266,7 +266,7 @@ def test_cli_session_set_title(client, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["session", "set-title", sid, "From CLI", "--team", "blink",
+        ["session", "set-title", sid, "From CLI", "--team", "team-a",
          "--server", "http://testserver", "--token", uploader_tok],
     )
     assert result.exit_code == 0, result.output

@@ -22,7 +22,7 @@ def tmp_data(monkeypatch):
 
 
 def _enqueue(queue, job_id: str, status: str) -> None:
-    queue.enqueue(job_id, github="alice", team_id="blink")
+    queue.enqueue(job_id, github="alice", team_id="team-a")
     if status != "queued":
         queue.update_status(job_id, status)
 
@@ -73,7 +73,7 @@ def test_requeue_orphans_leaves_terminal_and_queued_untouched(tmp_data):
 
 def test_requeue_orphans_empty_queue_is_noop(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")  # ensure DB exists
+    queue.create_team("team-a", "Team A")  # ensure DB exists
     assert queue.requeue_orphans() == []
 
 

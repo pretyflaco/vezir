@@ -660,7 +660,7 @@ def millet_watchdog_seconds() -> int | None:
     retry-with-backoff step (e.g. millet 0.21.1's Tinfoil attempt ladder,
     quiet for up to ~12 min by design) is left alone.
 
-    Incident 2026-09-15: a stalled TEE summary pinned a job in
+    A stalled TEE summary pinned a job in
     ``transcribing`` for 30+ minutes with the GPU idle; the 4 h budget would
     eventually have reaped it, but 4 h of a blocked single-worker queue is
     its own outage.

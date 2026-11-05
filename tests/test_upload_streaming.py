@@ -83,7 +83,8 @@ def server(tmp_data, private_tmp, monkeypatch):
         assert time.monotonic() < deadline and th.is_alive()
         time.sleep(0.05)
     try:
-        yield f"http://127.0.0.1:{port}", {"Authorization": f"Bearer {token}", "X-Team-Id": "blink"}
+        headers = {"Authorization": f"Bearer {token}", "X-Team-Id": "team-a"}
+        yield f"http://127.0.0.1:{port}", headers
     finally:
         srv.should_exit = True
         th.join(timeout=5)
@@ -117,7 +118,7 @@ def _post_until_response(base: str, headers: dict, path: str, chunks, *, chunked
 
     host, port = base.replace("http://", "").split(":")
     hdr = (f"POST {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n"
-           f"Authorization: {headers['Authorization']}\r\nX-Team-Id: blink\r\n"
+           f"Authorization: {headers['Authorization']}\r\nX-Team-Id: team-a\r\n"
            "Content-Type: multipart/form-data; boundary=zz\r\n")
     if chunked:
         hdr += "Transfer-Encoding: chunked\r\n"
@@ -237,7 +238,7 @@ def test_disconnect_mid_upload_leaves_nothing_behind(server, tmp_data, private_t
     wav = _wav_bytes()
     head = (
         f"POST /upload HTTP/1.1\r\nHost: {host}\r\n"
-        f"Authorization: {headers['Authorization']}\r\nX-Team-Id: blink\r\n"
+        f"Authorization: {headers['Authorization']}\r\nX-Team-Id: team-a\r\n"
         "Content-Type: multipart/form-data; boundary=zz\r\n"
         "Transfer-Encoding: chunked\r\n\r\n"
     ).encode()

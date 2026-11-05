@@ -35,7 +35,7 @@ def client_and_token(tmp_data):
 
 
 def _headers(token: str, extra: dict | None = None) -> dict:
-    h = {"Authorization": f"Bearer {token}", "X-Team-Id": "blink"}
+    h = {"Authorization": f"Bearer {token}", "X-Team-Id": "team-a"}
     if extra:
         h.update(extra)
     return h

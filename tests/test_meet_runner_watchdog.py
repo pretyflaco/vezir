@@ -1,6 +1,6 @@
 """Tests for run_meet's no-progress watchdog (VEZIR_MILLET_WATCHDOG_SECONDS).
 
-Incident 2026-09-15: a stalled TEE summary pinned a vezir job in
+a stalled TEE summary pinned a vezir job in
 ``transcribing`` for 30+ minutes with the GPU idle; the 4 h hard budget
 (VEZIR_MILLET_TIMEOUT) would eventually have reaped it, but 4 h of a blocked
 single-worker queue is its own outage.  The watchdog kills a millet step

@@ -24,9 +24,9 @@ from vezir.client.tui.record_screen import (
 def _make_recordings(base: Path) -> list[Path]:
     """Create a realistic ~/vezir-meetings/<team>/meeting-*/audio.ogg tree."""
     specs = [
-        ("blink", "meeting-20260617-123708_DEVSTANDUP", "meeting-20260617-123708.ogg"),
-        ("blink", "meeting-20260616-110055", "meeting-20260616-110055.ogg"),
-        ("twentyone", "meeting-20260615-090000_SYNC", "meeting-20260615-090000.wav"),
+        ("team-a", "meeting-20260617-123708_DEVSTANDUP", "meeting-20260617-123708.ogg"),
+        ("team-a", "meeting-20260616-110055", "meeting-20260616-110055.ogg"),
+        ("team-b", "meeting-20260615-090000_SYNC", "meeting-20260615-090000.wav"),
     ]
     paths = []
     for team, sess, fname in specs:
@@ -39,7 +39,7 @@ def _make_recordings(base: Path) -> list[Path]:
 
 
 def _make_video_recording(base: Path) -> Path:
-    d = base / "blink" / "meeting-20260618-101530_DEMO"
+    d = base / "team-a" / "meeting-20260618-101530_DEMO"
     d.mkdir(parents=True, exist_ok=True)
     p = d / "vezir-screen-20260618-101530.mp4"
     p.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
@@ -69,12 +69,12 @@ def test_scan_skips_dotdirs(tmp_path):
 
 
 def test_recording_label_format(tmp_path):
-    p = (tmp_path / "blink" / "meeting-20260617-123708_DEVSTANDUP"
+    p = (tmp_path / "team-a" / "meeting-20260617-123708_DEVSTANDUP"
          / "meeting-20260617-123708.ogg")
     p.parent.mkdir(parents=True)
     p.write_bytes(b"OggS" + b"\x00" * 100)
     label = _recording_label(p, tmp_path)
-    assert "blink/meeting-20260617-123708_DEVSTANDUP" in label
+    assert "team-a/meeting-20260617-123708_DEVSTANDUP" in label
     assert "2026-06-17 12:37" in label
 
 

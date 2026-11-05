@@ -24,7 +24,10 @@ def client_factory(tmp_data):
     from vezir.server.app import create_app
 
     def _make():
-        return TestClient(create_app(), follow_redirects=False)
+        from conftest import create_test_teams
+        tc = TestClient(create_app(), follow_redirects=False)
+        create_test_teams()
+        return tc
     return _make
 
 
@@ -37,8 +40,8 @@ def test_api_me_returns_memberships(client_factory):
     user is a member of (with role + team_name)."""
     from vezir.server import auth, queue
     client = client_factory()
-    tok = auth.issue("alice", team_id="blink")  # shim adds blink membership
-    queue.add_membership("alice", "twentyone", role="admin")
+    tok = auth.issue("alice", team_id="team-a")  # shim adds team-a membership
+    queue.add_membership("alice", "team-b", role="admin")
     r = client.get("/api/me", headers=_bearer(tok))
     assert r.status_code == 200
     body = r.json()
@@ -47,12 +50,12 @@ def test_api_me_returns_memberships(client_factory):
     # v0.7.4: memberships are keyed by uuid (team_id); slug is the
     # human identifier the client shows.
     by_team = {m["slug"]: m for m in body["memberships"]}
-    assert "blink" in by_team
-    assert "twentyone" in by_team
-    assert by_team["twentyone"]["role"] == "admin"
-    assert by_team["blink"]["team_name"] == "Blink"
+    assert "team-a" in by_team
+    assert "team-b" in by_team
+    assert by_team["team-b"]["role"] == "admin"
+    assert by_team["team-a"]["team_name"] == "Team A"
     # team_id is the uuid the client sends back in X-Team-Id.
-    assert by_team["blink"]["team_id"] != "blink"
+    assert by_team["team-a"]["team_id"] != "team-a"
 
 
 def test_api_me_returns_admin_flag(client_factory):
@@ -114,41 +117,41 @@ def test_load_teams_config_empty(tmp_home):
 def test_add_team_credentials_creates_file(tmp_home):
     from vezir.client.config import add_team_credentials, load_teams_config
     add_team_credentials(
-        "blink", "https://muscle/", "vzr_blink_abc", label="Blink",
+        "team-a", "https://devbox/", "vzr_team_a_abc", label="Team A",
     )
     cfg = load_teams_config()
     assert len(cfg["teams"]) == 1
-    assert cfg["teams"][0]["id"] == "blink"
-    assert cfg["teams"][0]["label"] == "Blink"
+    assert cfg["teams"][0]["id"] == "team-a"
+    assert cfg["teams"][0]["label"] == "Team A"
     # First team auto-activates.
-    assert cfg["active"] == "blink"
+    assert cfg["active"] == "team-a"
 
 
 def test_add_team_credentials_updates_existing(tmp_home):
     from vezir.client.config import add_team_credentials, load_teams_config
-    add_team_credentials("blink", "https://old/", "vzr_old", label="Blink")
-    add_team_credentials("blink", "https://new/", "vzr_new", label="Blink v2")
+    add_team_credentials("team-a", "https://old/", "vzr_old", label="Team A")
+    add_team_credentials("team-a", "https://new/", "vzr_new", label="Team A v2")
     cfg = load_teams_config()
     assert len(cfg["teams"]) == 1
     assert cfg["teams"][0]["url"] == "https://new/"
     assert cfg["teams"][0]["token"] == "vzr_new"
-    assert cfg["teams"][0]["label"] == "Blink v2"
+    assert cfg["teams"][0]["label"] == "Team A v2"
 
 
 def test_add_second_team_does_not_auto_activate(tmp_home):
     from vezir.client.config import add_team_credentials, load_teams_config
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    add_team_credentials("twentyone", "https://m/", "vzr_t")
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    add_team_credentials("team-b", "https://m/", "vzr_t")
     cfg = load_teams_config()
-    assert cfg["active"] == "blink"
+    assert cfg["active"] == "team-a"
 
 
 def test_add_with_activate_overrides(tmp_home):
     from vezir.client.config import add_team_credentials, load_teams_config
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    add_team_credentials("twentyone", "https://m/", "vzr_t", activate=True)
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    add_team_credentials("team-b", "https://m/", "vzr_t", activate=True)
     cfg = load_teams_config()
-    assert cfg["active"] == "twentyone"
+    assert cfg["active"] == "team-b"
 
 
 def test_set_active_team(tmp_home):
@@ -157,16 +160,16 @@ def test_set_active_team(tmp_home):
         load_teams_config,
         set_active_team,
     )
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    add_team_credentials("twentyone", "https://m/", "vzr_t")
-    set_active_team("twentyone")
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    add_team_credentials("team-b", "https://m/", "vzr_t")
+    set_active_team("team-b")
     cfg = load_teams_config()
-    assert cfg["active"] == "twentyone"
+    assert cfg["active"] == "team-b"
 
 
 def test_set_active_team_unknown_raises(tmp_home):
     from vezir.client.config import add_team_credentials, set_active_team
-    add_team_credentials("blink", "https://m/", "vzr_b")
+    add_team_credentials("team-a", "https://m/", "vzr_b")
     with pytest.raises(ValueError, match="not configured locally"):
         set_active_team("nonexistent")
 
@@ -177,14 +180,14 @@ def test_remove_team_credentials(tmp_home):
         load_teams_config,
         remove_team_credentials,
     )
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    add_team_credentials("twentyone", "https://m/", "vzr_t")
-    remove_team_credentials("blink")
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    add_team_credentials("team-b", "https://m/", "vzr_t")
+    remove_team_credentials("team-a")
     cfg = load_teams_config()
     ids = {t["id"] for t in cfg["teams"]}
-    assert ids == {"twentyone"}
-    # blink was active; new active should be twentyone (the remaining one).
-    assert cfg["active"] == "twentyone"
+    assert ids == {"team-b"}
+    # team-a was active; new active should be team-b (the remaining one).
+    assert cfg["active"] == "team-b"
 
 
 def test_remove_team_empties_active_when_last_removed(tmp_home):
@@ -193,8 +196,8 @@ def test_remove_team_empties_active_when_last_removed(tmp_home):
         load_teams_config,
         remove_team_credentials,
     )
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    remove_team_credentials("blink")
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    remove_team_credentials("team-a")
     cfg = load_teams_config()
     assert cfg["teams"] == []
     assert cfg["active"] is None
@@ -202,21 +205,21 @@ def test_remove_team_empties_active_when_last_removed(tmp_home):
 
 def test_next_team_id_cycles(tmp_home):
     from vezir.client.config import add_team_credentials, next_team_id
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    add_team_credentials("twentyone", "https://m/", "vzr_t")
-    assert next_team_id("blink") == "twentyone"
-    assert next_team_id("twentyone") == "blink"  # wrap
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    add_team_credentials("team-b", "https://m/", "vzr_t")
+    assert next_team_id("team-a") == "team-b"
+    assert next_team_id("team-b") == "team-a"  # wrap
 
 
 def test_next_team_id_empty_returns_none(tmp_home):
     from vezir.client.config import next_team_id
-    assert next_team_id("blink") is None
+    assert next_team_id("team-a") is None
 
 
 def test_next_team_id_unknown_current_returns_first(tmp_home):
     from vezir.client.config import add_team_credentials, next_team_id
-    add_team_credentials("blink", "https://m/", "vzr_b")
-    assert next_team_id("never-configured") == "blink"
+    add_team_credentials("team-a", "https://m/", "vzr_b")
+    assert next_team_id("never-configured") == "team-a"
 
 
 def test_next_team_id_resolves_uuid_current_to_slug(tmp_home):
@@ -230,20 +233,20 @@ def test_next_team_id_resolves_uuid_current_to_slug(tmp_home):
     # Write teams.json directly with a recorded uuid per entry.
     cfg = {
         "teams": [
-            {"id": "blink", "url": "https://m/", "token": "vzr_b",
-             "label": "Blink", "uuid": "5e0d4eecd0e24b2a8dbc517adb486199"},
-            {"id": "twentyone", "url": "https://m/", "token": "vzr_t",
-             "label": "Twentyone", "uuid": "c013ddd44d6e4a6995446e2128739e69"},
+            {"id": "team-a", "url": "https://m/", "token": "vzr_b",
+             "label": "Team A", "uuid": "aaaa1111aaaa4aaa8aaa111111111111"},
+            {"id": "team-b", "url": "https://m/", "token": "vzr_t",
+             "label": "Team B", "uuid": "bbbb2222bbbb4bbb8bbb222222222222"},
         ],
-        "active": "blink",
+        "active": "team-a",
     }
     p = teams_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cfg), encoding="utf-8")
-    # current is blink's UUID -> should advance to twentyone (slug).
-    assert next_team_id("5e0d4eecd0e24b2a8dbc517adb486199") == "twentyone"
-    # current is twentyone's UUID -> wraps to blink.
-    assert next_team_id("c013ddd44d6e4a6995446e2128739e69") == "blink"
+    # current is team-a's UUID -> should advance to team-b (slug).
+    assert next_team_id("aaaa1111aaaa4aaa8aaa111111111111") == "team-b"
+    # current is team-b's UUID -> wraps to team-a.
+    assert next_team_id("bbbb2222bbbb4bbb8bbb222222222222") == "team-a"
 
 
 # ── resolve_credentials precedence ──────────────────────────────────────────
@@ -251,7 +254,7 @@ def test_next_team_id_resolves_uuid_current_to_slug(tmp_home):
 
 def test_resolve_credentials_env_wins(tmp_home, monkeypatch):
     from vezir.client.config import add_team_credentials, resolve_credentials
-    add_team_credentials("blink", "https://teamsjson/", "vzr_fromteamsjson")
+    add_team_credentials("team-a", "https://teamsjson/", "vzr_fromteamsjson")
     monkeypatch.setenv("VEZIR_URL", "https://envwins/")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_envwins")
     monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
@@ -267,23 +270,23 @@ def test_resolve_credentials_env_team_id_supported(tmp_home, monkeypatch):
     from vezir.client.config import resolve_credentials
     monkeypatch.setenv("VEZIR_URL", "https://m/")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_x")
-    monkeypatch.setenv("VEZIR_TEAM_ID", "blink")
+    monkeypatch.setenv("VEZIR_TEAM_ID", "team-a")
     url, token, team_id, source = resolve_credentials()
     assert source == "env"
-    assert team_id == "blink"
+    assert team_id == "team-a"
 
 
 def test_resolve_credentials_teams_json_when_no_env(tmp_home, monkeypatch):
     from vezir.client.config import add_team_credentials, resolve_credentials
-    add_team_credentials("blink", "https://teams/", "vzr_teams")
+    add_team_credentials("team-a", "https://teams/", "vzr_teams")
     monkeypatch.delenv("VEZIR_URL", raising=False)
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
     url, token, team_id, source = resolve_credentials()
-    assert source == "teams:blink"
+    assert source == "teams:team-a"
     assert url == "https://teams/"
     assert token == "vzr_teams"
-    assert team_id == "blink"
+    assert team_id == "team-a"
 
 
 def test_resolve_credentials_client_json_when_no_env_no_teams(tmp_home, monkeypatch):
@@ -315,13 +318,13 @@ def test_resolve_credentials_returns_nones_when_nothing_set(tmp_home, monkeypatc
 def test_resolve_credentials_env_partial_falls_through(tmp_home, monkeypatch):
     """Setting only VEZIR_URL (no token) should fall through to teams.json."""
     from vezir.client.config import add_team_credentials, resolve_credentials
-    add_team_credentials("blink", "https://teams/", "vzr_teams")
+    add_team_credentials("team-a", "https://teams/", "vzr_teams")
     monkeypatch.setenv("VEZIR_URL", "https://only-url/")
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     url, token, team_id, source = resolve_credentials()
-    assert source == "teams:blink"
+    assert source == "teams:team-a"
     assert url == "https://teams/"
-    assert team_id == "blink"
+    assert team_id == "team-a"
 
 
 # ── teams.json file format defensive parsing ────────────────────────────────
@@ -360,9 +363,9 @@ def test_load_teams_config_corrects_active_when_orphaned(tmp_home):
     p = teams_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({
-        "teams": [{"id": "blink", "url": "u", "token": "t"}],
+        "teams": [{"id": "team-a", "url": "u", "token": "t"}],
         "active": "ghost",  # not in teams list
     }))
     cfg = load_teams_config()
     # Active was orphaned; should fall back to first team.
-    assert cfg["active"] == "blink"
+    assert cfg["active"] == "team-a"

@@ -18,7 +18,7 @@ def test_title_slug_lowercases_and_underscores():
     from vezir import config
 
     assert config.artifact_title_slug("Brainstorm Phoenix") == "brainstorm_phoenix"
-    assert config.artifact_title_slug("  Weekly Sync / @blink!  ") == "weekly_sync_blink"
+    assert config.artifact_title_slug("  Weekly Sync / @team-a!  ") == "weekly_sync_team_a"
 
 
 def test_title_slug_collapses_underscore_runs():
@@ -207,7 +207,7 @@ def client_factory(monkeypatch, tmp_path):
     return _make
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {"Authorization": f"Bearer {token}", "X-Team-Id": team}
 
 
@@ -220,7 +220,7 @@ def test_artifact_endpoint_content_disposition_friendly(client_factory):
     tok = auth.issue("alice")
     queue.enqueue(
         "01CD", github="alice", title="Brainstorm Phoenix",
-        team_id="blink",
+        team_id="team-a",
     )
     sdir = config.sessions_dir() / "01CD"
     sdir.mkdir(parents=True)
@@ -240,7 +240,7 @@ def test_artifact_endpoint_no_title_falls_back_to_recording(client_factory):
 
     client = client_factory()
     tok = auth.issue("alice")
-    queue.enqueue("01NT", github="alice", title=None, team_id="blink")
+    queue.enqueue("01NT", github="alice", title=None, team_id="team-a")
     sdir = config.sessions_dir() / "01NT"
     sdir.mkdir(parents=True)
     (sdir / "01NT.txt").write_text("hello")

@@ -146,6 +146,6 @@ def test_encrypt_for_decrypt_from_roundtrip():
     b = PrivateKey()
     a_pub = a.public_key_xonly.format().hex()
     b_pub = b.public_key_xonly.format().hex()
-    msg = "hello milfort \u2014 nostrconnect"
+    msg = "hello trent \u2014 nostrconnect"
     payload = nip44.encrypt_for(msg, a.to_hex(), b_pub)
     assert nip44.decrypt_from(payload, b.to_hex(), a_pub) == msg

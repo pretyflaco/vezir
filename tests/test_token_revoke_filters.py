@@ -37,10 +37,10 @@ def _seed_three_handles(tmp_data: Path) -> dict:
     from vezir.server import auth
     from vezir.server import queue as _queue
 
-    if _queue.get_team("blink") is None:
-        _queue.create_team("blink", "Blink")
-    if _queue.get_team("twentyone") is None:
-        _queue.create_team("twentyone", "Twentyone")
+    if _queue.get_team("team-a") is None:
+        _queue.create_team("team-a", "Team A")
+    if _queue.get_team("team-b") is None:
+        _queue.create_team("team-b", "Team B")
 
     raw = auth._issue_raw if hasattr(auth, "_issue_raw") else auth.issue
     out: dict[str, str] = {}

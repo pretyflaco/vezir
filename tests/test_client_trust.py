@@ -138,7 +138,7 @@ def test_legacy_env_warns_once(monkeypatch, ca_pem):
 def test_ssl_cert_file_pointing_at_only_the_caddy_ca_does_not_blind_public_trust(
     monkeypatch, ca_pem,
 ):
-    """The muscle incident: SSL_CERT_FILE naming ONLY the Caddy CA made
+    """The dev-box incident: SSL_CERT_FILE naming ONLY the Caddy CA made
     tools that honour it fail every public host.  vezir must not."""
     public_subjects = _public_subjects()
     monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))

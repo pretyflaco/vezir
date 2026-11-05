@@ -88,14 +88,14 @@ def test_upload_uses_active_team_from_teams_json(tmp_path, monkeypatch):
     monkeypatch.delenv("VEZIR_TEAM_ID", raising=False)
     monkeypatch.setattr(
         "vezir.client.config.resolve_credentials",
-        lambda: ("https://srv", "vzr_tok", "blink", "teams:blink"),
+        lambda: ("https://srv", "vzr_tok", "team-a", "teams:team-a"),
     )
 
     res = CliRunner().invoke(main, ["upload", str(_tiny_ogg(tmp_path))])
     assert res.exit_code == 0, res.output
-    assert captured["team_id"] == "blink"
+    assert captured["team_id"] == "team-a"
     assert captured["endpoint"] == "resumable"
-    assert captured["probe_team"] == "blink"
+    assert captured["probe_team"] == "team-a"
 
 
 def test_upload_team_flag_overrides(tmp_path, monkeypatch):
@@ -106,20 +106,20 @@ def test_upload_team_flag_overrides(tmp_path, monkeypatch):
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     monkeypatch.setattr(
         "vezir.client.config.team_credentials",
-        lambda team: ("twentyone", "https://t21", "vzr_t21")
-        if team == "twentyone" else (None, None, None),
+        lambda team: ("team-b", "https://t21", "vzr_t21")
+        if team == "team-b" else (None, None, None),
     )
-    # active is blink, but --team twentyone must win
+    # active is team-a, but --team team-b must win
     monkeypatch.setattr(
         "vezir.client.config.resolve_credentials",
-        lambda: ("https://srv", "vzr_tok", "blink", "teams:blink"),
+        lambda: ("https://srv", "vzr_tok", "team-a", "teams:team-a"),
     )
 
     res = CliRunner().invoke(
-        main, ["upload", "--team", "twentyone", str(_tiny_ogg(tmp_path))]
+        main, ["upload", "--team", "team-b", str(_tiny_ogg(tmp_path))]
     )
     assert res.exit_code == 0, res.output
-    assert captured["team_id"] == "twentyone"
+    assert captured["team_id"] == "team-b"
     assert captured["server_url"] == "https://t21"
 
 
@@ -186,8 +186,8 @@ def _nostr(team: str, token: str, exp: float, refresh: str = "vzrt_x",
 def test_upload_stale_team_borrows_same_identity_token(
     tmp_path, monkeypatch, _isolated_home,
 ):
-    """Incident 2026-10-02: --team twentyone held an expired JWT while the
-    same person's blink entry was fresh; the upload must use the fresh one
+    """--team team-b held an expired JWT while the
+    same person's team-a entry was fresh; the upload must use the fresh one
     (the JWT identifies the person; team scope is X-Team-Id)."""
     captured: dict = {}
     _stub_uploader(monkeypatch, captured)
@@ -195,17 +195,17 @@ def test_upload_stale_team_borrows_same_identity_token(
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     now = time.time()
     _write_teams(_isolated_home, [
-        _nostr("blink", "eyJ.fresh", now + 600),
-        _nostr("twentyone", "eyJ.stale", now - 600),
+        _nostr("team-a", "eyJ.fresh", now + 600),
+        _nostr("team-b", "eyJ.stale", now - 600),
         # A different identity's fresher token must never be borrowed.
         _nostr("startups", "eyJ.other", now + 9999, npub="npub1someoneelse"),
-    ], active="blink")
+    ], active="team-a")
 
     res = CliRunner().invoke(
-        main, ["upload", "--team", "twentyone", str(_tiny_ogg(tmp_path))]
+        main, ["upload", "--team", "team-b", str(_tiny_ogg(tmp_path))]
     )
     assert res.exit_code == 0, res.output
-    assert captured["team_id"] == "twentyone"
+    assert captured["team_id"] == "team-b"
     assert captured["token"] == "eyJ.fresh"
 
 
@@ -219,9 +219,9 @@ def test_upload_passes_refresh_cb_for_session_entries(
     monkeypatch.delenv("VEZIR_TOKEN", raising=False)
     now = time.time()
     _write_teams(_isolated_home, [
-        _nostr("blink", "eyJ.b", now + 600, refresh="vzrt_b"),
-        _nostr("twentyone", "eyJ.t", now + 600, refresh="vzrt_t"),
-    ], active="blink")
+        _nostr("team-a", "eyJ.b", now + 600, refresh="vzrt_b"),
+        _nostr("team-b", "eyJ.t", now + 600, refresh="vzrt_t"),
+    ], active="team-a")
     monkeypatch.setattr(uploader, "validate_audio_path", lambda p: Path(p))
     monkeypatch.setattr(uploader, "server_supports_resumable", lambda *a, **k: True)
 
@@ -239,10 +239,10 @@ def test_upload_passes_refresh_cb_for_session_entries(
 
     monkeypatch.setattr(uploader, "upload_resumable", fake_resumable)
     res = CliRunner().invoke(
-        main, ["upload", "--team", "twentyone", str(_tiny_ogg(tmp_path))]
+        main, ["upload", "--team", "team-b", str(_tiny_ogg(tmp_path))]
     )
     assert res.exit_code == 0, res.output
-    assert seen == {"team": "twentyone", "new": "eyJ.new"}
+    assert seen == {"team": "team-b", "new": "eyJ.new"}
 
 
 def test_upload_env_bearer_gets_no_refresh_cb(tmp_path, monkeypatch):

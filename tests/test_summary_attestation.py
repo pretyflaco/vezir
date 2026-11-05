@@ -32,8 +32,8 @@ def tmp_data(monkeypatch):
 @pytest.fixture
 def team(tmp_data):
     """enqueue() has required a team_id since v0.6.0."""
-    queue.create_team("blink", "Blink (test)")
-    return queue.get_team("blink")["id"]
+    queue.create_team("team-a", "Team A (test)")
+    return queue.get_team("team-a")["id"]
 
 
 def _write_meta(sd: Path, sid: str, meta: dict, *, artifact: str = "summary") -> None:

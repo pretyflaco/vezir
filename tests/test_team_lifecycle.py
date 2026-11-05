@@ -36,18 +36,18 @@ def _issue_raw(github, **kwargs):
 
 def test_update_team_name_happy(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.update_team_name("blink", "Blink Inc.")
-    assert queue.get_team("blink")["name"] == "Blink Inc."
+    queue.create_team("team-a", "Team A")
+    queue.update_team_name("team-a", "Team A Inc.")
+    assert queue.get_team("team-a")["name"] == "Team A Inc."
 
 
 def test_update_team_name_rejects_empty(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
     with pytest.raises(ValueError, match="non-empty"):
-        queue.update_team_name("blink", "")
+        queue.update_team_name("team-a", "")
     with pytest.raises(ValueError, match="non-empty"):
-        queue.update_team_name("blink", "   ")
+        queue.update_team_name("team-a", "   ")
 
 
 def test_update_team_name_rejects_unknown_team(tmp_data):
@@ -58,9 +58,9 @@ def test_update_team_name_rejects_unknown_team(tmp_data):
 
 def test_update_team_name_strips_whitespace(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.update_team_name("blink", "  Padded Name  ")
-    assert queue.get_team("blink")["name"] == "Padded Name"
+    queue.create_team("team-a", "Team A")
+    queue.update_team_name("team-a", "  Padded Name  ")
+    assert queue.get_team("team-a")["name"] == "Padded Name"
 
 
 # ── delete_team ─────────────────────────────────────────────────────────────
@@ -68,84 +68,84 @@ def test_update_team_name_strips_whitespace(tmp_data):
 
 def test_delete_team_refuses_when_jobs_exist(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01J", github="alice", title="t", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01J", github="alice", title="t", team_id="team-a")
     with pytest.raises(ValueError, match="has 1 job"):
-        queue.delete_team("blink")
-    assert queue.get_team("blink") is not None
+        queue.delete_team("team-a")
+    assert queue.get_team("team-a") is not None
 
 
 def test_delete_team_refuses_when_members_exist(tmp_data):
     """v0.7.0: refusal mode triggers on memberships (not tokens)."""
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.add_membership("alice", "blink")
+    queue.create_team("team-a", "Team A")
+    queue.add_membership("alice", "team-a")
     with pytest.raises(ValueError, match="member"):
-        queue.delete_team("blink")
-    assert queue.get_team("blink") is not None
+        queue.delete_team("team-a")
+    assert queue.get_team("team-a") is not None
 
 
 def test_delete_team_cascade_with_reassign(tmp_data):
     from vezir import config
     from vezir.server import queue
 
-    queue.create_team("blink", "Blink")
-    queue.create_team("twentyone", "Twentyone")
+    queue.create_team("team-a", "Team A")
+    queue.create_team("team-b", "Team B")
 
-    queue.enqueue("01J1", github="alice", title="t", team_id="blink")
-    queue.enqueue("01J2", github="bob", title="t", team_id="blink")
-    queue.add_membership("alice", "blink")
-    queue.add_membership("bob", "blink")
+    queue.enqueue("01J1", github="alice", title="t", team_id="team-a")
+    queue.enqueue("01J2", github="bob", title="t", team_id="team-a")
+    queue.add_membership("alice", "team-a")
+    queue.add_membership("bob", "team-a")
 
-    # Drop a sentinel file in blink's on-disk dir so we can confirm
+    # Drop a sentinel file in team-a's on-disk dir so we can confirm
     # it's removed.  v0.7.4: dirs are keyed by the team uuid.
-    blink_uuid = queue.get_team("blink")["id"]
-    twentyone_uuid = queue.get_team("twentyone")["id"]
-    blink_dir = config.teams_dir() / blink_uuid
-    blink_dir.mkdir(parents=True, exist_ok=True)
-    (blink_dir / "roster.json").write_text("[]")
+    team_a_uuid = queue.get_team("team-a")["id"]
+    team_b_uuid = queue.get_team("team-b")["id"]
+    team_a_dir = config.teams_dir() / team_a_uuid
+    team_a_dir.mkdir(parents=True, exist_ok=True)
+    (team_a_dir / "roster.json").write_text("[]")
 
-    stats = queue.delete_team("blink", reassign_to="twentyone")
+    stats = queue.delete_team("team-a", reassign_to="team-b")
     assert stats["jobs_reassigned"] == 2
     assert stats["members_dropped"] == 2
-    assert stats["reassigned_to"] == twentyone_uuid
+    assert stats["reassigned_to"] == team_b_uuid
     assert stats["on_disk_removed"] is True
 
     # Team row gone.
-    assert queue.get_team("blink") is None
+    assert queue.get_team("team-a") is None
     # Jobs migrated.
-    assert queue.get("01J1")["team_id"] == twentyone_uuid
-    assert queue.get("01J2")["team_id"] == twentyone_uuid
+    assert queue.get("01J1")["team_id"] == team_b_uuid
+    assert queue.get("01J2")["team_id"] == team_b_uuid
     # Memberships gone for the deleted team; destination team is
     # untouched (its own memberships are owned by its own table).
-    assert queue.get_team_members("twentyone") == []
+    assert queue.get_team_members("team-b") == []
     # On-disk dir removed.
-    assert not blink_dir.exists()
+    assert not team_a_dir.exists()
 
 
 def test_delete_team_empty_does_not_require_cascade(tmp_data):
     """A team with no jobs and no members deletes cleanly without cascade."""
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    stats = queue.delete_team("blink")
+    queue.create_team("team-a", "Team A")
+    stats = queue.delete_team("team-a")
     assert stats["jobs_reassigned"] == 0
     assert stats["members_dropped"] == 0
-    assert queue.get_team("blink") is None
+    assert queue.get_team("team-a") is None
 
 
 def test_delete_team_rejects_reassign_to_self(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
     with pytest.raises(ValueError, match="different team"):
-        queue.delete_team("blink", reassign_to="blink")
+        queue.delete_team("team-a", reassign_to="team-a")
 
 
 def test_delete_team_rejects_unknown_reassign_to(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01J", github="alice", title="t", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01J", github="alice", title="t", team_id="team-a")
     with pytest.raises(ValueError, match="reassign-to team"):
-        queue.delete_team("blink", reassign_to="ghost")
+        queue.delete_team("team-a", reassign_to="ghost")
 
 
 def test_delete_team_rejects_unknown_slug(tmp_data):
@@ -159,9 +159,9 @@ def test_delete_team_rejects_unknown_slug(tmp_data):
 
 def test_add_membership_creates_row(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.add_membership("alice", "blink", role="scribe", added_by="test")
-    members = queue.get_team_members("blink")
+    queue.create_team("team-a", "Team A")
+    queue.add_membership("alice", "team-a", role="scribe", added_by="test")
+    members = queue.get_team_members("team-a")
     assert len(members) == 1
     assert members[0]["github"] == "alice"
     assert members[0]["role"] == "scribe"
@@ -170,38 +170,38 @@ def test_add_membership_creates_row(tmp_data):
 
 def test_add_membership_rejects_invalid_role(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
     with pytest.raises(ValueError, match="role"):
-        queue.add_membership("alice", "blink", role="owner")
+        queue.add_membership("alice", "team-a", role="owner")
 
 
 def test_remove_membership_returns_true_when_deleted(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.add_membership("alice", "blink")
-    assert queue.remove_membership("alice", "blink") is True
-    assert queue.is_member("alice", "blink") is False
+    queue.create_team("team-a", "Team A")
+    queue.add_membership("alice", "team-a")
+    assert queue.remove_membership("alice", "team-a") is True
+    assert queue.is_member("alice", "team-a") is False
 
 
 def test_remove_membership_returns_false_when_absent(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    assert queue.remove_membership("alice", "blink") is False
+    queue.create_team("team-a", "Team A")
+    assert queue.remove_membership("alice", "team-a") is False
 
 
 def test_get_memberships_lists_user_teams(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.create_team("twentyone", "Twentyone")
-    queue.add_membership("alice", "blink", role="scribe")
-    queue.add_membership("alice", "twentyone", role="admin")
+    queue.create_team("team-a", "Team A")
+    queue.create_team("team-b", "Team B")
+    queue.add_membership("alice", "team-a", role="scribe")
+    queue.add_membership("alice", "team-b", role="admin")
     mems = queue.get_memberships("alice")
     # v0.7.4: team_id is the uuid; slug carries the human identifier.
-    assert {m["slug"] for m in mems} == {"blink", "twentyone"}
+    assert {m["slug"] for m in mems} == {"team-a", "team-b"}
     by_team = {m["slug"]: m for m in mems}
-    assert by_team["blink"]["role"] == "scribe"
-    assert by_team["blink"]["team_name"] == "Blink"
-    assert by_team["twentyone"]["role"] == "admin"
+    assert by_team["team-a"]["role"] == "scribe"
+    assert by_team["team-a"]["team_name"] == "Team A"
+    assert by_team["team-b"]["role"] == "admin"
 
 
 # ── CLI: team set-name ──────────────────────────────────────────────────────
@@ -209,15 +209,15 @@ def test_get_memberships_lists_user_teams(tmp_data):
 
 def test_cli_team_set_name(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
 
     from vezir.cli import main
     runner = CliRunner()
     result = runner.invoke(
-        main, ["team", "set-name", "--id", "blink", "--name", "Blink Inc."],
+        main, ["team", "set-name", "--id", "team-a", "--name", "Team A Inc."],
     )
     assert result.exit_code == 0, result.output
-    assert queue.get_team("blink")["name"] == "Blink Inc."
+    assert queue.get_team("team-a")["name"] == "Team A Inc."
 
 
 def test_cli_team_set_name_rejects_unknown(tmp_data):
@@ -235,39 +235,39 @@ def test_cli_team_set_name_rejects_unknown(tmp_data):
 
 def test_cli_team_delete_refuses_without_cascade(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.enqueue("01J", github="alice", title="t", team_id="blink")
+    queue.create_team("team-a", "Team A")
+    queue.enqueue("01J", github="alice", title="t", team_id="team-a")
 
     from vezir.cli import main
     runner = CliRunner()
     result = runner.invoke(
-        main, ["team", "delete", "--id", "blink", "--yes"],
+        main, ["team", "delete", "--id", "team-a", "--yes"],
     )
     assert result.exit_code == 2
     assert "has 1 job" in result.output
-    assert queue.get_team("blink") is not None
+    assert queue.get_team("team-a") is not None
 
 
 def test_cli_team_delete_with_reassign(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.create_team("twentyone", "Twentyone")
-    twentyone_uuid = queue.get_team("twentyone")["id"]
-    queue.enqueue("01J", github="alice", title="t", team_id="blink")
-    queue.add_membership("alice", "blink")
+    queue.create_team("team-a", "Team A")
+    queue.create_team("team-b", "Team B")
+    team_b_uuid = queue.get_team("team-b")["id"]
+    queue.enqueue("01J", github="alice", title="t", team_id="team-a")
+    queue.add_membership("alice", "team-a")
 
     from vezir.cli import main
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["team", "delete", "--id", "blink",
-         "--reassign-to", "twentyone", "--yes"],
+        ["team", "delete", "--id", "team-a",
+         "--reassign-to", "team-b", "--yes"],
     )
     assert result.exit_code == 0, result.output
-    assert queue.get_team("blink") is None
-    assert queue.get("01J")["team_id"] == twentyone_uuid
+    assert queue.get_team("team-a") is None
+    assert queue.get("01J")["team_id"] == team_b_uuid
     # Memberships on the deleted team are dropped.
-    assert queue.get_team_members("twentyone") == []
+    assert queue.get_team_members("team-b") == []
 
 
 # ── CLI: team add-member / remove-member / members (v0.7.0) ────────────────
@@ -275,58 +275,58 @@ def test_cli_team_delete_with_reassign(tmp_data):
 
 def test_cli_team_add_member(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
 
     from vezir.cli import main
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["team", "add-member", "--team", "blink",
+        ["team", "add-member", "--team", "team-a",
          "--github", "alice", "--role", "scribe"],
     )
     assert result.exit_code == 0, result.output
-    assert queue.is_member("alice", "blink") is True
+    assert queue.is_member("alice", "team-a") is True
 
 
 def test_cli_team_add_member_admin_role(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
+    queue.create_team("team-a", "Team A")
 
     from vezir.cli import main
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["team", "add-member", "--team", "blink",
+        ["team", "add-member", "--team", "team-a",
          "--github", "alice", "--role", "admin"],
     )
     assert result.exit_code == 0, result.output
-    assert queue.get_role("alice", "blink") == "admin"
+    assert queue.get_role("alice", "team-a") == "admin"
 
 
 def test_cli_team_remove_member(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.add_membership("alice", "blink")
+    queue.create_team("team-a", "Team A")
+    queue.add_membership("alice", "team-a")
 
     from vezir.cli import main
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["team", "remove-member", "--team", "blink", "--github", "alice"],
+        ["team", "remove-member", "--team", "team-a", "--github", "alice"],
     )
     assert result.exit_code == 0, result.output
-    assert queue.is_member("alice", "blink") is False
+    assert queue.is_member("alice", "team-a") is False
 
 
 def test_cli_team_members_lists(tmp_data):
     from vezir.server import queue
-    queue.create_team("blink", "Blink")
-    queue.add_membership("alice", "blink", role="scribe")
-    queue.add_membership("bob", "blink", role="admin")
+    queue.create_team("team-a", "Team A")
+    queue.add_membership("alice", "team-a", role="scribe")
+    queue.add_membership("bob", "team-a", role="admin")
 
     from vezir.cli import main
     runner = CliRunner()
-    result = runner.invoke(main, ["team", "members", "blink"])
+    result = runner.invoke(main, ["team", "members", "team-a"])
     assert result.exit_code == 0, result.output
     assert "alice" in result.output
     assert "bob" in result.output
@@ -339,10 +339,13 @@ def test_cli_team_members_lists(tmp_data):
 
 @pytest.fixture
 def client(tmp_data):
+    from conftest import create_test_teams
     from fastapi.testclient import TestClient
 
     from vezir.server.app import create_app
-    return TestClient(create_app(), follow_redirects=False)
+    tc = TestClient(create_app(), follow_redirects=False)
+    create_test_teams()
+    return tc
 
 
 def _bearer(token: str) -> dict:
@@ -354,13 +357,13 @@ def test_admin_patch_renames_team(client):
     admin_tok = _issue_raw("admin", is_admin=True)
 
     r = client.patch(
-        "/admin/teams/blink",
+        "/admin/teams/team-a",
         headers=_bearer(admin_tok),
-        json={"name": "Blink Inc."},
+        json={"name": "Team A Inc."},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["name"] == "Blink Inc."
-    assert queue.get_team("blink")["name"] == "Blink Inc."
+    assert r.json()["name"] == "Team A Inc."
+    assert queue.get_team("team-a")["name"] == "Team A Inc."
 
 
 def test_admin_patch_combined_name_and_sync(client):
@@ -368,18 +371,18 @@ def test_admin_patch_combined_name_and_sync(client):
     admin_tok = _issue_raw("admin", is_admin=True)
 
     r = client.patch(
-        "/admin/teams/blink",
+        "/admin/teams/team-a",
         headers=_bearer(admin_tok),
         json={
-            "name": "Blink Inc.",
-            "sync_remote": "https://git.example/blink.git",
+            "name": "Team A Inc.",
+            "sync_remote": "https://git.example/team-a.git",
             "sync_meeting_type": "prod",
         },
     )
     assert r.status_code == 200, r.text
-    row = queue.get_team("blink")
-    assert row["name"] == "Blink Inc."
-    assert row["sync_remote"] == "https://git.example/blink.git"
+    row = queue.get_team("team-a")
+    assert row["name"] == "Team A Inc."
+    assert row["sync_remote"] == "https://git.example/team-a.git"
     assert row["sync_meeting_type"] == "prod"
 
 
@@ -397,31 +400,31 @@ def test_admin_delete_team_empty(client):
 def test_admin_delete_team_refuses_non_empty(client):
     from vezir.server import queue
     admin_tok = _issue_raw("admin", is_admin=True)
-    queue.enqueue("01J", github="alice", title="t", team_id="twentyone")
+    queue.enqueue("01J", github="alice", title="t", team_id="team-b")
 
-    r = client.delete("/admin/teams/twentyone", headers=_bearer(admin_tok))
+    r = client.delete("/admin/teams/team-b", headers=_bearer(admin_tok))
     assert r.status_code == 409
     assert "job" in r.text.lower()
-    assert queue.get_team("twentyone") is not None
+    assert queue.get_team("team-b") is not None
 
 
 def test_admin_delete_team_cascade(client):
     from vezir.server import queue
     admin_tok = _issue_raw("admin", is_admin=True)
-    queue.enqueue("01J", github="alice", title="t", team_id="twentyone")
+    queue.enqueue("01J", github="alice", title="t", team_id="team-b")
 
     r = client.delete(
-        "/admin/teams/twentyone?reassign_to=blink",
+        "/admin/teams/team-b?reassign_to=team-a",
         headers=_bearer(admin_tok),
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    blink_uuid = queue.get_team("blink")["id"]
+    team_a_uuid = queue.get_team("team-a")["id"]
     assert body["deleted"] is True
     assert body["jobs_reassigned"] == 1
-    assert body["reassigned_to"] == blink_uuid
-    assert queue.get_team("twentyone") is None
-    assert queue.get("01J")["team_id"] == blink_uuid
+    assert body["reassigned_to"] == team_a_uuid
+    assert queue.get_team("team-b") is None
+    assert queue.get("01J")["team_id"] == team_a_uuid
 
 
 def test_admin_delete_team_requires_admin(client):
@@ -441,18 +444,18 @@ def test_admin_add_member_endpoint(client):
     admin_tok = _issue_raw("admin", is_admin=True)
 
     r = client.post(
-        "/admin/teams/blink/members",
+        "/admin/teams/team-a/members",
         headers=_bearer(admin_tok),
         json={"github": "alice", "role": "scribe"},
     )
     assert r.status_code == 200, r.text
-    assert queue.is_member("alice", "blink") is True
+    assert queue.is_member("alice", "team-a") is True
 
 
 def test_admin_add_member_rejects_invalid_role(client):
     admin_tok = _issue_raw("admin", is_admin=True)
     r = client.post(
-        "/admin/teams/blink/members",
+        "/admin/teams/team-a/members",
         headers=_bearer(admin_tok),
         json={"github": "alice", "role": "owner"},
     )
@@ -472,21 +475,21 @@ def test_admin_add_member_unknown_team_404(client):
 def test_admin_remove_member_endpoint(client):
     from vezir.server import queue
     admin_tok = _issue_raw("admin", is_admin=True)
-    queue.add_membership("alice", "blink")
+    queue.add_membership("alice", "team-a")
 
     r = client.delete(
-        "/admin/teams/blink/members/alice",
+        "/admin/teams/team-a/members/alice",
         headers=_bearer(admin_tok),
     )
     assert r.status_code == 200, r.text
-    assert queue.is_member("alice", "blink") is False
+    assert queue.is_member("alice", "team-a") is False
 
 
 def test_admin_remove_member_idempotent_404(client):
     """Removing a non-member returns 404 (idempotent from operator POV)."""
     admin_tok = _issue_raw("admin", is_admin=True)
     r = client.delete(
-        "/admin/teams/blink/members/ghost",
+        "/admin/teams/team-a/members/ghost",
         headers=_bearer(admin_tok),
     )
     assert r.status_code == 404
@@ -495,16 +498,16 @@ def test_admin_remove_member_idempotent_404(client):
 def test_admin_list_members_endpoint(client):
     from vezir.server import queue
     admin_tok = _issue_raw("admin", is_admin=True)
-    queue.add_membership("alice", "blink", role="scribe")
-    queue.add_membership("bob", "blink", role="admin")
+    queue.add_membership("alice", "team-a", role="scribe")
+    queue.add_membership("bob", "team-a", role="admin")
 
     r = client.get(
-        "/admin/teams/blink/members",
+        "/admin/teams/team-a/members",
         headers=_bearer(admin_tok),
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["team_id"] == "blink"
+    assert body["team_id"] == "team-a"
     by_github = {m["github"]: m for m in body["members"]}
     assert by_github["alice"]["role"] == "scribe"
     assert by_github["bob"]["role"] == "admin"
@@ -513,7 +516,7 @@ def test_admin_list_members_endpoint(client):
 def test_admin_membership_endpoints_require_admin(client):
     scribe_tok = _issue_raw("alice")
     r = client.post(
-        "/admin/teams/blink/members",
+        "/admin/teams/team-a/members",
         headers=_bearer(scribe_tok),
         json={"github": "alice"},
     )

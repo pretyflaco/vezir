@@ -35,7 +35,7 @@ def client_and_token(tmp_data):
     return TestClient(app, follow_redirects=False), token
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {"Authorization": f"Bearer {token}", "X-Team-Id": team}
 
 
@@ -186,18 +186,18 @@ def test_import_cross_team_is_404(tmp_data):
     from vezir.server.app import create_app
 
     client = TestClient(create_app(), follow_redirects=False)
-    bob_tok = auth.issue("bob", team_id="twentyone")
+    bob_tok = auth.issue("bob", team_id="team-b")
     resp = client.post(
         "/api/sessions/import",
-        headers=_bearer(bob_tok, team="twentyone"),
+        headers=_bearer(bob_tok, team="team-b"),
         files=_bundle(),
     )
     assert resp.status_code == 200  # bob imports into HIS team
 
     sid = resp.json()["session_id"]
-    alice_tok = auth.issue("alice", team_id="blink")
+    alice_tok = auth.issue("alice", team_id="team-a")
     detail = client.get(
-        f"/api/sessions/{sid}", headers=_bearer(alice_tok, team="blink"),
+        f"/api/sessions/{sid}", headers=_bearer(alice_tok, team="team-a"),
     )
     assert detail.status_code == 404
 
@@ -231,12 +231,12 @@ def test_imported_session_is_labelable_and_syncable(client_and_token):
     # remote — set one (the endpoint 409s for remote-less teams, 0.8.10).
     from vezir.server import queue as _q
 
-    if _q.get_team("blink") is None:
-        _q.create_team("blink", "Blink",
-                       sync_remote="https://git.example/blink.git")
+    if _q.get_team("team-a") is None:
+        _q.create_team("team-a", "Team A",
+                       sync_remote="https://git.example/team-a.git")
     else:
-        _q.update_team_sync("blink",
-                            sync_remote="https://git.example/blink.git")
+        _q.update_team_sync("team-a",
+                            sync_remote="https://git.example/team-a.git")
     with patch("vezir.server.sessions.worker.enqueue_task") as enq:
         enq.return_value = True
         r = client.post(f"/session/{sid}/sync", headers=_bearer(token), json={})
@@ -289,7 +289,7 @@ def test_sessions_offset_pages_through_older_sessions(client_and_token):
     from vezir.server import queue
 
     for i in range(5):
-        queue.enqueue(f"01PAGE{i}", "alice", title=f"m{i}", team_id="blink")
+        queue.enqueue(f"01PAGE{i}", "alice", title=f"m{i}", team_id="team-a")
 
     page1 = client.get(
         "/api/sessions?limit=2", headers=_bearer(token),
@@ -313,7 +313,7 @@ def test_sessions_offset_negative_is_clamped(client_and_token):
     client, token = client_and_token
     from vezir.server import queue
 
-    queue.enqueue("01NEG", "alice", title="t", team_id="blink")
+    queue.enqueue("01NEG", "alice", title="t", team_id="team-a")
     # Negative offset must not error (clamped to 0).
     resp = client.get(
         "/api/sessions?limit=1&offset=-5", headers=_bearer(token),
@@ -336,7 +336,7 @@ def _seed_dated(client_and_token):
         ("01F3", "alice", "Board Retro", "2026-06-01T10:00:00Z", "done"),
     ]
     for sid, gh, title, created, status in rows:
-        queue.enqueue(sid, gh, title=title, team_id="blink")
+        queue.enqueue(sid, gh, title=title, team_id="team-a")
         # Override created_at to the meeting date (enqueue stamps now()).
         with queue._conn() as c:
             c.execute(

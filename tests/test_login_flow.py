@@ -57,7 +57,7 @@ def test_login_end_to_end(server, tmp_data, home, monkeypatch):
 
     # 1. Authorize the signer's pubkey server-side.
     signer = FakeSigner()
-    nostr_members.add(signer.pubkey, "milfort", label="laptop")
+    nostr_members.add(signer.pubkey, "trent", label="laptop")
 
     # 2. Drive the NIP-46 client with the fake signer.
     client = nip46.Nip46Client(relay="wss://relay.example")
@@ -75,21 +75,21 @@ def test_login_end_to_end(server, tmp_data, home, monkeypatch):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["github"] == "milfort"
+    assert body["github"] == "trent"
 
     # 4. Persist the session and verify resolve_credentials surfaces it.
     client_config.set_team_session(
-        "blink", "http://testserver", body["session_jwt"], body["npub"],
+        "team-a", "http://testserver", body["session_jwt"], body["npub"],
     )
     url, token, team_id, source = client_config.resolve_credentials()
     assert token == body["session_jwt"]
-    assert team_id == "blink"
+    assert team_id == "team-a"
     assert source.startswith("teams:")
 
     # 5. The stored JWT works as a Bearer credential on /api/me.
     me = server.get("/api/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200
-    assert me.json()["github"] == "milfort"
+    assert me.json()["github"] == "trent"
 
 
 def test_login_event_template_shape():

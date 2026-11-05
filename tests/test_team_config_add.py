@@ -21,7 +21,7 @@ def test_team_config_add_reads_token_from_stdin_without_network(tmp_path, monkey
         main,
         [
             "team", "config", "add",
-            "--id", "blink",
+            "--id", "team-a",
             "--url", "https://example.test",
             "--token-stdin",
         ],
@@ -33,5 +33,5 @@ def test_team_config_add_reads_token_from_stdin_without_network(tmp_path, monkey
     from vezir.client.config import load_teams_config
 
     cfg = load_teams_config()
-    assert cfg["active"] == "blink"
+    assert cfg["active"] == "team-a"
     assert cfg["teams"][0]["token"] == token

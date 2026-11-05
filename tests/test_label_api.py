@@ -31,7 +31,7 @@ def client_and_token(tmp_data):
     return TestClient(app, follow_redirects=False), token
 
 
-def _bearer(token: str, team: str = "blink") -> dict:
+def _bearer(token: str, team: str = "team-a") -> dict:
     return {
         "Authorization": f"Bearer {token}",
         "X-Team-Id": team,
@@ -41,16 +41,16 @@ def _bearer(token: str, team: str = "blink") -> dict:
 def _seed_session(tmp_data, session_id: str, status: str = "needs_labeling"):
     """Create a minimal session row in the queue for testing.
 
-    Ensures the ``blink`` team exists WITH a sync_remote so the sync-exercising
+    Ensures the ``team-a`` team exists WITH a sync_remote so the sync-exercising
     tests below reach ``meet_runner.sync`` (0.8.10 added a guard that skips sync
     entirely for remote-less teams).
     """
     from vezir.server import queue
-    if queue.get_team("blink") is None:
-        queue.create_team("blink", "Blink", sync_remote="https://git.example/blink.git")
+    if queue.get_team("team-a") is None:
+        queue.create_team("team-a", "Team A", sync_remote="https://git.example/team-a.git")
     else:
-        queue.update_team_sync("blink", sync_remote="https://git.example/blink.git")
-    queue.enqueue(session_id, "alice", "test meeting", team_id="blink")
+        queue.update_team_sync("team-a", sync_remote="https://git.example/team-a.git")
+    queue.enqueue(session_id, "alice", "test meeting", team_id="team-a")
     queue.update_status(session_id, status)
 
 
@@ -178,19 +178,19 @@ def test_api_label_post_success(mock_apply, client_and_token, tmp_data):
     resp = client.post(
         "/api/label/01TEST",
         headers=_bearer(token),
-        json={"labels": {"REMOTE_0": "kasita", "REMOTE_1": "alice"}},
+        json={"labels": {"REMOTE_0": "ivan", "REMOTE_1": "alice"}},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
     assert body["session_id"] == "01TEST"
     from vezir.server import queue
-    blink_uuid = queue.get_team("blink")["id"]
+    team_a_uuid = queue.get_team("team-a")["id"]
     mock_apply.assert_called_once_with(
         "01TEST",
-        {"REMOTE_0": "kasita", "REMOTE_1": "alice"},
+        {"REMOTE_0": "ivan", "REMOTE_1": "alice"},
         "alice",  # github handle of the authenticated user
-        blink_uuid,  # team_id (v0.7.4+): the auth-resolved team uuid
+        team_a_uuid,  # team_id (v0.7.4+): the auth-resolved team uuid
     )
 
 
@@ -203,13 +203,13 @@ def test_api_label_post_strips_empty_labels(mock_apply, client_and_token, tmp_da
     resp = client.post(
         "/api/label/01TEST",
         headers=_bearer(token),
-        json={"labels": {"REMOTE_0": "kasita", "REMOTE_1": "  ", "YOU": ""}},
+        json={"labels": {"REMOTE_0": "ivan", "REMOTE_1": "  ", "YOU": ""}},
     )
     assert resp.status_code == 200
     from vezir.server import queue
-    blink_uuid = queue.get_team("blink")["id"]
+    team_a_uuid = queue.get_team("team-a")["id"]
     mock_apply.assert_called_once_with(
-        "01TEST", {"REMOTE_0": "kasita"}, "alice", blink_uuid,
+        "01TEST", {"REMOTE_0": "ivan"}, "alice", team_a_uuid,
     )
 
 
@@ -429,19 +429,19 @@ def test_label_segments_cross_team_is_404(tmp_data):
     sdir.mkdir(parents=True, exist_ok=True)
     _write_segments_transcript(sdir, "01TEAMX")
 
-    # Alice (blink member) sees her team's session's segments.
-    alice_tok = auth.issue("alice", team_id="blink")
+    # Alice (team-a member) sees her team's session's segments.
+    alice_tok = auth.issue("alice", team_id="team-a")
     resp = client.get(
         "/label/01TEAMX/segments/SPEAKER_00",
-        headers=_bearer(alice_tok, team="blink"),
+        headers=_bearer(alice_tok, team="team-a"),
     )
     assert resp.status_code == 200
 
-    # Bob is a member of twentyone only; the blink session must 404.
-    bob_tok = auth.issue("bob", team_id="twentyone")
+    # Bob is a member of team-b only; the team-a session must 404.
+    bob_tok = auth.issue("bob", team_id="team-b")
     resp = client.get(
         "/label/01TEAMX/segments/SPEAKER_00",
-        headers=_bearer(bob_tok, team="twentyone"),
+        headers=_bearer(bob_tok, team="team-b"),
     )
     assert resp.status_code == 404
 
@@ -721,7 +721,7 @@ def test_reauto_label_partial_stays_needs_labeling(tmp_data):
 
     def fake_label_auto(session_dir, job_id, team_id, log_path):
         # Simulate millet applying a confident match for one speaker only.
-        _write_transcript(sd, "01RELBL", ["Lukas", "SPEAKER_01"])
+        _write_transcript(sd, "01RELBL", ["Pia", "SPEAKER_01"])
         return 0
 
     with patch("vezir.server.meet_runner.label_auto", side_effect=fake_label_auto), \
@@ -731,7 +731,7 @@ def test_reauto_label_partial_stays_needs_labeling(tmp_data):
         res = worker.reauto_label_session("01RELBL", sync=False)
 
     assert res["status"] == "needs_labeling"
-    assert "Lukas" in res["matched"]
+    assert "Pia" in res["matched"]
     assert "SPEAKER_01" in res["unresolved"]
     mock_sync.assert_not_called()
 
@@ -744,7 +744,7 @@ def test_reauto_label_fully_resolved_no_sync_marks_done(tmp_data):
     _write_transcript(sd, "01RELOK", ["SPEAKER_00", "SPEAKER_01"])
 
     def fake_label_auto(session_dir, job_id, team_id, log_path):
-        _write_transcript(sd, "01RELOK", ["Lukas", "Kemal"])
+        _write_transcript(sd, "01RELOK", ["Pia", "Nora"])
         return 0
 
     with patch("vezir.server.meet_runner.label_auto", side_effect=fake_label_auto), \
@@ -767,7 +767,7 @@ def test_reauto_label_fully_resolved_with_sync(tmp_data):
     _write_transcript(sd, "01RELSYNC", ["SPEAKER_00", "SPEAKER_01"])
 
     def fake_label_auto(session_dir, job_id, team_id, log_path):
-        _write_transcript(sd, "01RELSYNC", ["Lukas", "Kemal"])
+        _write_transcript(sd, "01RELSYNC", ["Pia", "Nora"])
         return 0
 
     with patch("vezir.server.meet_runner.label_auto", side_effect=fake_label_auto), \
@@ -785,7 +785,7 @@ def test_reauto_label_fully_resolved_with_sync(tmp_data):
 def test_reauto_label_respects_auto_label_opt_out(tmp_data):
     """auto_label_enabled=0 → skip, don't re-label."""
     from vezir.server import queue, worker
-    queue.enqueue("01RELOPT", "alice", "m", team_id="blink", auto_label_enabled=False)
+    queue.enqueue("01RELOPT", "alice", "m", team_id="team-a", auto_label_enabled=False)
     queue.update_status("01RELOPT", "needs_labeling")
 
     with patch("vezir.server.meet_runner.label_auto") as mock_la, \

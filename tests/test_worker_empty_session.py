@@ -83,15 +83,15 @@ def test_is_empty_transcript_false_on_bad_json(tmp_path):
 
 
 def _make_job(tmp_data, sid: str) -> dict:
-    queue.create_team("blink", "Blink (test)")
-    team = queue.get_team("blink")
+    queue.create_team("team-a", "Team A (test)")
+    team = queue.get_team("team-a")
     team_id = team["id"]
     queue.enqueue(sid, github="alice", team_id=team_id, title="oops")
     return queue.get(sid)
 
 
 def test_empty_session_routes_to_empty_and_skips_sync(tmp_data, monkeypatch):
-    sid = "01KWYAH6QZF1JM7TPECNQCMRRQ"
+    sid = "01J0N239RJJMQBH66M0Y06GGX7"
     job = _make_job(tmp_data, sid)
 
     calls = {"sync": 0, "label_auto": 0}
@@ -122,7 +122,7 @@ def test_empty_session_routes_to_empty_and_skips_sync(tmp_data, monkeypatch):
 
 
 def test_nonempty_session_still_syncs(tmp_data, monkeypatch):
-    sid = "01KWYE8DN414ZJGPBNZJEMSV47"
+    sid = "01JR7EA498SGKCT0263RE8WBRB"
     job = _make_job(tmp_data, sid)
 
     calls = {"sync": 0}

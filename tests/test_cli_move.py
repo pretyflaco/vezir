@@ -17,8 +17,8 @@ def env(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     base = tmp_path / "rec"
-    (base / "blink").mkdir(parents=True)
-    (base / "twentyone").mkdir()
+    (base / "team-a").mkdir(parents=True)
+    (base / "team-b").mkdir()
     monkeypatch.setenv("VEZIR_RECORD_DIR", str(base))
     monkeypatch.setenv("VEZIR_URL", "https://srv")
     monkeypatch.setenv("VEZIR_TOKEN", "vzr_tok")
@@ -28,14 +28,14 @@ def env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def server(monkeypatch):
-    """Fake VezirClient: the session lives in `blink`; records calls."""
+    """Fake VezirClient: the session lives in `team-a`; records calls."""
     from vezir.client import api
 
-    state = {"home": "blink", "moves": [], "move_result": None, "synced": True}
+    state = {"home": "team-a", "moves": [], "move_result": None, "synced": True}
 
     def get_me(self):
         return ApiResult.success({"memberships": [
-            {"slug": "startups"}, {"slug": "blink"}, {"slug": "twentyone"},
+            {"slug": "startups"}, {"slug": "team-a"}, {"slug": "team-b"},
         ]})
 
     def get_session(self, sid):
@@ -53,7 +53,7 @@ def server(monkeypatch):
         return ApiResult.success({
             "ok": True, "from_team": self.team_id, "to_team": to_team,
             "moved": True, "was_synced": state["synced"], "sync_queued": sync,
-            "warning": "this session was already synced to blink's git repo; "
+            "warning": "this session was already synced to team-a's git repo; "
                        "that copy stays there — remove it from the repo manually."
             if state["synced"] else None,
         })
@@ -65,57 +65,57 @@ def server(monkeypatch):
 
 
 def _uploaded_folder(base: Path, sid: str) -> Path:
-    d = base / "blink" / "meeting-20261002-123316"
+    d = base / "team-a" / "meeting-20261002-123316"
     d.mkdir()
     (d / "meeting-20261002-123316.ogg").write_bytes(b"OggS")
-    (d / "session.json").write_text(json.dumps({"session_id": sid, "team_id": "blink"}))
+    (d / "session.json").write_text(json.dumps({"session_id": sid, "team_id": "team-a"}))
     return d
 
 
 def test_move_finds_source_team_moves_and_follows_locally(env, server):
     d = _uploaded_folder(env, "01S")
-    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "twentyone", "-y"])
+    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "team-b", "-y"])
     assert res.exit_code == 0, res.output
-    # Probed the active team (startups) first, found it in blink.
-    assert server["moves"] == [("blink", "01S", "twentyone", False)]
-    assert "moves blink → twentyone" in res.output
+    # Probed the active team (startups) first, found it in team-a.
+    assert server["moves"] == [("team-a", "01S", "team-b", False)]
+    assert "moves team-a → team-b" in res.output
     assert "STAYS there" in res.output  # warned before
     assert "remove it from the repo manually" in res.output  # and after
-    new = env / "twentyone" / d.name
+    new = env / "team-b" / d.name
     assert new.is_dir() and not d.exists()
-    assert json.loads((new / "session.json").read_text())["team_id"] == "twentyone"
+    assert json.loads((new / "session.json").read_text())["team_id"] == "team-b"
 
 
 def test_move_sync_flag(env, server):
-    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "twentyone", "--sync", "-y"])
+    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "team-b", "--sync", "-y"])
     assert res.exit_code == 0, res.output
     assert server["moves"][0][3] is True
-    assert "sync to twentyone queued" in res.output
+    assert "sync to team-b queued" in res.output
 
 
 def test_move_confirmation_abort(env, server):
-    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "twentyone"], input="n\n")
+    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "team-b"], input="n\n")
     assert res.exit_code == 1
     assert server["moves"] == []
 
 
 def test_move_not_found_anywhere(env, server):
     server["home"] = "elsewhere"
-    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "twentyone", "-y"])
+    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "team-b", "-y"])
     assert res.exit_code == 2
-    assert "not found in startups, blink, twentyone" in res.output
+    assert "not found in startups, team-a, team-b" in res.output
 
 
 def test_move_explains_old_server(env, server):
     server["move_result"] = ApiResult.http(404, '{"detail":"Not Found"}')
-    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "twentyone", "-y"])
+    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "team-b", "-y"])
     assert res.exit_code == 1
     assert "older than 0.26.0" in res.output
-    assert "vezir session move 01S --to-team twentyone" in res.output
+    assert "vezir session move 01S --to-team team-b" in res.output
 
 
 def test_move_surfaces_server_refusal(env, server):
     server["move_result"] = ApiResult.http(409, "session is being processed (transcribing)")
-    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "twentyone", "-y"])
+    res = CliRunner().invoke(main, ["move", "01S", "--to-team", "team-b", "-y"])
     assert res.exit_code == 1
     assert "being processed" in res.output

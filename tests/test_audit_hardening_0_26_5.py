@@ -49,7 +49,7 @@ def _wav() -> bytes:
 
 
 def _hdr(tok: str) -> dict:
-    return {"Authorization": f"Bearer {tok}", "X-Team-Id": "blink"}
+    return {"Authorization": f"Bearer {tok}", "X-Team-Id": "team-a"}
 
 
 # ── M-9 ──────────────────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ def test_privileged_routes_carry_the_api_limiter(tmp_data, monkeypatch, method, 
         "auth-fail": ratelimit._Limiter(capacity=1000, window_sec=60.0),
     })
     client = TestClient(create_app(), follow_redirects=False)
-    url = path.format(team_id="blink", github="alice", sid="sid", upload_id="upload")
+    url = path.format(team_id="team-a", github="alice", sid="sid", upload_id="upload")
     codes = [client.request(method, url).status_code for _ in range(6)]
     assert codes[:5] == [401] * 5
     assert codes[5] == 429
@@ -316,7 +316,7 @@ def test_bearer_spray_hits_per_ip_auth_fail_bucket(tmp_data, monkeypatch):
     # A valid token from the same IP is unaffected.
     assert client.get("/api/me", headers={"Authorization": f"Bearer {good}"}).status_code == 200
     # Same for team-scoped and admin routes.
-    bad = {"Authorization": "Bearer vzr_x", "X-Team-Id": "blink"}
+    bad = {"Authorization": "Bearer vzr_x", "X-Team-Id": "team-a"}
     assert client.get("/api/sessions", headers=bad).status_code == 429
     assert client.get("/admin/teams", headers={"Authorization": "Bearer vzr_x"}).status_code == 429
 

@@ -41,7 +41,7 @@ def test_sync_slug_truncates_at_64():
 def test_sanitize_title_basic():
     from vezir.config import sanitize_title
     assert sanitize_title("AB Board") == "AB_BOARD"
-    assert sanitize_title("weekly sync / @blink") == "WEEKLY_SYNC_BLINK"
+    assert sanitize_title("weekly sync / @team-a") == "WEEKLY_SYNC_TEAM-A"
 
 
 def test_sanitize_title_empty():
@@ -211,15 +211,15 @@ def test_find_local_global_fallback_uuid_finds_slug_dir(tmp_path, monkeypatch):
     from vezir.client.pull import find_local_session_dir
 
     root = tmp_path / "vezir-meetings"
-    # Recording written under the slug "blink".
-    slug_dir = root / "blink"
+    # Recording written under the slug "team-a".
+    slug_dir = root / "team-a"
     session_dir = slug_dir / "meeting-20260602-134206_DESTINY"
     session_dir.mkdir(parents=True)
     (session_dir / "session.json").write_text(
-        json.dumps({"session_id": "01KT3YT9", "team_id": "5e0d-uuid"})
+        json.dumps({"session_id": "01JTEST9", "team_id": "aaaa-uuid"})
     )
     # A decoy second team dir without the session.
-    (root / "twentyone").mkdir(parents=True)
+    (root / "team-b").mkdir(parents=True)
 
     # recordings_dir honors team_id realistically: <root>/<team_id>.
     monkeypatch.setattr(
@@ -227,8 +227,8 @@ def test_find_local_global_fallback_uuid_finds_slug_dir(tmp_path, monkeypatch):
     )
 
     # The UUID dir doesn't exist on disk; only the slug dir does.
-    assert not (root / "5e0d-uuid").exists()
-    result = find_local_session_dir("01KT3YT9", "5e0d-uuid")
+    assert not (root / "aaaa-uuid").exists()
+    result = find_local_session_dir("01JTEST9", "aaaa-uuid")
     assert result == session_dir
 
 
@@ -238,19 +238,19 @@ def test_find_local_team_specific_takes_precedence(tmp_path, monkeypatch):
     from vezir.client.pull import find_local_session_dir
 
     root = tmp_path / "vezir-meetings"
-    blink = root / "blink"
-    right = blink / "meeting-A_RIGHT"
+    team_a = root / "team-a"
+    right = team_a / "meeting-A_RIGHT"
     right.mkdir(parents=True)
     (right / "session.json").write_text(json.dumps({"session_id": "01DUP"}))
     # A same-session_id dir under a different team (should NOT be returned).
-    other = root / "twentyone" / "meeting-B_WRONG"
+    other = root / "team-b" / "meeting-B_WRONG"
     other.mkdir(parents=True)
     (other / "session.json").write_text(json.dumps({"session_id": "01DUP"}))
 
     monkeypatch.setattr(
         config, "recordings_dir", lambda team_id=None: root / (team_id or "default")
     )
-    result = find_local_session_dir("01DUP", "blink")
+    result = find_local_session_dir("01DUP", "team-a")
     assert result == right
 
 
@@ -260,14 +260,14 @@ def test_find_local_team_specific_takes_precedence(tmp_path, monkeypatch):
 def test_record_uploaded_session_writes_stub_not_manifest(tmp_path, monkeypatch):
     from vezir.client.pull import find_local_session_dir, record_uploaded_session
 
-    team_dir = tmp_path / "blink"
+    team_dir = tmp_path / "team-a"
     rec = team_dir / "meeting-20260604-153156_STABLESATS_BRAINSTORM"
     rec.mkdir(parents=True)
     # Simulate a fresh recording dir: audio only, no session.json.
     (rec / "meeting-20260604-153156.ogg").write_bytes(b"\x00")
 
     record_uploaded_session(rec, "01UPLOAD", title="Stablesats Brainstorm",
-                            team_id="blink")
+                            team_id="team-a")
 
     meta = json.loads((rec / "session.json").read_text())
     assert meta["session_id"] == "01UPLOAD"
@@ -279,20 +279,20 @@ def test_record_uploaded_session_writes_stub_not_manifest(tmp_path, monkeypatch)
     # The dir is still discoverable via session.json -> no duplicate pull.
     from vezir import config
     monkeypatch.setattr(config, "recordings_dir", lambda team_id=None: team_dir)
-    assert find_local_session_dir("01UPLOAD", "blink") == rec
+    assert find_local_session_dir("01UPLOAD", "team-a") == rec
 
 
 def test_record_uploaded_session_idempotent_and_nonclobbering(tmp_path):
     from vezir.client.pull import record_uploaded_session
 
-    rec = tmp_path / "blink" / "meeting-20260604-153156_X"
+    rec = tmp_path / "team-a" / "meeting-20260604-153156_X"
     rec.mkdir(parents=True)
     # A pre-existing (richer) session.json must NOT be clobbered.
     (rec / "session.json").write_text(json.dumps({
         "session_id": "01UPLOAD", "title": "X", "created_by": "vezir",
         "status": "done",
     }))
-    record_uploaded_session(rec, "01UPLOAD", title="X", team_id="blink")
+    record_uploaded_session(rec, "01UPLOAD", title="X", team_id="team-a")
     meta = json.loads((rec / "session.json").read_text())
     # Existing file preserved (still has the richer 'status' field).
     assert meta["status"] == "done"
@@ -357,7 +357,7 @@ def test_pull_repulls_when_manifest_folder_lacks_artifacts(tmp_path, monkeypatch
     from vezir import config
     from vezir.client import pull as pull_mod
 
-    team_dir = tmp_path / "blink"
+    team_dir = tmp_path / "team-a"
     rec = team_dir / "meeting-20260605-123757_STARTUPS_ORG"
     rec.mkdir(parents=True)
     (rec / "meeting-x.ogg").write_bytes(b"\x00")
@@ -373,7 +373,7 @@ def test_pull_repulls_when_manifest_folder_lacks_artifacts(tmp_path, monkeypatch
         title = "Startups Org"
         github = "alice"
         created_at = "2026-06-05T10:22:18Z"
-        team_id = "blink"
+        team_id = "team-a"
         artifacts = {"summary": "01INCOMPLETE.summary.md"}
 
     class _Result:
@@ -435,7 +435,7 @@ def test_download_artifacts_upgrades_upload_stub(tmp_path, monkeypatch):
         status = "done"
         github = "alice"
         created_at = "2026-06-04T15:31:00Z"
-        team_id = "blink"
+        team_id = "team-a"
         artifacts = {"summary": "x.summary.md"}
 
     dest = tmp_path / "rec"

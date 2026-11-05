@@ -11,11 +11,11 @@ Artifact files are renamed from ULID-based server names to human-friendly
 ``YYYYMMDD_<title_slug>`` names so ``ls`` output is immediately useful:
 
     ~/vezir-meetings/myteam/meeting-20260526-143041_WEEKLY_SYNC/
-        20260526_weekly_sync.md          <- 01KSGN2X...summary.md
-        20260526_weekly_sync.txt         <- 01KSGN2X...txt
-        20260526_weekly_sync.srt         <- 01KSGN2X...srt
-        20260526_weekly_sync.pdf         <- 01KSGN2X...pdf
-        20260526_weekly_sync.json        <- 01KSGN2X...json
+        20260526_weekly_sync.md          <- 01JABC12...summary.md
+        20260526_weekly_sync.txt         <- 01JABC12...txt
+        20260526_weekly_sync.srt         <- 01JABC12...srt
+        20260526_weekly_sync.pdf         <- 01JABC12...pdf
+        20260526_weekly_sync.json        <- 01JABC12...json
         20260526_weekly_sync.frontmatter.json
         session.json                  <- metadata written by this module
         attachments/slides.pdf        <- user-supplied material, name kept verbatim

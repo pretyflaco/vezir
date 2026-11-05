@@ -531,7 +531,7 @@ def _wait_with_timeout(
        15 min) — the step has produced NO observable progress (no log-file
        growth, no artifact change in the session dir, <~2% process-group
        CPU) for this long; kill the process group.  This is what turns an
-       incident like 2026-09-15 (a stalled TEE summary pinned a job in
+       incident like a stalled TEE summary (which pinned a job in
        ``transcribing`` for 30+ min, GPU idle) into a minutes-scale failure
        with a clear cause in the job error — while leaving legitimately
        quiet-but-working steps (model downloads that stream progress bars,
