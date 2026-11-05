@@ -216,7 +216,7 @@ def test_find_local_global_fallback_uuid_finds_slug_dir(tmp_path, monkeypatch):
     session_dir = slug_dir / "meeting-20260602-134206_DESTINY"
     session_dir.mkdir(parents=True)
     (session_dir / "session.json").write_text(
-        json.dumps({"session_id": "01KT3YT9", "team_id": "5e0d-uuid"})
+        json.dumps({"session_id": "01JTEST9", "team_id": "aaaa-uuid"})
     )
     # A decoy second team dir without the session.
     (root / "team-b").mkdir(parents=True)
@@ -227,8 +227,8 @@ def test_find_local_global_fallback_uuid_finds_slug_dir(tmp_path, monkeypatch):
     )
 
     # The UUID dir doesn't exist on disk; only the slug dir does.
-    assert not (root / "5e0d-uuid").exists()
-    result = find_local_session_dir("01KT3YT9", "5e0d-uuid")
+    assert not (root / "aaaa-uuid").exists()
+    result = find_local_session_dir("01JTEST9", "aaaa-uuid")
     assert result == session_dir
 
 

@@ -195,7 +195,7 @@ async def test_refresh_identity_slug_matches_uuid_membership(
     memberships WITHOUT being rewritten to the UUID (the v0.7.4 bug
     that broke the TUI team switcher)."""
     _mock_api_me(monkeypatch, [
-        {"team_id": "5e0d4eecd0e24b2a8dbc517adb486199", "slug": "team-a",
+        {"team_id": "aaaa1111aaaa4aaa8aaa111111111111", "slug": "team-a",
          "role": "scribe", "team_name": "Team A"},
     ])
     async with app.run_test():
@@ -216,7 +216,7 @@ async def test_refresh_identity_fallback_keeps_slug_not_uuid(
     first membership, adopt its SLUG (so next_team_id's slug cycle
     still works), never the bare UUID."""
     _mock_api_me(monkeypatch, [
-        {"team_id": "8ec688fd1a1a4b94b9ce7dbafb6e330c", "slug": "startups",
+        {"team_id": "cccc3333cccc4ccc8ccc333333333333", "slug": "startups",
          "role": "admin", "team_name": "startups"},
     ])
     async with app.run_test():

@@ -499,7 +499,7 @@ def test_ensure_session_json_injects_title(monkeypatch, tmp_path):
     import json
     sd = _session_dir(tmp_path)
     # Real ULID-ish id (26 chars) so the timestamp parse path runs.
-    sid = "01KT6BHZCM0000000000000000"
+    sid = "01JT6BHZCM0000000000000000"
     sj = meet_runner.ensure_session_json(sd, sid, title="Post Scrum")
     data = json.loads(sj.read_text())
     assert data["title"] == "Post Scrum"
@@ -509,7 +509,7 @@ def test_ensure_session_json_injects_title(monkeypatch, tmp_path):
 def test_ensure_session_json_backfills_missing_title(tmp_path):
     import json
     sd = _session_dir(tmp_path)
-    sid = "01KT6BHZCM0000000000000000"
+    sid = "01JT6BHZCM0000000000000000"
     sj = sd / f"{sid}.session.json"
     sj.write_text(json.dumps({"started_at": "2026-06-03T08:01:00+00:00",
                               "source": "vezir", "session_id": sid}))
@@ -521,7 +521,7 @@ def test_ensure_session_json_backfills_missing_title(tmp_path):
 def test_ensure_session_json_preserves_existing_title(tmp_path):
     import json
     sd = _session_dir(tmp_path)
-    sid = "01KT6BHZCM0000000000000000"
+    sid = "01JT6BHZCM0000000000000000"
     sj = sd / f"{sid}.session.json"
     sj.write_text(json.dumps({"started_at": "2026-06-03T08:01:00+00:00",
                               "title": "Original", "session_id": sid}))

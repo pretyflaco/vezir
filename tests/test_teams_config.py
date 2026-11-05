@@ -234,9 +234,9 @@ def test_next_team_id_resolves_uuid_current_to_slug(tmp_home):
     cfg = {
         "teams": [
             {"id": "team-a", "url": "https://m/", "token": "vzr_b",
-             "label": "Team A", "uuid": "5e0d4eecd0e24b2a8dbc517adb486199"},
+             "label": "Team A", "uuid": "aaaa1111aaaa4aaa8aaa111111111111"},
             {"id": "team-b", "url": "https://m/", "token": "vzr_t",
-             "label": "Team B", "uuid": "c013ddd44d6e4a6995446e2128739e69"},
+             "label": "Team B", "uuid": "bbbb2222bbbb4bbb8bbb222222222222"},
         ],
         "active": "team-a",
     }
@@ -244,9 +244,9 @@ def test_next_team_id_resolves_uuid_current_to_slug(tmp_home):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cfg), encoding="utf-8")
     # current is team-a's UUID -> should advance to team-b (slug).
-    assert next_team_id("5e0d4eecd0e24b2a8dbc517adb486199") == "team-b"
+    assert next_team_id("aaaa1111aaaa4aaa8aaa111111111111") == "team-b"
     # current is team-b's UUID -> wraps to team-a.
-    assert next_team_id("c013ddd44d6e4a6995446e2128739e69") == "team-a"
+    assert next_team_id("bbbb2222bbbb4bbb8bbb222222222222") == "team-a"
 
 
 # ── resolve_credentials precedence ──────────────────────────────────────────

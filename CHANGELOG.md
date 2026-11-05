@@ -766,8 +766,8 @@ About half of all team meetings landed in `needs_labeling` for one reason:
 a leftover `REMOTE` bucket of sub-second fillers ("Bye.", "Yeah.", "Hmm.")
 that no voiceprint can match, next to fully identified participants.  The
 scribe opened the session, saw every real person already named, and left
-the bucket alone — a round trip that decided nothing.  Session
-`01M3RS442M3XX4D2AGK80641A7`: 10 segments, 3.2 s, 17 words in a 66-minute
+the bucket alone — a round trip that decided nothing.  One session:
+10 segments, 3.2 s, 17 words in a 66-minute
 standup.
 
 millet-pipeline 0.21.4 (the new floor) now labels such a bucket
@@ -822,7 +822,7 @@ calls (below).  Suite grows to 1228 (6 new).
 
 ## 0.23.0 — crash resilience: startup recovery scan, upload journal, TUI crash log
 
-Incident 2026-09-28: the TUI crashed mid-recording.  The recorder —
+The TUI crashed mid-recording.  The recorder —
 deliberately detached so the meeting survives a UI crash — kept writing
 as an orphan for 12 more minutes, capturing two *subsequent* meetings
 into the dead session's file.  Meanwhile the 87-minute meeting appeared
@@ -881,7 +881,7 @@ new dependency floor.  No migration.  Suite grows to 1222 (34 new).
 
 No migration. Server-side only; works with any millet >= the 0.21.3 floor.
 
-Incident 2026-09-17, part two (session `01M2P6FTRG4WAKKE5T7TV6HNFM`): after
+Part two: after
 millet 0.21.3 fixed the 10-image request cap, a Retry-summary-with-English
 on the iteration-plan session *succeeded in millet* — "Additional 'en'
 summary generated in 252.6s" — but vezir reported
@@ -934,7 +934,7 @@ No migration. No code changes — this release only raises the
 `millet-pipeline` install floor so a fresh `pip install vezir[server]`
 cannot resolve a millet that fails every long screen recording's summary.
 
-Incident 2026-09-17 (session `01M2P6FTRG4WAKKE5T7TV6HNFM`): the first
+The first
 screen recording narrating more than ten cues (18 cue frames,
 `iteration-plan` template) failed its summary on every backend. millet
 attached all frames to a single vision request; the attested endpoints
@@ -955,7 +955,7 @@ installs. Existing failed sessions recover with a plain summary retry
 No migration. Works with any millet version; complements millet 0.21.1's
 per-attempt Tinfoil deadline (not required by it).
 
-Incident 2026-09-15: a stalled TEE summary pinned a vezir job in
+A stalled TEE summary pinned a vezir job in
 `transcribing` for 30+ minutes with the GPU idle, blocking the single
 worker. The existing `VEZIR_MILLET_TIMEOUT` hard budget (4 h) would
 eventually have reaped the process — but 4 hours of a blocked queue is its

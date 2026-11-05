@@ -1,6 +1,6 @@
 """Upload review: the last stop before anything leaves the machine (0.25.0).
 
-Incident 2026-10-02: a recording started in the wrong team could not be
+A recording started in the wrong team could not be
 redirected — Stop uploaded to the team the recording began in, and even
 Escape on the attachment prompt uploaded.  This modal replaces that
 prompt.  It states the destination and options in full, lets every one of

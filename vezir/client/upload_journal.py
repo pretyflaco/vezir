@@ -1,7 +1,7 @@
 """Per-session upload journal — a crash-safe record of "this recording
 still needs uploading" (vezir 0.23.0).
 
-Motivation (incident 2026-09-28): a TUI crash mid-recording left an
+Motivation: a TUI crash mid-recording left an
 87-minute meeting on disk with no trace anywhere — the Sessions list is
 server-side only, and vezir kept zero local state about recordings that
 never uploaded.  The millet-record 0.6.0 markers cover the recording

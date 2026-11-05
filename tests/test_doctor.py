@@ -218,7 +218,7 @@ def test_c9_slug_configured_matches_uuid_membership(tmp_data):
     """
     from vezir.doctor import _check_token_membership, _Results
 
-    mems = [_uuid_membership("team-a", "5e0d4eecd0e24b2a8dbc517adb486199")]
+    mems = [_uuid_membership("team-a", "aaaa1111aaaa4aaa8aaa111111111111")]
     r = _Results()
     _check_token_membership(r, "team-a", mems, github="judy", role="admin")
     assert all(sev != "ERROR" for sev, _ in r.rows)
@@ -229,7 +229,7 @@ def test_c9_slug_configured_matches_uuid_membership(tmp_data):
 def test_c9_uuid_configured_matches_uuid_membership(tmp_data):
     from vezir.doctor import _check_token_membership, _Results
 
-    uuid = "5e0d4eecd0e24b2a8dbc517adb486199"
+    uuid = "aaaa1111aaaa4aaa8aaa111111111111"
     mems = [_uuid_membership("team-a", uuid)]
     r = _Results()
     _check_token_membership(r, uuid, mems)
@@ -239,7 +239,7 @@ def test_c9_uuid_configured_matches_uuid_membership(tmp_data):
 def test_c9_genuinely_missing_team_still_errors(tmp_data):
     from vezir.doctor import _check_token_membership, _Results
 
-    mems = [_uuid_membership("team-a", "5e0d4eecd0e24b2a8dbc517adb486199")]
+    mems = [_uuid_membership("team-a", "aaaa1111aaaa4aaa8aaa111111111111")]
     r = _Results()
     _check_token_membership(r, "startups", mems)
     assert any(sev == "ERROR" and "not in this token" in msg
