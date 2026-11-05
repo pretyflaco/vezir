@@ -75,10 +75,8 @@ def _team_handles(team_id: str | None = None) -> list[str]:
     path for legacy callers within the same process), falls back to
     the pre-v0.6.0 global ``team.json``.
 
-    Per-team rosters are populated by the v0.6.0 migration which moves
-    the old global ``team.json`` to ``teams/blink/roster.json`` and
-    creates ``teams/twentyone/roster.json`` with pretyflaco +
-    bettermorning seeded.
+    Per-team rosters are populated by the v0.6.0 migration, which moves
+    the old global ``team.json`` into the first team's directory.
     """
     if team_id:
         p = config.team_roster_path(team_id)
@@ -400,7 +398,7 @@ def api_label_get(
             {"id": "SPEAKER_00", "channel": "mic", "sample_text": "Yeah I think..."},
             ...
           ],
-          "team": ["kasita", "pretyflaco", ...],
+          "team": ["alice", "bob", ...],
           "audio_available": true
         }
 
@@ -451,13 +449,13 @@ def api_label_get(
 )
 def api_label_post(
     session_id: str,
-    labels: dict = Body(..., example={"labels": {"REMOTE_0": "kasita"}}),
+    labels: dict = Body(..., example={"labels": {"REMOTE_0": "alice"}}),
     auth_triple: tuple = Depends(auth.require_team_context),
 ):
     """Apply labels from a JSON body (native clients).
 
     Expected body:
-        {"labels": {"REMOTE_0": "kasita", "REMOTE_1": "alice"}}
+        {"labels": {"REMOTE_0": "alice", "REMOTE_1": "bob"}}
 
     Empty or missing labels for a speaker keep the auto-assigned label.
     """

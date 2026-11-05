@@ -445,7 +445,7 @@ class VezirTuiApp(App):
         SUB_TITLE is owned by the active screen (SessionsBody sets
         "sessions (N)", DetailScreen sets "session <id>", etc.).  To
         avoid stomping that surface, the team label lives in the main
-        TITLE: "vezir — team: Blink".  Screens leave TITLE alone, so
+        TITLE: "vezir — team: Team A".  Screens leave TITLE alone, so
         the team display sticks.
         """
         if self.team_label and self.team_label != "?":

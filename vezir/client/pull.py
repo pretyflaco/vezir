@@ -14,9 +14,9 @@ Output layout::
             20260525_back_2_back.pdf
             20260525_back_2_back.frontmatter.json
             session.json       # metadata (session_id, title, github, ...)
-        meeting-20260526-014608_BLINK_MEETING/
+        meeting-20260526-014608_TEAM_MEETING/
             meeting-20260526-014608.wav   # raw audio (only local recordings)
-            20260526_blink_meeting.pdf    # downloaded artifacts
+            20260526_team_meeting.pdf     # downloaded artifacts
             ...
 
 Idempotent: sessions already pulled (tracked in ``.pull-manifest.json``)
@@ -207,7 +207,7 @@ def find_local_session_dir(
        session_id.
 
     The global fallback exists because recordings are written under the
-    team **slug** (``~/vezir-meetings/blink/``) at record time, while the
+    team **slug** (``~/vezir-meetings/myteam/``) at record time, while the
     server identifies teams by **UUID**.  A caller that passes the UUID
     (e.g. the TUI detail screen, whose ``session.team_id`` is the server
     UUID) would otherwise resolve to a nonexistent ``~/vezir-meetings/<uuid>/``

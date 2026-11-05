@@ -12,10 +12,10 @@ could never bridge to the IPv4-only home server directly.
 
 ## Why a VPS at all?
 
-`muscle` (the server) sits behind double-NAT on a residential line with
+The origin server sits behind double-NAT on a residential line with
 **no inbound reachability** and **no delegated IPv6 prefix** from the
 ISP. It can make outbound connections but nothing can connect *to* it.
-A cheap VPS with a real public IP solves this: muscle dials *out* to the
+A cheap VPS with a real public IP solves this: the origin dials *out* to the
 VPS over WireGuard, and the VPS forwards public :443 back down that
 tunnel.
 
@@ -30,11 +30,11 @@ tunnel.
         │ nftables DNAT tcp/443 (IPv4 + IPv6)         │ L4 only: ciphertext
         │ wg0 10.99.0.1 / fd99::1                     │
         └──────────────────────┬──────────────────────┘
-                               │ WireGuard (muscle dials out,
+                               │ WireGuard (origin dials out,
                                │ UDP 51820, PersistentKeepalive=25)
                               ▼
         ┌─────────────────────────────────────────────┐
-        │ muscle wg0 10.99.0.2 / fd99::2              │ home, double-NAT
+        │ origin wg0 10.99.0.2 / fd99::2              │ home, double-NAT
         │ Caddy :443 ── TERMINATES TLS                │ real LE cert (DNS-01)
         │ vezir uvicorn 127.0.0.1:8000                │
         └─────────────────────────────────────────────┘
@@ -42,7 +42,7 @@ tunnel.
 
 ### Key property: the VPS never sees plaintext
 
-TLS is **terminated on muscle**, not on the VPS. The VPS runs
+TLS is **terminated on the origin**, not on the VPS. The VPS runs
 nftables DNAT rules that forward the raw TCP stream of `:443` into the
 WireGuard tunnel to `10.99.0.2:443` (IPv4) or `[fd99::2]:443` (IPv6).
 Everything the VPS handles is
@@ -51,8 +51,8 @@ ciphertext only — never bearer tokens, session JWTs, audio, or
 transcripts. This is the "TLS passthrough" choice (vs. terminating TLS
 on the VPS, which would expose plaintext there).
 
-Consequence: the **Let's Encrypt cert lives on muscle**, and because
-muscle has no inbound :80/:443, it must use the **DNS-01** challenge
+Consequence: the **Let's Encrypt cert lives on the origin**, and because
+the origin has no inbound :80/:443, it must use the **DNS-01** challenge
 (Gandi plugin). See `infra/caddy/Caddyfile.example`'s
 `vezir.example.com` block.
 
@@ -68,7 +68,7 @@ muscle has no inbound :80/:443, it must use the **DNS-01** challenge
 | Public hostname  | `vezir.example.com` (DNS at Gandi)    |
 | WireGuard subnets| `10.99.0.0/24`, ULA `fd99::/64`       |
 | VPS WG IPs       | `10.99.0.1`, `fd99::1`                |
-| muscle WG IPs    | `10.99.0.2`, `fd99::2`                |
+| Origin WG IPs    | `10.99.0.2`, `fd99::2`                |
 | WG UDP port      | `51820`                                 |
 | Public TCP port  | `443` (HTTPS)                           |
 | SSH              | `22`, **key-only** (no passwords)       |
@@ -79,7 +79,7 @@ muscle has no inbound :80/:443, it must use the **DNS-01** challenge
 |--------------------------|---------------|---------|
 | `wg-vps.conf.example`    | VPS           | WireGuard interface for the VPS end |
 | `wg-origin.conf.example` | origin server | WireGuard interface for the origin end |
-| `nftables-dnat.conf`     | VPS           | IPv4/IPv6 DNAT `:443` to muscle + forward rules |
+| `nftables-dnat.conf`     | VPS           | IPv4/IPv6 DNAT `:443` to the origin + forward rules |
 | `harden-vps.sh`          | VPS           | ufw, fail2ban, unattended-upgrades, sshd key-only |
 
 ---
@@ -145,7 +145,7 @@ does not, set it and recreate the allows so both families are covered:
 ```bash
 sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
 sudo ufw allow 22/tcp comment 'ssh'
-sudo ufw allow 443/tcp comment 'https (DNAT to muscle)'
+sudo ufw allow 443/tcp comment 'https (DNAT to the origin)'
 sudo ufw allow 51820/udp comment 'wireguard'
 sudo ufw reload
 sudo ufw status verbose   # each allow must show both (v4) and (v6)
@@ -166,8 +166,8 @@ Generate keypairs on BOTH ends (never copy private keys around):
 ```bash
 # on the VPS
 wg genkey | tee /etc/wireguard/vps.key | wg pubkey > /etc/wireguard/vps.pub
-# on muscle
-wg genkey | tee /etc/wireguard/muscle.key | wg pubkey > /etc/wireguard/muscle.pub
+# on the origin
+wg genkey | tee /etc/wireguard/origin.key | wg pubkey > /etc/wireguard/origin.pub
 ```
 
 Fill in the templates with the matching **public** keys:
@@ -176,10 +176,10 @@ Fill in the templates with the matching **public** keys:
 * `wg-origin.conf.example` → `/etc/wireguard/wg0.conf` on the origin server
 
 The IPv6 addresses are ULA and exist only inside WireGuard. The VPS peer
-allows only muscle's two tunnel addresses; muscle's peer allows
+allows only the origin's two tunnel addresses; the origin's peer allows
 `0.0.0.0/0, ::/0` so real public client sources can traverse the tunnel.
 `Table = off` plus source-specific policy routes keeps those broad peer
-AllowedIPs from hijacking muscle's normal egress.
+AllowedIPs from hijacking the origin's normal egress.
 
 **Keep systemd-networkd from deleting the policy rule.**  By default
 (`ManageForeignRoutingPolicyRules=yes`) networkd removes every routing
@@ -206,14 +206,14 @@ Bring them up:
 ```bash
 # VPS first (it's the listener)
 sudo systemctl enable --now wg-quick@wg0
-# then muscle (it dials out; PersistentKeepalive keeps the NAT pinhole open)
+# then the origin (it dials out; PersistentKeepalive keeps the NAT pinhole open)
 sudo systemctl enable --now wg-quick@wg0
 ```
 
 Verify the tunnel:
 
 ```bash
-# from muscle
+# from the origin
 ping -c3 10.99.0.1       # VPS WG IPv4
 ping -6 -c3 fd99::1      # VPS WG IPv6
 sudo wg show             # recent handshake + rx/tx counters
@@ -225,10 +225,10 @@ ip route get 203.0.113.1                  # normal egress, not wg0
 ip -6 route get 2001:db8::1               # normal egress (or unreachable), not wg0
 ```
 
-> muscle is the dialer because it's the one behind NAT. `Endpoint` is set
-> only in muscle's config (pointing at the VPS public IP:51820); the VPS
-> learns muscle's address from the incoming handshake.
-> `PersistentKeepalive=25` on muscle keeps the NAT mapping alive.
+> The origin is the dialer because it's the one behind NAT. `Endpoint` is set
+> only in the origin's config (pointing at the VPS public IP:51820); the VPS
+> learns the origin's address from the incoming handshake.
+> `PersistentKeepalive=25` on the origin keeps the NAT mapping alive.
 
 ---
 
@@ -259,11 +259,11 @@ ssh ubuntu@<VPS_PUBLIC_IP> 'sudo nft -c -f /etc/nftables.d/vezir-dnat.conf && su
 
 IPv4 DNATs to `10.99.0.2:443`; IPv6 DNATs only WAN TCP 443 to
 `[fd99::2]:443`. Established return traffic is accepted in each family.
-There is **no IPv4 masquerade and no NAT66**, so packets reach muscle with
+There is **no IPv4 masquerade and no NAT66**, so packets reach the origin with
 the real client's source address. That preserves per-client rate limits
 and log attribution; masquerading would collapse each family into one VPS
 source/bucket (security audit 2026-10-30, M-1). Return packets work because
-muscle policy-routes sources `10.99.0.2` and `fd99::2` through table 100
+The origin policy-routes sources `10.99.0.2` and `fd99::2` through table 100
 and `wg0`, while broad peer AllowedIPs accept every public client source.
 Never add a masquerade rule to "fix" return routing; fix the policy route
 instead.
@@ -309,13 +309,13 @@ instead.
    during rollback, leaving IPv4 service untouched. Never publish the ULA
    `fd99::1` as AAAA.
 
-2. **Caddy with the Gandi plugin** on muscle. We use the **DNS-01**
+2. **Caddy with the Gandi plugin** on the origin. We use the **DNS-01**
    challenge: the public hostname resolves to the VPS, but TLS terminates
-   on muscle, and DNS-01 proves domain control via the Gandi API
+   on the origin, and DNS-01 proves domain control via the Gandi API
    independent of the data path (so a WireGuard/DNAT outage never blocks
    a cert renewal).
 
-   > muscle's egress filter blocks `proxy.golang.org`, so the xcaddy
+   > The origin's egress filter blocks `proxy.golang.org`, so the xcaddy
    > build must fetch modules straight from GitHub via `GOPROXY=direct`
    > (GitHub IS reachable). `GOSUMDB=off` skips the (also-blocked)
    > checksum DB; modules come from a trusted source over TLS.
@@ -380,7 +380,7 @@ Apply in **server → VPS → tunnel/direct tests → AAAA** order. Merge the
 template changes into the live files; do not overwrite live private keys or
 endpoints with placeholders.
 
-1. **Server (muscle) first.** Back up and add the ULA address, IPv6 policy
+1. **Server (origin) first.** Back up and add the ULA address, IPv6 policy
    rule/route and teardown, and `::/0` peer AllowedIPs:
 
    ```bash
@@ -442,7 +442,7 @@ While running those curls, watch the forwarded packets on both ends:
 # VPS: SYN arrives on WAN and leaves wg0 with the original client source.
 sudo tcpdump -ni ens3 'tcp port 443'
 sudo tcpdump -ni wg0 'tcp port 443'
-# muscle: the same original client source arrives; replies use fd99::2
+# The origin: the same original client source arrives; replies use fd99::2
 # (or 10.99.0.2 for IPv4), never a VPS masquerade address.
 sudo tcpdump -ni wg0 'tcp port 443'
 # On rate-limit events, keys must likewise contain real client IPs:
@@ -482,10 +482,10 @@ vezir scribe --help         # any authenticated call confirms the JWT works
 - [ ] `nft list ruleset` has no masquerade/NAT66; IPv6 DNAT is only WAN
       TCP 443 to `[fd99::2]:443`.
 - [ ] WireGuard private keys never left the box they were generated on.
-- [ ] `ss -ltn` on muscle shows vezir on `127.0.0.1:8000` only (never
+- [ ] `ss -ltn` on the origin shows vezir on `127.0.0.1:8000` only (never
       `0.0.0.0:8000`). Caddy is the sole ingress.
 - [ ] The cert at `https://vezir.example.com` is Let's Encrypt
-      (not Caddy internal) — confirms TLS terminates on muscle with a
+      (not Caddy internal) — confirms TLS terminates on the origin with a
       public chain, and the VPS only passed ciphertext.
 - [ ] `vezir npub list` contains only authorized keys; nostr login from
       an un-allowlisted key returns 403.

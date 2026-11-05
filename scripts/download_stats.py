@@ -17,7 +17,7 @@ same data machine-readably.
 
 Read the caveats printed at the bottom before quoting any number: PyPI
 counts include CI, mirrors, and bots (our own release-verification curls,
-the 3.10/3.11/3.12 CI matrix, and saray redeploys all land here), so for
+the 3.10/3.11/3.12 CI matrix, and server redeploys all land here), so for
 an alpha they likely dwarf real installs.  GitHub release assets are ~0
 for the Python packages by design — everyone installs via PyPI — so only
 the vezir-android APK count is a true install proxy there.
@@ -216,7 +216,7 @@ def print_table(rows: list[dict]) -> None:
     print()
     print("Caveats:")
     print("  - pypi d/w/m = downloads last day/week/month; includes CI,")
-    print("    mirrors, bots, our own release curls + saray redeploys.")
+    print("    mirrors, bots, our own release curls + server redeploys.")
     print("  - total = pepy.tech lifetime, parsed from the badge (coarse).")
     print("  - gh assets ~0 for Python pkgs by design (PyPI is the channel);")
     print("    only the vezir-android APK count proxies real installs.")

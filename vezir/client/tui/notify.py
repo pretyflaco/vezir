@@ -170,7 +170,7 @@ def _resolve_my_github(client: VezirClient) -> str | None:
     upload set the github field to ``X`` and ``X`` appears in the
     team list, that's the handle.  Failing that, we fall back to None,
     which broadens the filter to "any needs_labeling session" (still
-    fine for a single-user box like muscle).
+    fine for a single-user box).
 
     Future work: server should expose ``GET /api/me``.  Tracked in
     the vezir_plan PR3 outstanding list.

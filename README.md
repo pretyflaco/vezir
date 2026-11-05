@@ -87,7 +87,7 @@ Members authenticate with their own identity; an admin authorizes it once.
 ```bash
 # Admin, on the server — authorize an identity (one of):
 vezir npub add   --npub npub1…             --github <handle> --label "<who>"
-vezir google add --email them@blinkbtc.com --github <handle> --label "<who>"
+vezir google add --email them@example.com  --github <handle> --label "<who>"
 # …and grant team scope (one handle covers every team they join):
 vezir team add-member --team <slug> --role scribe --github <handle>
 ```
@@ -299,12 +299,12 @@ brand is built in; everything comes from three inputs:
 | Input | What | Example |
 |---|---|---|
 | **Brand kit** (directory with `kit.toml`) | the look: 5 colors, font, logos, background pattern, caption glossary, optional designer motion files for cards | colors, Poppins, logos |
-| **Campaign** (`.toml`) | the message: ticker items, end card, link, hashtags, handles | "AB Cape Town 2027 · 26–27 Feb · tickets" |
+| **Campaign** (`.toml`) | the message: ticker items, end card, link, hashtags, handles | "Acme Conf 2027 · 26–27 Feb · tickets" |
 | **Profile** (built in) | where it's posted: `vertical` 1080×1920 (shorts), `landscape` 1920×1080 (long clips) | platform safe zones |
 
 ```bash
-vezir clips list 01M68Q79D1GYRRS7YQGJ5GKF9X --team abcapetown
-vezir clips render 01M68Q79D1GYRRS7YQGJ5GKF9X --team abcapetown \
+vezir clips list 01J0000000000000000000CLIP --team myteam
+vezir clips render 01J0000000000000000000CLIP --team myteam \
   --brand ~/brands/acme --campaign ~/brands/acme/launch.toml \
   --source talk.mp4 --speaker "Ann" --talk "Open protocols" \
   --recorded-at "Acme Conf 2024"          # --clips short-03,long-01  --profile auto

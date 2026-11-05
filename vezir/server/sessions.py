@@ -783,11 +783,11 @@ def api_me(auth_pair: tuple = Depends(auth.require_bearer)):
     Response shape:
 
         {
-          "github": "pretyflaco",
+          "github": "alice",
           "is_admin": false,
           "memberships": [
-            {"team_id": "<uuid>", "slug": "blink", "team_name": "Blink", "role": "scribe"},
-            {"team_id": "<uuid>", "slug": "twentyone", "team_name": "Twentyone", "role": "admin"}
+            {"team_id": "<uuid>", "slug": "team-a", "team_name": "Team A", "role": "scribe"},
+            {"team_id": "<uuid>", "slug": "team-b", "team_name": "Team B", "role": "admin"}
           ],
           "alternate_urls": [...]
         }

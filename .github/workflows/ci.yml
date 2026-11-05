@@ -97,9 +97,9 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg fonts-dejavu-core fontconfig
       - name: Run pytest
         # VEZIR_COOKIE_SECURE / VEZIR_CADDY_ROOT_CERT_PATH must be unset
-        # for the test suite to pass (per the v0.6.2 plan note: muscle's
-        # env had them set, causing the auth-cookie tests to fail with
-        # an env conflict rather than a code bug).  Empty values force
+        # for the test suite to pass (a server host's env had them set,
+        # which failed the auth-cookie tests with an env conflict rather
+        # than a code bug).  Empty values force
         # them off even if the runner image inherited them.
         #
         env:

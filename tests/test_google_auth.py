@@ -5,7 +5,7 @@ ID-token JWKS verification) are mocked so the policy + wiring are tested
 deterministically:
   * /config reports configured vs not.
   * ID-token policy: domain, email_verified, issuer enforcement.
-  * /device/poll end-to-end: allowlisted @blinkbtc.com email → session JWT
+  * /device/poll end-to-end: allowlisted @example.com email → session JWT
     that works as a Bearer on /api/me; wrong-domain / not-allowlisted /
     unverified are rejected; authorization_pending → 202.
 """
@@ -28,7 +28,7 @@ def tmp_data(monkeypatch):
 def configured(monkeypatch):
     monkeypatch.setenv("VEZIR_GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
     monkeypatch.setenv("VEZIR_GOOGLE_CLIENT_SECRET", "test-secret")
-    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", "blinkbtc.com")
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", "example.com")
 
 
 @pytest.fixture
@@ -56,22 +56,33 @@ def test_config_configured(client, configured):
     body = r.json()
     assert body["configured"] is True
     assert body["client_id"].endswith(".apps.googleusercontent.com")
-    assert body["allowed_domain"] == "blinkbtc.com"
-    assert body["allowed_domains"] == ["blinkbtc.com"]
+    assert body["allowed_domain"] == "example.com"
+    assert body["allowed_domains"] == ["example.com"]
 
 
 def test_config_multiple_domains(client, configured, monkeypatch):
-    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " BlinkBTC.com , @gmail.com,,gmail.com")
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", " Example.COM , @gmail.com,,gmail.com")
     body = client.get("/api/auth/google/config").json()
-    assert body["allowed_domain"] == "blinkbtc.com"
-    assert body["allowed_domains"] == ["blinkbtc.com", "gmail.com"]
+    assert body["allowed_domain"] == "example.com"
+    assert body["allowed_domains"] == ["example.com", "gmail.com"]
 
 
-def test_allowed_domains_default_only_when_unset(monkeypatch):
+def test_allowed_domains_unset_means_none(monkeypatch):
+    """No built-in domain: an operator who never set one gets Google sign-in
+    disabled, not some other organization's domain."""
     from vezir import config
     monkeypatch.delenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", raising=False)
-    assert config.google_allowed_domains() == ["blinkbtc.com"]
-    assert config.google_allowed_domain() == "blinkbtc.com"
+    assert config.google_allowed_domains() == []
+    assert config.google_allowed_domain() == ""
+
+
+def test_unset_domain_reports_not_configured(client, monkeypatch):
+    monkeypatch.setenv("VEZIR_GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("VEZIR_GOOGLE_CLIENT_SECRET", "test-secret")
+    monkeypatch.delenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", raising=False)
+    body = client.get("/api/auth/google/config").json()
+    assert body["configured"] is False
+    assert body["allowed_domains"] == []
 
 
 def test_allowed_domains_set_but_blank_fails_closed(monkeypatch, caplog):
@@ -95,15 +106,15 @@ def _patch_verify(monkeypatch, claims):
     monkeypatch.setattr(g, "verify_oauth2_token", lambda *a, **k: claims)
 
 
-def test_verify_accepts_blinkbtc(monkeypatch):
+def test_verify_accepts_allowed_domain(monkeypatch):
     from vezir.server import google_auth
     _patch_verify(monkeypatch, {
         "iss": "https://accounts.google.com",
-        "email": "alice@blinkbtc.com", "email_verified": True,
-        "hd": "blinkbtc.com",
+        "email": "alice@example.com", "email_verified": True,
+        "hd": "example.com",
     })
-    claims = google_auth._verify_id_token("tok", "cid", "blinkbtc.com")
-    assert claims["email"] == "alice@blinkbtc.com"
+    claims = google_auth._verify_id_token("tok", "cid", "example.com")
+    assert claims["email"] == "alice@example.com"
 
 
 def test_verify_rejects_wrong_domain(monkeypatch):
@@ -115,7 +126,7 @@ def test_verify_rejects_wrong_domain(monkeypatch):
         "email": "mallory@gmail.com", "email_verified": True,
     })
     with pytest.raises(HTTPException) as exc:
-        google_auth._verify_id_token("tok", "cid", "blinkbtc.com")
+        google_auth._verify_id_token("tok", "cid", "example.com")
     assert exc.value.status_code == 403
 
 
@@ -125,7 +136,7 @@ def test_verify_accepts_second_listed_domain(monkeypatch):
         "iss": "https://accounts.google.com",
         "email": "Pat@Gmail.com", "email_verified": True,
     })
-    claims = google_auth._verify_id_token("tok", "cid", ["blinkbtc.com", "gmail.com"])
+    claims = google_auth._verify_id_token("tok", "cid", ["example.com", "gmail.com"])
     assert claims["email"] == "Pat@Gmail.com"
 
 
@@ -139,9 +150,9 @@ def test_verify_multi_domain_still_exact(monkeypatch):
             "email": email, "email_verified": True,
         })
         with pytest.raises(HTTPException) as exc:
-            google_auth._verify_id_token("tok", "cid", ["blinkbtc.com", "gmail.com"])
+            google_auth._verify_id_token("tok", "cid", ["example.com", "gmail.com"])
         assert exc.value.status_code == 403
-        assert "@blinkbtc.com, @gmail.com" in exc.value.detail
+        assert "@example.com, @gmail.com" in exc.value.detail
 
 
 def test_verify_rejects_unverified_email(monkeypatch):
@@ -150,10 +161,10 @@ def test_verify_rejects_unverified_email(monkeypatch):
     from vezir.server import google_auth
     _patch_verify(monkeypatch, {
         "iss": "https://accounts.google.com",
-        "email": "alice@blinkbtc.com", "email_verified": False,
+        "email": "alice@example.com", "email_verified": False,
     })
     with pytest.raises(HTTPException) as exc:
-        google_auth._verify_id_token("tok", "cid", "blinkbtc.com")
+        google_auth._verify_id_token("tok", "cid", "example.com")
     assert exc.value.status_code == 401
 
 
@@ -162,11 +173,11 @@ def test_verify_rejects_bad_issuer(monkeypatch):
 
     from vezir.server import google_auth
     _patch_verify(monkeypatch, {
-        "iss": "https://evil.example", "email": "alice@blinkbtc.com",
-        "email_verified": True, "hd": "blinkbtc.com",
+        "iss": "https://evil.example", "email": "alice@example.com",
+        "email_verified": True, "hd": "example.com",
     })
     with pytest.raises(HTTPException) as exc:
-        google_auth._verify_id_token("tok", "cid", "blinkbtc.com")
+        google_auth._verify_id_token("tok", "cid", "example.com")
     assert exc.value.status_code == 401
 
 
@@ -215,21 +226,21 @@ def _patch_token_exchange(monkeypatch, status_code, body):
 
 def test_device_poll_success_mints_jwt(client, configured, monkeypatch):
     from vezir.server import google_members
-    google_members.add("alice@blinkbtc.com", "alice", is_admin=False)
+    google_members.add("alice@example.com", "alice", is_admin=False)
 
     # Google returns an id_token; verification yields allowlisted claims.
     _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
     _patch_verify(monkeypatch, {
         "iss": "https://accounts.google.com",
-        "email": "alice@blinkbtc.com", "email_verified": True,
-        "hd": "blinkbtc.com",
+        "email": "alice@example.com", "email_verified": True,
+        "hd": "example.com",
     })
 
     r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["github"] == "alice"
-    assert body["email"] == "alice@blinkbtc.com"
+    assert body["email"] == "alice@example.com"
     jwt = body["session_jwt"]
 
     # The minted JWT works as a Bearer on /api/me.
@@ -242,8 +253,8 @@ def test_device_poll_not_allowlisted_403(client, configured, monkeypatch):
     _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
     _patch_verify(monkeypatch, {
         "iss": "https://accounts.google.com",
-        "email": "stranger@blinkbtc.com", "email_verified": True,
-        "hd": "blinkbtc.com",
+        "email": "stranger@example.com", "email_verified": True,
+        "hd": "example.com",
     })
     r = client.post("/api/auth/google/device/poll", json={"device_code": "dc"})
     assert r.status_code == 403
@@ -252,7 +263,7 @@ def test_device_poll_not_allowlisted_403(client, configured, monkeypatch):
 def test_device_poll_gmail_domain_still_needs_allowlist(client, configured, monkeypatch):
     """Listing a consumer domain admits only the allowlisted addresses in it."""
     from vezir.server import google_members
-    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", "blinkbtc.com,gmail.com")
+    monkeypatch.setenv("VEZIR_GOOGLE_ALLOWED_DOMAIN", "example.com,gmail.com")
     google_members.add("pat@gmail.com", "pat", is_admin=False)
     _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
 
@@ -377,7 +388,7 @@ def test_is_transient_network_error_detects_dns_vs_token():
 # ── H3: exact-domain check (no suffix/subdomain bypass) ──────────────────────
 
 
-def _poll_with_email(client, monkeypatch, email, hd="blinkbtc.com"):
+def _poll_with_email(client, monkeypatch, email, hd="example.com"):
     _patch_token_exchange(monkeypatch, 200, {"id_token": "fake.jwt.tok"})
     _patch_verify(monkeypatch, {
         "iss": "https://accounts.google.com",
@@ -388,23 +399,23 @@ def _poll_with_email(client, monkeypatch, email, hd="blinkbtc.com"):
 
 def test_domain_check_rejects_lookalike_domain(client, configured, monkeypatch):
     from vezir.server import google_members
-    google_members.add("kemal@blinkbtc.com", "pretyflaco")
+    google_members.add("alice@example.com", "alice")
     # Lookalike domain with empty hd must be rejected (403), not allowed.
-    r = _poll_with_email(client, monkeypatch, "mallory@evilblinkbtc.com", hd="")
+    r = _poll_with_email(client, monkeypatch, "mallory@evilexample.com", hd="")
     assert r.status_code == 403
 
 
 def test_domain_check_rejects_subdomain(client, configured, monkeypatch):
-    r = _poll_with_email(client, monkeypatch, "mallory@sub.blinkbtc.com", hd="")
+    r = _poll_with_email(client, monkeypatch, "mallory@sub.example.com", hd="")
     assert r.status_code == 403
 
 
 def test_domain_check_accepts_exact_and_allowlisted(client, configured, monkeypatch):
     from vezir.server import google_members
-    google_members.add("kemal@blinkbtc.com", "pretyflaco")
-    r = _poll_with_email(client, monkeypatch, "kemal@blinkbtc.com", hd="")
+    google_members.add("alice@example.com", "alice")
+    r = _poll_with_email(client, monkeypatch, "alice@example.com", hd="")
     assert r.status_code == 200, r.text
-    assert r.json()["github"] == "pretyflaco"
+    assert r.json()["github"] == "alice"
 
 
 # ── prefill: synthesize verification_url_complete when Google omits it ────────

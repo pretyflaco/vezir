@@ -51,11 +51,11 @@ curl -sS --cacert /etc/ssl/caddy-root.crt \
 
 | Transport | Cert source | Joiner action |
 |-----------|-------------|---------------|
-| **Public (VPS front)** | **Let's Encrypt via Gandi DNS-01** (TLS terminates on muscle; VPS only L4-forwards ciphertext) | **None — system trust store works.** This is the recommended path for new clients; see [`infra/vps/`](../vps/). |
+| **Public (VPS front)** | **Let's Encrypt via Gandi DNS-01** (TLS terminates on the origin; VPS only L4-forwards ciphertext) | **None — system trust store works.** This is the recommended path for new clients; see [`infra/vps/`](../vps/). |
 | Tailscale | Let's Encrypt via ts.net DNS-01 (or `tailscale serve` which proxies to Caddy) | None — system trust store works |
 | nvpn      | Caddy internal CA (auto-rotated) | Trust the CA root once. Android imports it from the enrollment QR automatically (0.1.4+). CLI users run `vezir trust-server` against the QR JSON. |
 
-> The public listener uses the **DNS-01** challenge because muscle has no
+> The public listener uses the **DNS-01** challenge because the origin has no
 > inbound `:80`/`:443` (double-NAT). Build Caddy with the Gandi plugin:
 > `xcaddy build --with github.com/caddy-dns/gandi`. Full walkthrough in
 > [`infra/vps/README.md`](../vps/README.md).

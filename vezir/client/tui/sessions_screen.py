@@ -161,7 +161,7 @@ class SessionFilterScreen(ModalScreen["dict | None"]):
             yield Label("Who (github handle or npub):")
             yield Input(
                 value=self._current.get("who", ""),
-                placeholder="kasita / npub1…", id="f-who",
+                placeholder="alice / npub1…", id="f-who",
             )
             with Horizontal():
                 yield Button("Apply", id="f-apply", variant="primary")
@@ -219,7 +219,7 @@ class SessionsBody(Vertical):
         # RowSelected (handled by `on_data_table_row_selected` below).
         # Binding `enter` at the screen level would cause a
         # double-dispatch: DetailScreen gets pushed twice, leading
-        # to a stuck UI state.  Smoked on muscle 2026-05-23.
+        # to a stuck UI state.  Smoke-tested.
         Binding("c", "copy_selected_id", "Copy id"),
         Binding("f", "open_selected_folder", "Open folder"),
         Binding("d", "copy_selected_path", "Copy path"),

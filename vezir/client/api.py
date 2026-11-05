@@ -1008,7 +1008,7 @@ class VezirClient:
               "github": "alice",
               "is_admin": false,
               "memberships": [
-                {"team_id": "blink", "team_name": "Blink", "role": "scribe"},
+                {"team_id": "team-a", "team_name": "Team A", "role": "scribe"},
                 ...
               ],
               "alternate_urls": [...]
