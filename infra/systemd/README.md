@@ -95,7 +95,7 @@ responds in two very different ways:
 | Probe | Failure response |
 |---|---|
 | `http://127.0.0.1:8000/health` (loopback) | restart vezir — a hung/crashed process is what a restart fixes |
-| `https://vezir.twentyone.ist/health` (public) | **alert only** — journal entries under the `vezir-healthcheck` tag, never a restart |
+| `$VEZIR_PUBLIC_URL/health` (public) | **alert only** — journal entries under the `vezir-healthcheck` tag, never a restart |
 
 The public path is VPS nftables DNAT → WireGuard tunnel → caddy →
 uvicorn, and restarting vezir cannot repair any of that.  Incident
@@ -106,6 +106,22 @@ journal.  The public probe exists to make that class of outage visible:
 it logs DOWN (with a runbook pointer to `infra/vps/README.md`), a
 heartbeat every ~20 checks, and RECOVERED with the outage length.
 Consecutive-failure state lives in `~/.local/state/`.
+
+The public URL comes from `VEZIR_PUBLIC_HEALTH_URL`, or else
+`$VEZIR_PUBLIC_URL/health`; with neither set the public probe is skipped.
+`vezir-health.service` loads the same `~/.config/environment.d/vezir.conf`
+as `vezir.service`, so setting `VEZIR_PUBLIC_URL` there covers both.
+
+When the public probe gets no connection at all (curl exit 7 or 28, no
+HTTP status), the script also reads `ip rule` (no root needed).  If the
+tunnel address is on `wg0` but its policy rule (`from 10.99.0.2 lookup
+100`) is gone, the message names that as the cause, at `err` priority,
+with the fix.  systemd-networkd deletes that rule on a restart unless told
+not to (see `infra/vps/README.md`), and the WireGuard handshake stays fresh
+while it is gone, so the generic tunnel hint would point the wrong way.  An
+HTTP error response (a 500, say) proves the path works and always gets the
+generic message.  Override the address and table with
+`VEZIR_WG_TUNNEL_ADDR` / `VEZIR_WG_TABLE` if yours differ.
 
 ```bash
 install -m 0755 infra/systemd/vezir-healthcheck.sh ~/.local/bin/
@@ -118,7 +134,6 @@ systemctl --user start vezir-health.service
 journalctl --user -t vezir-healthcheck -n 20 --no-pager
 ```
 
-Edit `PUBLIC_URL` in the script if the public hostname differs.
 
 ## Tinfoil model watchdog (optional, recommended)
 

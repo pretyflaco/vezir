@@ -7,21 +7,35 @@
 #      process is fixable by a restart, so that is what happens.
 #   2. Public  /health   -> ALERT ONLY, never a restart.  The public path
 #      is VPS nftables DNAT -> WireGuard tunnel -> caddy -> uvicorn, and
-#      none of that is repairable by restarting vezir.  (Incident
-#      2026-09-17: a modem reboot killed the WG tunnel for ~30 min while
-#      this check read green on loopback the entire time.)
+#      none of that is repairable by restarting vezir.  A dead tunnel
+#      leaves the loopback probe green the entire time, which is why the
+#      public probe exists.
 #
 # Public alerts fire on state transitions (DOWN, then a heartbeat every
 # ~20 checks ≈ 30 min at the 90 s cadence, then RECOVERED with the outage
 # length) so the journal stays readable instead of spamming one line per
 # tick.  The DOWN message carries the runbook pointer because the correct
 # first move is diagnosing the tunnel, not touching vezir.
+#
+# Configuration (environment):
+#   VEZIR_PORT                 loopback port (default 8000)
+#   VEZIR_PUBLIC_HEALTH_URL    public health URL; default derived from
+#   VEZIR_PUBLIC_URL           ("<VEZIR_PUBLIC_URL>/health").  With neither
+#                              set, the public probe is skipped.
+#   VEZIR_WG_TUNNEL_ADDR       this host's tunnel address (default 10.99.0.2,
+#   VEZIR_WG_TABLE             table 100: see infra/vps/wg-origin.conf.example)
+#   VEZIR_HEALTH_RESTART_WAIT  seconds to wait after a restart (default 5)
 set -u
 
 LOG_TAG="vezir-healthcheck"
-URL="http://127.0.0.1:8000/health"
-PUBLIC_URL="https://vezir.twentyone.ist/health"
+URL="http://127.0.0.1:${VEZIR_PORT:-8000}/health"
+PUBLIC_URL="${VEZIR_PUBLIC_HEALTH_URL:-}"
+if [ -z "$PUBLIC_URL" ] && [ -n "${VEZIR_PUBLIC_URL:-}" ]; then
+  PUBLIC_URL="${VEZIR_PUBLIC_URL%/}/health"
+fi
 STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/vezir-healthcheck-public.state"
+WG_TUNNEL_ADDR="${VEZIR_WG_TUNNEL_ADDR:-10.99.0.2}"
+WG_TABLE="${VEZIR_WG_TABLE:-100}"
 
 # ── Probe 1: loopback — restart on failure ─────────────────────────────────
 
@@ -31,7 +45,7 @@ if [ "$code" != "200" ]; then
   echo "vezir health check failed (HTTP $code); restarting vezir" \
     | systemd-cat -t "$LOG_TAG" -p warning
   systemctl --user restart vezir
-  sleep 5
+  sleep "${VEZIR_HEALTH_RESTART_WAIT:-5}"
   code2="$(curl -sS -o /dev/null -m 8 -w "%{http_code}" "$URL" 2>/dev/null)"
   [ -n "$code2" ] || code2=000
   if [ "$code2" != "200" ]; then
@@ -44,10 +58,13 @@ fi
 
 # ── Probe 2: public path — alert only ───────────────────────────────────────
 
+[ -n "$PUBLIC_URL" ] || exit 0
+
 mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
 # On total connect failure curl prints 000 via -w AND exits nonzero, so
-# the fallback echo must not append a second one (was "HTTP 000000").
+# the fallback must not append a second one (was "HTTP 000000").
 pcode="$(curl -sS -o /dev/null -m 10 -w "%{http_code}" "$PUBLIC_URL" 2>/dev/null)"
+prc=$?
 [ -n "$pcode" ] || pcode=000
 
 _count() {
@@ -65,14 +82,42 @@ if [ "$pcode" = "200" ]; then
   exit 0
 fi
 
+# True when the request never got an HTTP response because the connection
+# could not be made: curl exit 7 (couldn't connect) or 28 (timed out) with
+# no status.  Any real HTTP status, even 500, proves the path works.
+_no_connection() {
+  [ "$pcode" = "000" ] && { [ "$prc" -eq 7 ] || [ "$prc" -eq 28 ]; }
+}
+
+# The tunnel can be up with a fresh handshake while replies still leave
+# through the default route: wg-quick's PostUp policy rule sends traffic
+# from the tunnel address back via wg0, and systemd-networkd deletes rules
+# it did not create whenever it restarts (an unattended-upgrade that
+# re-executes systemd is enough).  Reading `ip rule` needs no root.
+_reply_rule_missing() {
+  ip -4 addr show dev wg0 2>/dev/null | grep -qF "inet $WG_TUNNEL_ADDR/" \
+    && ! ip rule show 2>/dev/null | grep -qF "from $WG_TUNNEL_ADDR lookup $WG_TABLE"
+}
+
 _count
 n=$((n + 1))
 echo "$n" > "$STATE_FILE" 2>/dev/null || true
 if [ "$n" -eq 1 ] || [ $((n % 20)) -eq 0 ]; then
-  echo "public path unhealthy (HTTP $pcode; $n consecutive check(s)). \
-Restarting vezir will NOT fix this. Check the tunnel first: 'sudo wg show' \
-on the VPS (handshake age) and on saray, wg-quick@wg0 + caddy on saray, \
-and any recent modem/NAT change. Runbook: infra/vps/README.md" \
-    | systemd-cat -t "$LOG_TAG" -p warning
+  if _no_connection && _reply_rule_missing; then
+    echo "public path unhealthy (no connection, curl exit $prc; $n consecutive \
+check(s)): the policy rule 'from $WG_TUNNEL_ADDR lookup $WG_TABLE' is MISSING, \
+so replies leave via the default route instead of wg0.  Fix: 'sudo ip rule add \
+from $WG_TUNNEL_ADDR lookup $WG_TABLE priority 100' (or restart wg-quick@wg0), \
+and make sure systemd-networkd has ManageForeignRoutingPolicyRules=no.  \
+Runbook: infra/vps/README.md" \
+      | systemd-cat -t "$LOG_TAG" -p err
+  else
+    echo "public path unhealthy (HTTP $pcode, curl exit $prc; $n consecutive \
+check(s)). Restarting vezir will NOT fix this. Check the tunnel first: \
+'sudo wg show' on the VPS (handshake age) and on this host, wg-quick@wg0 + \
+caddy here, 'ip rule' (from $WG_TUNNEL_ADDR lookup $WG_TABLE) and any recent \
+modem/NAT change. Runbook: infra/vps/README.md" \
+      | systemd-cat -t "$LOG_TAG" -p warning
+  fi
 fi
 exit 0

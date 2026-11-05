@@ -3,6 +3,36 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased — infra: keep the tunnel's reply route across networkd restarts
+
+On the server end of the WireGuard tunnel, wg-quick's `PostUp` adds a
+policy rule (`from <tunnel address> lookup 100`) that sends replies to
+tunnel traffic back through `wg0`.  systemd-networkd's default
+`ManageForeignRoutingPolicyRules=yes` deletes every rule it did not create
+whenever it restarts, for example when an unattended-upgrade re-executes
+systemd.  The tunnel then looks healthy: the handshake is fresh and the VPS
+front keeps forwarding SYNs.  But the replies leave through the default
+route, so every connection to the public URL times out while vezir answers
+fine on loopback.
+
+* `infra/vps/README.md`, the origin's WireGuard template: set
+  `ManageForeignRoutingPolicyRules=no` in `/etc/systemd/networkd.conf.d/`
+  on the origin server.
+* The origin's WireGuard template is now `infra/vps/wg-origin.conf.example`
+  (key placeholder `<ORIGIN_PRIVATE_KEY>`), named for its role.
+* `infra/systemd/vezir-healthcheck.sh`:
+  * When the public probe gets no connection at all (curl exit 7 or 28,
+    no HTTP status) and the rule is missing, it says so at `err`, with the
+    fix.  Any HTTP response, even a 500, gets the generic message, now with
+    the status and curl exit code.  `ip rule` needs no root.
+  * The public URL is no longer hardcoded: `VEZIR_PUBLIC_HEALTH_URL`, else
+    `$VEZIR_PUBLIC_URL/health`, else the public probe is skipped.  The
+    loopback port follows `VEZIR_PORT`.  `vezir-health.service` loads the
+    same environment file as `vezir.service`.
+  * `VEZIR_WG_TUNNEL_ADDR` / `VEZIR_WG_TABLE` override `10.99.0.2` / `100`.
+* `tests/test_healthcheck_script.py` runs the script against stubbed `curl`,
+  `ip`, `systemd-cat` and `systemctl`.
+
 ## 0.29.1 — a short real sentence is a speaker, not noise
 
 Follow-up to millet PR #36 (incident 2026-11-02, session `01M6EV6Z`: a 58 s

@@ -1,27 +1,31 @@
-# WireGuard — muscle end.  Install as /etc/wireguard/wg0.conf on muscle.
+# WireGuard — origin end (the server that runs vezir + Caddy).  Install as
+# /etc/wireguard/wg0.conf on the origin server.
 #
-# muscle is the DIALER (it's behind double-NAT with no inbound). It sets
+# The origin is the DIALER (it's behind NAT with no inbound). It sets
 # the VPS public Endpoint and uses PersistentKeepalive to keep the NAT
 # pinhole open so the VPS can push :443 traffic back down the tunnel.
 #
 # Replace the placeholders:
-#   <MUSCLE_PRIVATE_KEY>  contents of /etc/wireguard/muscle.key
+#   <ORIGIN_PRIVATE_KEY>  contents of /etc/wireguard/origin.key
 #   <VPS_PUBLIC_KEY>      contents of the VPS's /etc/wireguard/vps.pub
 
 [Interface]
 Address = 10.99.0.2/24, fd99::2/64
-PrivateKey = <MUSCLE_PRIVATE_KEY>
-# Real client IPs (security audit 2026-10-30, M-1).  The VPS no longer
-# masquerades, so forwarded packets arrive here with the CLIENT's source
-# address; that is what gives vezir per-client rate limits and log
-# attribution instead of one bucket for the whole internet.  Two things
-# make that work:
+PrivateKey = <ORIGIN_PRIVATE_KEY>
+# Real client IPs.  The VPS does not masquerade, so forwarded packets
+# arrive here with the CLIENT's source address; that is what gives vezir
+# per-client rate limits and log attribution instead of one bucket for the
+# whole internet.  What makes that work:
 #   * AllowedIPs = 0.0.0.0/0, ::/0 below, so WireGuard accepts any source
 #     from the VPS peer — and Table = off so wg-quick does NOT turn those
 #     into default routes through the VPS (which would hijack all egress).
 #   * Replies to tunnel traffic carry src 10.99.0.2 or fd99::2: policy
 #     rules send exactly those back via wg0. The IPv4 rule also satisfies
 #     rp_filter for inbound packets. Everything else keeps normal routes.
+#   * systemd-networkd deletes rules it did not create when it restarts.
+#     Set ManageForeignRoutingPolicyRules=no in
+#     /etc/systemd/networkd.conf.d/ or an unattended-upgrade can silently
+#     take the public path down (see infra/vps/README.md).
 Table = off
 PostUp = ip rule add from 10.99.0.2 lookup 100 priority 100; ip route replace default dev wg0 table 100; ip -6 rule add from fd99::2 lookup 100 priority 100; ip -6 route replace default dev wg0 table 100
 PostDown = ip rule del from 10.99.0.2 lookup 100 priority 100 || true; ip route flush table 100 || true; ip -6 rule del from fd99::2 lookup 100 priority 100 || true; ip -6 route flush table 100 || true

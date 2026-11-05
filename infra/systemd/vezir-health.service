@@ -4,4 +4,6 @@ After=vezir.service
 
 [Service]
 Type=oneshot
+# Same environment as vezir.service: VEZIR_PUBLIC_URL / VEZIR_PORT drive the probes.
+EnvironmentFile=-%h/.config/environment.d/vezir.conf
 ExecStart=%h/.local/bin/vezir-healthcheck.sh
