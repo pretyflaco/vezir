@@ -3,7 +3,14 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased — fresh installs seed no teams; neutral test fixtures
+## 0.29.2 — fresh installs seed no teams; no built-in Google domain; tunnel route health check
+
+**Operator action:** `VEZIR_GOOGLE_ALLOWED_DOMAIN` no longer has a built-in
+default.  A server that relied on the old default must set it explicitly
+before upgrading; unset or empty means Google sign-in is disabled.  No new
+migration; existing data dirs are unchanged.
+
+### Fresh installs seed no teams; neutral test fixtures
 
 * **Migrations `0.6.0-multi-team` / `0.6.2-per-team-voiceprints` no longer
   seed built-in teams.**  They created two named teams, routed one handle's
@@ -24,7 +31,7 @@ Notable changes per release. Format loosely follows
   voiceprint-only data, and an already-migrated data dir left byte-for-byte
   unchanged.
 
-## Unreleased — no deployment- or organization-specific references
+### No deployment- or organization-specific references
 
 * **LICENSE:** the copyright holder is corrected to `twentyone.ist`, the
   actual rights owner.  The previous notice was a mistake.  The package
@@ -40,7 +47,7 @@ Notable changes per release. Format loosely follows
   (`vezir.example.com`, `team-a`/`team-b`, `alice`/`bob`, the "origin
   server"), with no hostnames, real session ids, team names or people.
 
-## Unreleased — infra: keep the tunnel's reply route across networkd restarts
+### Infra: keep the tunnel's reply route across networkd restarts
 
 On the server end of the WireGuard tunnel, wg-quick's `PostUp` adds a
 policy rule (`from <tunnel address> lookup 100`) that sends replies to
