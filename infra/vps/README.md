@@ -78,7 +78,7 @@ muscle has no inbound :80/:443, it must use the **DNS-01** challenge
 | File                     | Where it runs | Purpose |
 |--------------------------|---------------|---------|
 | `wg-vps.conf.example`    | VPS           | WireGuard interface for the VPS end |
-| `wg-muscle.conf.example` | muscle        | WireGuard interface for the muscle end |
+| `wg-origin.conf.example` | origin server | WireGuard interface for the origin end |
 | `nftables-dnat.conf`     | VPS           | IPv4/IPv6 DNAT `:443` to muscle + forward rules |
 | `harden-vps.sh`          | VPS           | ufw, fail2ban, unattended-upgrades, sshd key-only |
 
@@ -173,13 +173,33 @@ wg genkey | tee /etc/wireguard/muscle.key | wg pubkey > /etc/wireguard/muscle.pu
 Fill in the templates with the matching **public** keys:
 
 * `wg-vps.conf.example`    → `/etc/wireguard/wg0.conf` on the VPS
-* `wg-muscle.conf.example` → `/etc/wireguard/wg0.conf` on muscle
+* `wg-origin.conf.example` → `/etc/wireguard/wg0.conf` on the origin server
 
 The IPv6 addresses are ULA and exist only inside WireGuard. The VPS peer
 allows only muscle's two tunnel addresses; muscle's peer allows
 `0.0.0.0/0, ::/0` so real public client sources can traverse the tunnel.
 `Table = off` plus source-specific policy routes keeps those broad peer
 AllowedIPs from hijacking muscle's normal egress.
+
+**Keep systemd-networkd from deleting the policy rule.**  By default
+(`ManageForeignRoutingPolicyRules=yes`) networkd removes every routing
+policy rule it did not create whenever it starts, including wg-quick's
+`from 10.99.0.2 lookup 100`.  The tunnel then stays up with a fresh
+handshake, but replies leave through the default route and every
+connection to the public URL times out.  An unattended-upgrade that
+re-executes systemd is enough to trigger it.  On the server end, before
+bringing the tunnel up:
+
+```bash
+sudo mkdir -p /etc/systemd/networkd.conf.d
+printf '[Network]\nManageForeignRoutingPolicyRules=no\n' \
+  | sudo tee /etc/systemd/networkd.conf.d/10-keep-foreign-rules.conf
+sudo systemctl restart systemd-networkd
+ip rule | grep 'lookup 100'   # still there after the restart
+```
+
+`vezir-healthcheck.sh` names this cause when the public path fails and the
+rule is missing.
 
 Bring them up:
 
