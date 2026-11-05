@@ -17,7 +17,7 @@ Run:
     # scan the QR in Amber, approve the connection, approve the signature.
 
 Options:
-    --relays ...   override relay set (default: vezir's blink-matched 5)
+    --relays ...   override relay set (default: vezir's built-in set)
     --timeout S    seconds to wait for you to approve (default 180)
 """
 from __future__ import annotations

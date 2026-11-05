@@ -569,7 +569,7 @@ class DetailScreen(Screen):
         # RowSelected (handled by `on_data_table_row_selected` below).
         # Binding `enter` at the screen level would cause a
         # double-dispatch: ArtifactScreen gets pushed twice, leading
-        # to a stuck UI state.  Smoked on muscle 2026-05-23.
+        # to a stuck UI state.  Smoke-tested.
     ]
 
     CSS = """

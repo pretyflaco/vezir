@@ -295,7 +295,7 @@ added with `nvpn add-participant`.  Token, preset, and privacy
 opt-outs are configured via the in-app UI rather than env vars or CLI
 flags.
 
-End-to-end validated 2026-05-22 on vezir-android 0.1.4 against muscle
+End-to-end validated on vezir-android 0.1.4 against the origin server
 running vezir 0.1.11.  See the main [vezir README](../../README.md) and
 [vezir-android](https://github.com/pretyflaco/vezir-android) for the
 current onboarding walkthrough.

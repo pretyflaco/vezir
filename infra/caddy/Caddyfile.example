@@ -116,12 +116,12 @@
 #   [fd99::2]:443 (this box, over WireGuard) ──▶ Caddy terminates TLS
 #   ──▶ 127.0.0.1:8000
 #
-# TLS is TERMINATED HERE on muscle, not on the VPS: the VPS only L4-
+# TLS is TERMINATED HERE on the origin, not on the VPS: the VPS only L4-
 # forwards ciphertext, so it never sees plaintext or bearer/session
 # tokens (TLS passthrough). That means Caddy on THIS box must hold the
 # real Let's Encrypt cert for the public hostname.
 #
-# Because muscle is behind double-NAT (no inbound :80/:443 from the
+# Because the origin is behind double-NAT (no inbound :80/:443 from the
 # internet), the HTTP-01 / TLS-ALPN-01 challenges can't work. Use the
 # DNS-01 challenge via the Gandi provider plugin. Build Caddy with it:
 #

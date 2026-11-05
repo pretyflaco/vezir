@@ -6,8 +6,8 @@ sent the request controls the secret key for ``event.pubkey``, *and*
 binds the proof to a specific URL + HTTP method + moment in time
 (replay-resistant).
 
-This is a direct port of blink-terminal's ``Nip98Verifier.ts`` so the
-two implementations stay byte-for-byte compatible:
+It follows the NIP-98 spec step by step, so any conforming client is
+accepted:
 
   1. base64-decode the header → JSON event.
   2. structural checks: kind==27235, hex shapes for ``pubkey`` (64),
@@ -40,8 +40,8 @@ log = logging.getLogger("vezir.nip98")
 
 NIP98_KIND = 27235
 
-# Freshness window.  The blink reference uses 60s; vezir widens to 120s
-# because clients (notably milfort's Starlink link) can have meaningful
+# Freshness window.  NIP-98 suggests 60s; vezir widens to 120s because
+# clients (notably ones on satellite links) can have meaningful
 # clock skew + send latency, and the single-use short-lived session JWT
 # minted on success bounds the actual replay value regardless.
 DEFAULT_MAX_AGE_SECONDS = 120

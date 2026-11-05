@@ -1413,7 +1413,7 @@ def npub():
 )
 @click.option(
     "--label", default=None,
-    help="Free-text annotation (e.g. 'milfort-laptop'); shown by `npub list`.",
+    help="Free-text annotation (e.g. 'alice-laptop'); shown by `npub list`.",
 )
 def npub_add(npub_str, github, is_admin, label):
     """Authorize a nostr public key to log in as a given GitHub handle.
@@ -1515,8 +1515,8 @@ def npub_remove(npub_str):
 def google():
     """Manage the Google sign-in allowlist (server-side).
 
-    A google member authenticates with their Workspace account (e.g.
-    ``@blinkbtc.com``) via `vezir login --method google` instead of a
+    A google member authenticates with their Google account (e.g.
+    ``@example.com``) via `vezir login --method google` instead of a
     nostr key or ``vzr_`` token.  This group maps a verified email to a
     GitHub handle + privilege tier so the rest of the auth chain works
     identically.  The user must still be a member of every team they
@@ -1530,7 +1530,7 @@ def google():
 @google.command("add")
 @click.option(
     "--email", required=True,
-    help="The user's Google account email (e.g. alice@blinkbtc.com).",
+    help="The user's Google account email (e.g. alice@example.com).",
 )
 @click.option("--github", required=True, help="GitHub handle to bind this email to.")
 @click.option(
@@ -2081,7 +2081,7 @@ def login(url, team_id, relay, timeout, method, verbose):
 
     Default (`--method nostr`) generates a ``nostrconnect://`` request
     (URI + QR); approve it in your signer.  `--method google` runs the
-    OAuth device-code flow for your ``@blinkbtc.com`` account.  Either way
+    OAuth device-code flow for your Google account.  Either way
     vezir stores a short-lived session token; no key/password touches this
     machine.
 
@@ -3120,7 +3120,7 @@ def clips_kit_path():
               show_default=True, help="auto: short clips vertical, long clips landscape.")
 @click.option("--speaker", default=None, help="Speaker name (title card, lower third, post).")
 @click.option("--talk", default=None, help="Talk title (title card, lower third, post).")
-@click.option("--recorded-at", default=None, help='e.g. "AB Cape Town 2024".')
+@click.option("--recorded-at", default=None, help='e.g. "Acme Conf 2024".')
 @click.option("-o", "--out", "out_dir", type=click.Path(file_okay=False), default=None,
               help="Output directory (default ~/vezir-clips/<session>).")
 @click.option("--encoder", type=click.Choice(["auto", "nvenc", "x264"]), default="auto",
@@ -3349,7 +3349,7 @@ def import_cmd(session_dir, title, team_id):
     \b
     Example:
         vezir import ~/meet-recordings/meeting-20260521-143125
-        vezir import <dir> --team abboard
+        vezir import <dir> --team myteam
     """
     from .client import uploader
 

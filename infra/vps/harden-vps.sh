@@ -30,7 +30,7 @@ ufw --force reset >/dev/null
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow 22/tcp comment 'ssh'
-ufw allow 443/tcp comment 'https (DNAT to muscle)'
+ufw allow 443/tcp comment 'https (DNAT to the origin)'
 ufw allow 51820/udp comment 'wireguard'
 ufw --force enable
 ufw status verbose

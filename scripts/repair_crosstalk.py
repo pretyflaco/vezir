@@ -7,7 +7,7 @@ When a meeting is recorded without headphones, the remote participants' audio
 played through the room speakers bleeds into the local microphone (the left /
 "mic" channel of the stereo recording).  millet's default ``dual-diarize``
 transcription path labels the *entire* mic channel as the local speaker
-("YOU" → e.g. "Kemal"), so the bled remote speech gets misattributed to the
+("YOU" → e.g. "Alice"), so the bled remote speech gets misattributed to the
 local speaker.
 
 Why segment energy alone is not enough
@@ -17,7 +17,7 @@ so the per-segment mic/(mic+sys) energy ratio of genuine local speech (0.4-1.0)
 overlaps the ratio of bled remote speech (0.3-0.55).  The reliable signals are:
 
 * **Voiceprint identity** — compare each mic-channel segment's embedding against
-  the team's speaker profiles (Kemal vs Kim vs Jonas …).  This directly answers
+  the team's speaker profiles (Alice vs Bob vs Carol …).  This directly answers
   "whose voice is this?" rather than guessing from energy.
 * **Word-level channel energy** — a genuine local sentence with a remote
   interjection splits cleanly at word boundaries (local words mic-dominant,
@@ -37,7 +37,7 @@ compound an earlier pass.
 Usage
 -----
     python scripts/repair_crosstalk.py SESSION_DIR \
-        --profiles PATH/speaker_profiles.json [--you-label Kemal] \
+        --profiles PATH/speaker_profiles.json --you-label Alice \
         [--vp-margin 0.05] [--no-summary] [--dry-run]
 """
 from __future__ import annotations
@@ -139,8 +139,8 @@ def main() -> int:
         "reassignment). Without it, only the energy+overlap fallback is used.",
     )
     ap.add_argument(
-        "--you-label", default="Kemal",
-        help="Local-speaker label on the mic channel (default: Kemal).",
+        "--you-label", required=True,
+        help="Local-speaker label on the mic channel (e.g. Alice).",
     )
     ap.add_argument(
         "--vp-margin", type=float, default=0.05,
@@ -307,7 +307,7 @@ def main() -> int:
             generic_remote = cand
             break
 
-    # ── Classify / reassign every local ("Kemal") segment ──
+    # ── Classify / reassign every local (--you-label) segment ──
     out_raw: list[dict] = []          # rebuilt segment dicts (all speakers)
     you_total = 0
     counts = {"kept": 0, "vp_remote": 0, "fallback_remote": 0,
@@ -363,7 +363,7 @@ def main() -> int:
             counts["vp_remote"] += 1
             continue
 
-        # 2) Confident LOCAL voiceprint -> genuine Kemal.  Keep the segment
+        # 2) Confident LOCAL voiceprint -> genuinely the local speaker.  Keep the segment
         #    whole: the voiceprint already confirms it is the local speaker, and
         #    word-level splitting on noisy energy over-fragments real sentences
         #    (e.g. a tail the mic captured at lower gain).

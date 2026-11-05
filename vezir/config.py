@@ -212,7 +212,7 @@ def speaker_profiles_path() -> Path:
     """Legacy central voiceprint DB path (pre-v0.6.2).
 
     Kept for the v0.6.2 migration step (which moves this file under
-    ``teams/blink/speaker_profiles.json``) and for back-compat with
+    ``teams/<first-team>/speaker_profiles.json``) and for back-compat with
     callers that haven't yet been team-scoped.  Application code should
     use :func:`team_speaker_profiles_path` instead.
     """
@@ -255,8 +255,8 @@ def team_speaker_profiles_path(team_id: str) -> Path:
 
     Each team holds its own ``speaker_profiles.json`` so that voiceprint
     training stays isolated per team.  The v0.6.2 migration moves the
-    legacy central DB under ``teams/blink/`` and seeds an empty DB at
-    ``teams/twentyone/``.
+    legacy central DB under the first team's directory and seeds empty
+    DBs for the other teams.
 
     The worker exposes this DB to unmodified millet via the per-job
     HOME shim (see :func:`vezir.server.meet_runner.build_home_shim`).
@@ -408,17 +408,18 @@ def google_client_secret() -> str | None:
 
 
 def google_allowed_domains() -> list[str]:
-    """Email domains that may sign in via Google (default ``["blinkbtc.com"]``).
+    """Email domains that may sign in via Google (default: none).
 
     The ID token must carry one of these as its ``hd`` (hosted-domain) claim
-    and/or an ``email`` whose domain is exactly one of them.  Override with
-    ``$VEZIR_GOOGLE_ALLOWED_DOMAIN``, a comma-separated list (e.g.
-    ``blinkbtc.com,gmail.com``).  The email allowlist still applies, so
+    and/or an ``email`` whose domain is exactly one of them.  Set
+    ``$VEZIR_GOOGLE_ALLOWED_DOMAIN`` to a comma-separated list (e.g.
+    ``example.com,gmail.com``).  The email allowlist still applies, so
     listing a consumer domain admits only allowlisted addresses in it.
+    Unset or empty means Google sign-in is disabled (fail closed).
     """
     raw = os.environ.get("VEZIR_GOOGLE_ALLOWED_DOMAIN")
     if raw is None:
-        return ["blinkbtc.com"]
+        return []
     domains: list[str] = []
     for part in raw.split(","):
         d = part.strip().lower().lstrip("@")
@@ -1341,10 +1342,10 @@ def sanitize_title(title: str) -> str:
         ``ls`` output.
       * Cap at 60 characters to avoid path-length issues.
 
-    >>> sanitize_title("AB Board")
-    'AB_BOARD'
-    >>> sanitize_title("  weekly sync / @blink  ")
-    'WEEKLY_SYNC_BLINK'
+    >>> sanitize_title("Board Sync")
+    'BOARD_SYNC'
+    >>> sanitize_title("  weekly sync / @team  ")
+    'WEEKLY_SYNC_TEAM'
     """
     slug = re.sub(r"[^a-zA-Z0-9-]+", "_", title.strip())
     slug = slug.strip("_").upper()
@@ -1364,8 +1365,8 @@ def artifact_title_slug(title: str) -> str:
 
     >>> artifact_title_slug("Brainstorm Phoenix")
     'brainstorm_phoenix'
-    >>> artifact_title_slug("  Weekly Sync / @blink!  ")
-    'weekly_sync_blink'
+    >>> artifact_title_slug("  Weekly Sync / @team!  ")
+    'weekly_sync_team'
     """
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", title.strip()).lower()
     slug = re.sub(r"_+", "_", slug).strip("_")

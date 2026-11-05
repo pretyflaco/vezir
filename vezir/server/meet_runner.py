@@ -1118,7 +1118,7 @@ def sync(
     # from "schedule matched but the git op failed" (a transient/real error).
     # Only the former should fall through to --force --meeting-type; forcing
     # after a *matched* sync that merely failed to push created a DUPLICATE
-    # folder on the remote (e.g. blink-sync-151630Z next to blink-sync-weekly).
+    # folder on the remote (e.g. team-sync-151630Z next to team-sync-weekly).
     if not _sync_log_shows_skipped(log_path):
         log.warning(
             "job %s: schedule-matched sync did not push and was not skipped "

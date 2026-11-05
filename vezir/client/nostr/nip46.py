@@ -94,8 +94,8 @@ ALLOW_LEGACY_ACK_ENV = "VEZIR_NIP46_ALLOW_LEGACY_ACK"
 _WARNED_LEGACY_ACK = False
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
-# Relays known to handle NIP-46 ephemeral events well.  Originally blink
-# POS / blink-terminal's set; pruned 2026-08 after relay.nsec.app died
+# Relays known to handle NIP-46 ephemeral events well.  Pruned after
+# relay.nsec.app died
 # (its 30s connect timeout was blocking the response read loop — see
 # _reconnect_dead_relays) and getportal.cc was retired.  Every entry is
 # probe-verified reachable and fast (<1s handshake).
@@ -522,8 +522,8 @@ class Nip46Client:
                 "(install vezir[tui])"
             ) from exc
 
-        # Open every relay concurrently; tolerate partial failure (blink
-        # behaves the same — one slow/dead relay must not block login).  We
+        # Open every relay concurrently; tolerate partial failure (one
+        # slow/dead relay must not block login).  We
         # only hard-fail if NOT A SINGLE relay connects.
         _t0 = time.time()
         for url in self.relays:
@@ -988,11 +988,10 @@ class Nip46Client:
                 # done in software.  Re-subscribing (CLOSE/REQ) on a flaky
                 # link races our own publishes and was observed to make the
                 # signer never receive get_public_key/sign_event.
-                # Short stabilization delay before the first request, as
-                # blink-terminal does (POST_CONNECT_DELAY).
+                # Short stabilization delay before the first request
+                # (some signers drop a request sent right after connect).
                 time.sleep(0.5)
-                # Resolve the user pubkey via get_public_key — the proven
-                # blink flow (NostrConnectService getPublicKeyWithRetry).
+                # Resolve the user pubkey via get_public_key, with retries.
                 # Requests are re-published while waiting (see
                 # _read_response event_msg), so a transient delivery gap
                 # self-heals.  If it still fails, we fall back to the pubkey
@@ -1040,8 +1039,7 @@ class Nip46Client:
     def _get_public_key(self, deadline: float, *, attempts: int = 3) -> str:
         """Ask the signer for the user pubkey (NIP-46 ``get_public_key``).
 
-        Mirrors blink-terminal's ``getPublicKeyWithRetry``: retries a few
-        times with backoff, bounded by the overall connect ``deadline``.
+        Retries a few times with backoff, bounded by the overall connect ``deadline``.
         Uses ``accept_any`` because Amber may answer with a fresh response
         id rather than echoing ours.  Returns the 64-hex pubkey.
         """

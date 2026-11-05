@@ -6,7 +6,7 @@ roots *plus* any CA named by ``SSL_CERT_FILE`` or
 hosts were served by Caddy's ``tls internal``.  That context was then used
 for **every** host, including the public front: if the Caddy root key ever
 leaked, each client that had the env var set would accept a forged
-``vezir.twentyone.ist`` certificate (security audit 2026-10-30, L-20).  And
+certificate for the public host (security audit 2026-10-30, L-20).  And
 ``SSL_CERT_FILE`` is honoured by other tools as the *only* store, which mid
 CA-incident looked like an attack (see AGENTS.md).
 

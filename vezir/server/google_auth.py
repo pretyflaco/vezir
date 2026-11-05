@@ -1,8 +1,8 @@
 """Google sign-in → session JWT (OAuth 2.0 Device Authorization Grant).
 
 A second human auth path alongside nostr (see ``nostr_auth.py``), for
-Blink members who'd rather sign in with their ``@blinkbtc.com`` Google
-account than a nostr signer.  Both paths mint the **same** session JWT, so
+members who'd rather sign in with their organization's Google account than
+a nostr signer.  Both paths mint the **same** session JWT, so
 the rest of the auth chain (``auth.lookup_identity`` →
 ``require_team_context``) works unchanged.
 
@@ -33,10 +33,11 @@ Flow:
 
 Security: a valid Google token is not enough — the email must be on the
 ``google_members`` allowlist AND in an allowed domain AND
-``email_verified``.  This blocks a personal Gmail from spoofing a
-``@blinkbtc.com`` address.  ``$VEZIR_GOOGLE_ALLOWED_DOMAIN`` may list
-several domains (comma-separated, vezir 0.26.4+); a consumer domain such as
-``gmail.com`` admits only the exact allowlisted addresses in it.
+``email_verified``.  This blocks a personal Gmail from spoofing an
+``@example.com`` address.  ``$VEZIR_GOOGLE_ALLOWED_DOMAIN`` lists the
+allowed domains (comma-separated, vezir 0.26.4+); a consumer domain such as
+``gmail.com`` admits only the exact allowlisted addresses in it.  With no
+domain configured, Google sign-in is disabled.
 """
 from __future__ import annotations
 
@@ -297,8 +298,8 @@ def _verify_id_token(
     email = (claims.get("email") or "").strip().lower()
     hd = (claims.get("hd") or "").strip().lower()
     # Exact-domain match (not a suffix): split on the LAST '@' and compare
-    # the domain part precisely, so neither ``user@evilblinkbtc.com`` nor a
-    # subdomain ``user@x.blinkbtc.com`` can pass.  The Google-set ``hd``
+    # the domain part precisely, so neither ``user@evilexample.com`` nor a
+    # subdomain ``user@x.example.com`` can pass.  The Google-set ``hd``
     # (Workspace domain, cryptographically in the verified token) is an
     # additional accept for Workspace accounts.
     email_domain = email.rsplit("@", 1)[-1] if "@" in email else ""

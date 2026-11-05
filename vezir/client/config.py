@@ -17,12 +17,12 @@ Two files, two purposes:
   use``).  Shape:
       {
         "teams": [
-          {"id": "blink",     "url": "https://...", "token": "vzr_...",
-           "label": "Blink"},
-          {"id": "twentyone", "url": "https://...", "token": "vzr_...",
-           "label": "Twentyone"}
+          {"id": "team-a", "url": "https://...", "token": "vzr_...",
+           "label": "Team A"},
+          {"id": "team-b", "url": "https://...", "token": "vzr_...",
+           "label": "Team B"}
         ],
-        "active": "blink"
+        "active": "team-a"
       }
   When ``teams.json`` exists and has an active entry, it WINS over
   env vars and over ``client.json``'s url/token.  This is the
@@ -183,7 +183,7 @@ def team_credentials(team: str) -> tuple[str | None, str | None, str | None]:
 
     Returns ``(None, None, None)`` when *team* is not configured locally.
     The match is on the teams.json entry ``id`` (which is the slug, e.g.
-    ``"blink"``).  Callers should NEVER persist the returned token.
+    ``"team-a"``).  Callers should NEVER persist the returned token.
     """
     cfg = load_teams_config()
     for t in cfg["teams"]:
@@ -430,8 +430,8 @@ def same_origin(a: str, b: str) -> bool:
 # X-Team-Id.  But each `vezir login --team X` stored its own copy of the
 # credential pair, and a refresh rewrote only the entry it was made for —
 # so switching the TUI back and forth left the other entries' tokens to
-# silently expire (incident 2026-10-02: an upload to `twentyone` 401'd while
-# the very same identity's `blink` entry was fresh).  Entries that share an
+# silently expire (an upload to one team 401'd while the very same
+# identity's entry for another team was fresh).  Entries that share an
 # identity now share the pair: a refresh is fanned out to all of them.
 
 

@@ -16,40 +16,40 @@ def tmp_data(monkeypatch):
 
 def test_add_and_lookup(tmp_data):
     from vezir.server import google_members as gm
-    gm.add("Alice@blinkbtc.com", "alice", is_admin=True, label="work")
-    assert gm.lookup_email("alice@blinkbtc.com") == ("alice", True)
+    gm.add("Alice@example.com", "alice", is_admin=True, label="work")
+    assert gm.lookup_email("alice@example.com") == ("alice", True)
 
 
 def test_lookup_is_case_insensitive(tmp_data):
     from vezir.server import google_members as gm
-    gm.add("Bob@Blinkbtc.com", "bob")
-    assert gm.lookup_email("BOB@blinkbtc.com") == ("bob", False)
+    gm.add("Bob@Example.com", "bob")
+    assert gm.lookup_email("BOB@example.com") == ("bob", False)
 
 
 def test_lookup_unknown_returns_none(tmp_data):
     from vezir.server import google_members as gm
-    assert gm.lookup_email("nobody@blinkbtc.com") is None
+    assert gm.lookup_email("nobody@example.com") is None
 
 
 def test_upsert_updates_github_and_admin(tmp_data):
     from vezir.server import google_members as gm
-    gm.add("a@blinkbtc.com", "alice", is_admin=False)
-    gm.add("a@blinkbtc.com", "alice2", is_admin=True)
-    assert gm.lookup_email("a@blinkbtc.com") == ("alice2", True)
+    gm.add("a@example.com", "alice", is_admin=False)
+    gm.add("a@example.com", "alice2", is_admin=True)
+    assert gm.lookup_email("a@example.com") == ("alice2", True)
     assert len(gm.list_members()) == 1
 
 
 def test_remove(tmp_data):
     from vezir.server import google_members as gm
-    gm.add("a@blinkbtc.com", "alice")
-    assert gm.remove("a@blinkbtc.com") == 1
-    assert gm.remove("a@blinkbtc.com") == 0
-    assert gm.lookup_email("a@blinkbtc.com") is None
+    gm.add("a@example.com", "alice")
+    assert gm.remove("a@example.com") == 1
+    assert gm.remove("a@example.com") == 0
+    assert gm.lookup_email("a@example.com") is None
 
 
 def test_invalid_email_rejected(tmp_data):
     from vezir.server import google_members as gm
-    for bad in ("not-an-email", "@blinkbtc.com", "a@", "a b@blinkbtc.com"):
+    for bad in ("not-an-email", "@example.com", "a@", "a b@example.com"):
         with pytest.raises(ValueError):
             gm.add(bad, "x")
     # lookup of a malformed email is a miss, not an error.

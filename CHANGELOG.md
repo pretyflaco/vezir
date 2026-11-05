@@ -3,6 +3,22 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased — no deployment- or organization-specific references
+
+* **LICENSE:** the copyright holder is corrected to `twentyone.ist`, the
+  actual rights owner.  The previous notice was a mistake.  The package
+  author is `twentyone.ist`.
+* **Google sign-in has no built-in domain.**  `VEZIR_GOOGLE_ALLOWED_DOMAIN`
+  unset now means no domain, so Google sign-in is disabled until the
+  operator names one (it used to default to one organization's domain).
+  **Operator action:** a server that relied on the old default must set
+  `VEZIR_GOOGLE_ALLOWED_DOMAIN` explicitly before upgrading.
+* `scripts/repair_crosstalk.py`: `--you-label` is now required (it defaulted
+  to a person's name).
+* Docs, comments, examples and older CHANGELOG entries use neutral names
+  (`vezir.example.com`, `team-a`/`team-b`, `alice`/`bob`, the "origin
+  server"), with no hostnames, real session ids, team names or people.
+
 ## Unreleased — infra: keep the tunnel's reply route across networkd restarts
 
 On the server end of the WireGuard tunnel, wg-quick's `PostUp` adds a
@@ -35,8 +51,8 @@ fine on loopback.
 
 ## 0.29.1 — a short real sentence is a speaker, not noise
 
-Follow-up to millet PR #36 (incident 2026-11-02, session `01M6EV6Z`: a 58 s
-phone interview came back with one speaker).  millet no longer folds a tiny
+Follow-up to millet PR #36 (a 58 s phone interview came back with one
+speaker).  millet no longer folds a tiny
 raw cluster (<= 5 s, <= 3 segments) into the dominant speaker when it holds a
 real sentence (>= 1.5 s, >= 6 words, >= 1.5 words/s).  vezir's own copy of the
 tiny-noise gate (`worker._is_tiny_speaker`, which decides `needs_labeling`)
@@ -370,7 +386,7 @@ working.
   handlers' size checks ran only after the whole body was on the server's
   temp disk, and on a mid-upload disconnect that spool was *never closed*
   (Starlette closes it only on `MultiPartException`; FastAPI registers
-  `body.close` only after `form()` returns).  Observed on saray as a
+  `body.close` only after `form()` returns).  Observed in production as a
   deleted 2.1 GB temp file held open at 0 % CPU after one aborted upload.
   New `vezir.server.multipart_stream` drives python-multipart's push parser
   over `request.stream()` and hands bytes to a bounded sink; the declared
@@ -457,7 +473,7 @@ allowlists the identity for the pre-existing unit call sites.
 ### Added
 
 - `VEZIR_GOOGLE_ALLOWED_DOMAIN` takes a comma-separated list (e.g.
-  `blinkbtc.com,gmail.com`).  Until now it held one Workspace domain, so a
+  `example.com,gmail.com`).  Until now it held one Workspace domain, so a
   teammate with a personal Google account could not sign in, even when
   their email was allowlisted.  Every entry is still an exact match on the
   part after the last `@` (or the `hd` claim), and the `google_members`
@@ -632,17 +648,17 @@ server lives in one tab.  No migration, no server change.  Suite grows to
 
 ## 0.24.0 — `vezir local`; recovery picks the team; one login across teams
 
-Incident 2026-10-02: a recording started in the `blink` team was paused
-because it must not be shared there — it belonged in `twentyone`.  There
+A recording started in one team was paused because it must not be shared
+there — it belonged in another team.  There
 was no way to say so.  The team is the one active when Stop uploads,
 switching teams is refused while a recording is paused, Stop always
 uploads (Escape on the attachment prompt too), and the recovery dialog
 infers the team from the folder name and hard-wires auto-label + sync on.
 It took a coding session: quit the TUI, `mv` the folder, stitch the chunk
-with a python one-liner, and `vezir upload --team twentyone` — which then
-401'd, because the `twentyone` entry in `teams.json` held an expired JWT
-while the same person's `blink` entry was fresh.  Now it is one command:
-`vezir local upload <ref> --team twentyone`.  No migration, no server
+with a python one-liner, and `vezir upload --team team-b` — which then
+401'd, because the `team-b` entry in `teams.json` held an expired JWT
+while the same person's `team-a` entry was fresh.  Now it is one command:
+`vezir local upload <ref> --team team-b`.  No migration, no server
 change.  Suite grows to 1266 (34 new).
 
 ### Added
@@ -686,21 +702,20 @@ change.  Suite grows to 1266 (34 new).
 
 ## 0.23.2 — voiceprint hygiene: `voiceprints remove/merge`; millet 0.21.5 floor
 
-Incident 2026-09-30: a blink profile named "Pattern" (Gustavo's handle is
-`patternn`) turned up in standups, sales calls and interviews, always on
-filler ("Okay. | Yeah. | Bye.") and once on Destiny's self-introduction.
-Measured on the live DB it was **0.10** from Gustavo's voice and **0.86**
+A voiceprint profile (named after a teammate's handle) turned up in
+standups, sales calls and interviews, always on filler ("Okay. | Yeah. |
+Bye.") and once on another teammate's self-introduction.  Measured on the
+live DB it was **0.10** from that teammate's voice and **0.86**
 from the scribe's own voice echoing back through the call — built from
 filler Whisper had stretched over silence, then reinforced on every label
 submit that confirmed its pre-filled match (5 merges).  It matched filler
-buckets at ~0.9, which also kept them from becoming CROSSTALK.  Gustavo's
-real profile ("Gustavo", 40 sessions) was healthy throughout (0.90 to a
-fresh embedding of his speech).
+buckets at ~0.9, which also kept them from becoming CROSSTALK.  The
+teammate's real profile (40 sessions) was healthy throughout (0.90 to a
+fresh embedding of their speech).
 
-Fixed on saray by hand (backups kept): "Pattern" and its noise twin
-"Janusz" (0.75 to it) deleted; "Patrick van der Meijde" merged into
-"Patrick" (0.93 — one person, two names) in blink and the four team DBs
-seeded from it.  Afterwards the echo cluster in the incident session
+Fixed by hand (backups kept): the polluted profile and its noise twin
+(0.75 to it) deleted; one person's two profiles under two names (0.93)
+merged, in the source team DB and the team DBs seeded from it.  Afterwards the echo cluster in the incident session
 matches nothing, so it falls to CROSSTALK.  No migration.  Suite grows to
 1232 (4 new).
 
@@ -1020,7 +1035,8 @@ No migration. No behaviour change in vezir itself.
   degrading to Ollama.  millet 0.20.1 moved the SDK into its base
   dependencies; this floor makes a fresh install pick that up.
 
-  Existing deployments were unaffected: saray reaches millet through
+  Existing deployments that set `VEZIR_MILLET_BIN` were unaffected: they
+  reach millet through
   `VEZIR_MILLET_BIN`, which points at a venv where the SDK was installed by
   hand.  Notably the millet inside vezir's own pipx venv did *not* have it,
   so the deployment was one unset environment variable away from the bug.
@@ -1424,7 +1440,7 @@ No migration.  New job status: ``imported``.
   sentinel row when a full page comes back (selecting it fetches the next
   50 older sessions), and the MCP `list_sessions`/`search_sessions` caps
   rise 200 → 500 to match the server clamp.  Teams with more than 50
-  sessions (e.g. blink at ~390) can now reach their full history.
+  sessions (some had ~390) can now reach their full history.
 
 ### Notes
 
@@ -1582,7 +1598,7 @@ additive).
 ## 0.13.1 — fast NIP-46 login
 
 Nostr sign-in drops from ~2–3 minutes to seconds of machine time plus the
-user's approval tap (measured: 2m43s → 25s with the Blink signer, 1m36s →
+user's approval tap (measured: 2m43s → 25s with the Team A signer, 1m36s →
 20s with Amber; machine time alone is now ~2–5s).  No DB migration.
 
 ### Fixed
@@ -2155,8 +2171,7 @@ else.
   team, `_resolve_team_sync_config` fell through to the operator's personal
   `~/.config/meet/sync_config.json`, which on a typical install holds millet's
   placeholder `https://example.com/global.git`; millet then tried to clone it
-  and failed.  Affected every team without a `sync_remote` (only `blink` had
-  one configured).
+  and failed.  Affected every team without a `sync_remote`.
 
   Now:
   * New `meet_runner.team_has_sync_target(team_id)` — True only when a real,
@@ -2271,8 +2286,8 @@ else.
 
 ## 0.8.5 — fresh-Mac onboarding: Python cap, doctor recorder preflight, CI publish
 
-Follow-up to the first-teammate Mac onboarding pain (k9ert, then
-destinysmart, who lost an evening to undocumented install blockers).
+Follow-up to the first-teammate Mac onboarding pain (two teammates, one of
+whom lost an evening to undocumented install blockers).
 Most of those were the empty-`_bin/` packaging bug (fixed in millet-record
 0.4.3/0.4.4) — this release closes the remaining software gaps.
 
@@ -2431,12 +2446,12 @@ prefill fix.
   sign-in method for members who don't use a Nostr signer, via the OAuth 2.0
   **Device Authorization Grant** (works in a TUI / headless box): the client
   shows a short code + URL, the user approves in any browser with their
-  `@blinkbtc.com` account, and the server mints the **same session JWT** as
+  organization's Google account, and the server mints the **same session JWT** as
   the nostr path.  The server proxies Google's device + token endpoints so
   the OAuth client secret never leaves the server; the ID token is verified
   (issuer, `email_verified`, `hd`/email domain == allowed domain) and the
   email must be allow-listed.  Authorize with
-  `vezir google add --email …@blinkbtc.com --github …`.
+  `vezir google add --email …@example.com --github …`.
 * **Server NIP-98 + npub allowlist + JWT issuance** (`nip98.py`,
   `nostr_members`, `nostr_auth.py`); pure-Python NIP-46 client with NIP-04/44.
   Google support adds `google_members` (email allowlist) and `google_auth`
@@ -2449,7 +2464,7 @@ prefill fix.
 
 ### Fixed (NIP-46 robustness — validated against real Amber)
 
-* **Multi-relay fan-out** across blink-terminal's proven 5 relays: the signer
+* **Multi-relay fan-out** across a proven set of 5 relays: the signer
   publishes responses to the URI relays, so a single relay dropping ephemeral
   kind-24133 events would strand login.
 * **Persistent subscription + periodic re-publish + relay reconnect** for
@@ -2464,7 +2479,7 @@ prefill fix.
 ### Fixed (client TLS trust)
 
 * **Client now trusts the public *and* internal CA instead of replacing the
-  store.**  The public VPS front (e.g. `vezir.twentyone.ist`) serves a
+  store.**  The public VPS front (e.g. `vezir.example.com`) serves a
   publicly-trusted (Let's Encrypt) certificate, but the client honored
   `SSL_CERT_FILE` / `VEZIR_CADDY_ROOT_CERT_PATH` by pointing httpx at *only*
   the Caddy internal CA — so on boxes where those vars name the internal root,
@@ -2550,7 +2565,7 @@ prefill fix.
 
 ### Notes
 
-* Operator cleanup performed on muscle alongside this release: 10 pre-existing
+* Operator cleanup performed on the server alongside this release: 10 pre-existing
   duplicate folders merged (artifacts folded into the recording dir, pulled
   copy removed), and 3.8 GB of stale raw WAVs + ffmpeg logs reclaimed across
   all team meeting dirs.
@@ -2610,7 +2625,7 @@ Pairs with millet 0.12.4.
 * **Per-team default language.**  `build_transcribe_args` passes
   `--default-language` from the team's `sync_config.json`
   (`default_language`) or the global `VEZIR_MILLET_DEFAULT_LANGUAGE`,
-  preventing summary-language drift for single-language teams (blink set to
+  preventing summary-language drift for single-language teams (e.g. one set to
   `en`).
 
 ### Fixed
@@ -3350,9 +3365,9 @@ recording was uploaded under the wrong scribe token).
   caller's team DB into the millet subprocess.
 * Migration ``0.6.2-per-team-voiceprints`` moves the legacy
   ``~/vezir-data/speaker_profiles.json`` under
-  ``teams/blink/speaker_profiles.json`` and seeds an empty
-  ``teams/twentyone/speaker_profiles.json`` (locked-in decision:
-  twentyone starts with a clean training surface).  Idempotent;
+  ``teams/team-a/speaker_profiles.json`` and seeds an empty
+  ``teams/team-b/speaker_profiles.json`` (the second team
+  starts with a clean training surface).  Idempotent;
   audit log at ``~/vezir-data/logs/migration-0.6.2-per-team-voiceprints.log``.
 * New helper: ``vezir.config.team_speaker_profiles_path(team_id)``.
 * CLI ``vezir voiceprints seed/list`` gained a required ``--team``
@@ -3379,7 +3394,7 @@ recording was uploaded under the wrong scribe token).
   ``sync_config.materialized.json`` when ``team.sync_remote``
   drifts from the stored value.
 * The legacy ``VEZIR_SYNC_MEETING_TYPE`` env var is now a
-  deprecation fallback (kept for muscle's existing install; removed
+  deprecation fallback (kept for existing installs; removed
   in v0.7.0).  Set ``team.sync_meeting_type`` via
   ``vezir team set-sync --meeting-type ...`` instead.
 
@@ -3451,7 +3466,7 @@ recording was uploaded under the wrong scribe token).
   on-disk files move (and are moved automatically by the migration).
 * **Operator action required**: none for existing single-team
   installs.  The migration auto-routes the legacy voiceprint DB
-  to blink.
+  to team-a.
 * **Token compatibility**: unchanged.  No tokens revoked by the
   migration; no token re-issue needed.
 * **Web cookies**: unchanged.
@@ -3461,7 +3476,7 @@ recording was uploaded under the wrong scribe token).
 285 passing (up from 226 in v0.6.1):
 
 * ``tests/test_voiceprints_per_team.py`` (16) — migration moves
-  legacy DB into blink, twentyone starts empty, migration is
+  legacy DB into team-a, team-b starts empty, migration is
   idempotent, voiceprints module API requires team_id, HOME shim
   symlinks per-team, CLI ``--team`` flag works.
 * ``tests/test_sync_per_team.py`` (10) — meeting-type prefix
@@ -3480,7 +3495,7 @@ recording was uploaded under the wrong scribe token).
 Plus updates to:
 
 * ``tests/test_permissions.py`` — voiceprint DB now lives under
-  ``teams/blink/``.
+  ``teams/team-a/``.
 * ``tests/test_meet_runner.py`` — ``transcribe`` now takes
   ``team_id``.
 * ``tests/test_label_api.py`` — ``_apply_and_finalize`` now takes
@@ -3500,14 +3515,14 @@ sudo systemctl restart vezir  # or however you run it
 After upgrade, to wire per-team git sync remotes:
 
 ```
-vezir team set-sync --id blink     --remote git@github.com:org/blink-meetings.git
-vezir team set-sync --id twentyone --remote git@github.com:org/21-meetings.git
+vezir team set-sync --id team-a     --remote git@github.com:org/team-a-meetings.git
+vezir team set-sync --id team-b --remote git@github.com:org/team-b-meetings.git
 ```
 
 For hand-tuned millet sync configs (branch, ssh key, etc.) per team:
 
 ```
-$EDITOR ~/vezir-data/teams/blink/sync_config.json
+$EDITOR ~/vezir-data/teams/team-a/sync_config.json
 ```
 
 (If this file exists it shadows the auto-materialized one.)
@@ -3529,10 +3544,10 @@ at runtime, instead of requiring an env-var swap + TUI restart.
 
       {
         "teams": [
-          {"id": "blink",     "url": "...", "token": "vzr_...", "label": "Blink"},
-          {"id": "twentyone", "url": "...", "token": "vzr_...", "label": "Twentyone"}
+          {"id": "team-a",     "url": "...", "token": "vzr_...", "label": "Team A"},
+          {"id": "team-b", "url": "...", "token": "vzr_...", "label": "Team B"}
         ],
-        "active": "blink"
+        "active": "team-a"
       }
 
   When teams.json has an active entry, those credentials WIN over
@@ -3587,17 +3602,17 @@ at runtime, instead of requiring an env-var swap + TUI restart.
 
 ### Operator + thin-client setup (typical flow)
 
-On muscle, mint a token per (handle, team) pair:
+On the server, mint a token per (handle, team) pair:
 
-    vezir token issue --github pretyflaco --team blink     --label laptop-blink
-    vezir token issue --github pretyflaco --team twentyone --label laptop-twentyone
+    vezir token issue --github alice --team team-a     --label laptop-a
+    vezir token issue --github alice --team team-b --label laptop-b
 
 Both commands print plaintext bearers ONCE; capture them.
 
 On the thin client (laptop), populate teams.json:
 
-    vezir team config add --id blink     --url https://10.44.141.239 --token vzr_blink_token     --label Blink     --activate
-    vezir team config add --id twentyone --url https://10.44.141.239 --token vzr_twentyone_token --label Twentyone
+    vezir team config add --id team-a --url https://vezir.example.com --token vzr_team_a_token --label "Team A" --activate
+    vezir team config add --id team-b --url https://vezir.example.com --token vzr_team_b_token --label "Team B"
 
 Confirm:
 
@@ -3606,10 +3621,10 @@ Confirm:
 In the TUI:
 
     vezir tui
-    # ctrl+t cycles to twentyone
-    # ctrl+t again cycles back to blink
+    # ctrl+t cycles to team-b
+    # ctrl+t again cycles back to team-a
 
-The title bar reads ``team: Blink`` / ``team: Twentyone`` to reflect
+The title bar reads ``team: Team A`` / ``team: Team B`` to reflect
 the active team.  Sessions tab auto-reloads on every switch.
 
 ### Compatibility
@@ -3625,7 +3640,7 @@ the active team.  Sessions tab auto-reloads on every switch.
 
 ---
 
-## 0.6.0 — multi-team support (β-minimal): team isolation, seed blink + twentyone
+## 0.6.0 — multi-team support (β-minimal): team isolation, seed team-a + team-b
 
 Vezir grew up.  Previously every authenticated bearer token saw every
 non-personal session on the server.  v0.6.0 introduces a **team** as
@@ -3677,7 +3692,7 @@ per-team voiceprint DB and per-team git sync target follow in v0.6.1.
   v0.6.0 in the same process lifetime are rejected with a "force
   re-login" 401 so they can't silently leak across teams.
 * **Roster file**: ``~/vezir-data/team.json`` moved to
-  ``~/vezir-data/teams/blink/roster.json``; per-team rosters are
+  ``~/vezir-data/teams/team-a/roster.json``; per-team rosters are
   used by the labeling dropdown and ``/api/team`` autocomplete.
   ``/api/team`` is now scoped to the caller's team.
 
@@ -3686,30 +3701,30 @@ per-team voiceprint DB and per-team git sync target follow in v0.6.1.
 Decisions locked in vezir_plan.md (Q-1..Q-7 + Q-A..Q-G + Q-H, plus
 final γ-lite revoke scope confirmation):
 
-* **Seed teams**: ``blink`` and ``twentyone`` are created
+* **Seed teams**: ``team-a`` and ``team-b`` are created
   automatically (no "default" team).
 * **Job backfill**:
-  - jobs where ``github = 'bettermorning'`` -> ``team_id =
-    'twentyone'``
+  - jobs where ``github = 'carol'`` -> ``team_id =
+    'team-b'``
   - smoke-upload-test* jobs -> **deleted**
-  - everything else -> ``team_id = 'blink'``
+  - everything else -> ``team_id = 'team-a'``
 * **Token backfill**:
-  - bettermorning's tokens -> twentyone
-  - all other handles' tokens -> blink
-  - **pretyflaco's UNLABELED tokens are revoked** (γ-lite per user
+  - carol's tokens -> team-b
+  - all other handles' tokens -> team-a
+  - **alice's UNLABELED tokens are revoked** (γ-lite per user
     decision: the labeled ``gpu-server`` admin token and
-    ``android-galaxy`` token stay in blink; the two label-less
-    pretyflaco tokens are dropped so the operator re-issues with
+    ``android-galaxy`` token stay in team-a; the two label-less
+    alice tokens are dropped so the operator re-issues with
     explicit ``--team`` for each device that needs cross-team
     capability).
-* **Roster file move**: ``team.json`` -> ``teams/blink/roster.json``;
-  ``teams/twentyone/roster.json`` seeded with ``[{"github":
-  "pretyflaco"}, {"github": "bettermorning"}]``.
+* **Roster file move**: ``team.json`` -> ``teams/team-a/roster.json``;
+  ``teams/team-b/roster.json`` seeded with ``[{"github":
+  "alice"}, {"github": "carol"}]``.
 * **Voiceprint DB**: unchanged in v0.6.0 (still
   ``~/vezir-data/speaker_profiles.json`` shared across teams).
-  Per-team voiceprint DBs land in v0.6.1; until then, blink and
-  twentyone share the central voiceprint DB.  This is suboptimal
-  for strict bettermorning isolation but acceptable as a transition
+  Per-team voiceprint DBs land in v0.6.1; until then, team-a and
+  team-b share the central voiceprint DB.  This is suboptimal
+  for strict carol isolation but acceptable as a transition
   state — no team-scoped queries touch the voiceprint DB in 0.6.0.
 * **Sync remote**: ``teams.sync_remote`` is a reserved schema slot
   in v0.6.0.  Worker still reads ``VEZIR_SYNC_MEETING_TYPE`` env var
@@ -3724,8 +3739,8 @@ in JSON.
 ### Deferred to v0.6.1
 
 * Per-team voiceprint DB (``teams/<id>/speaker_profiles.json``)
-  + worker shim wiring.  Until then, twentyone members will see
-  blink-trained voiceprints in their label dropdowns (no functional
+  + worker shim wiring.  Until then, team-b members will see
+  team-a-trained voiceprints in their label dropdowns (no functional
   cross-team data leakage; just shared training surface).
 * Per-team sync remote (read from ``teams.sync_remote``, not env
   var).  Until then, both teams sync to the same remote if any.
@@ -3751,11 +3766,11 @@ When a v0.5.0 (or earlier) vezir is upgraded to v0.6.0:
 3. **Upgrade vezir**: ``pip install --upgrade vezir``.
 4. **Start vezir again**: the migration runs at first startup and
    logs its outcome to ``~/vezir-data/logs/migration-0.6.0-multi-team.log``.
-5. **Verify**: ``vezir team list`` should show ``blink`` and
-   ``twentyone``; ``vezir status`` should show per-team job counts.
-6. **Re-token disrupted devices**: any pretyflaco devices using the
+5. **Verify**: ``vezir team list`` should show ``team-a`` and
+   ``team-b``; ``vezir status`` should show per-team job counts.
+6. **Re-token disrupted devices**: any alice devices using the
    two revoked unlabeled tokens will get 401s; re-issue per-device
-   tokens with ``vezir token issue --github pretyflaco --team <slug>
+   tokens with ``vezir token issue --github alice --team <slug>
    --label <device>`` and update ``VEZIR_TOKEN`` on the device.
 
 ---
@@ -3958,7 +3973,7 @@ format and HTTP API are unchanged.
 # Thin client (CLI / TUI only):
 pip install --user --upgrade vezir
 
-# Full server (muscle):
+# Full server:
 pip install --user --upgrade 'vezir[server]'
 # (pulls millet-pipeline >= 0.9.0 + millet-record >= 0.4.0)
 
@@ -4231,7 +4246,7 @@ Requires **meetscribe-offline >= 0.8.2**.
 * **Retry-summary was broken: interactive prompt aborted the subprocess.**
   `retry_summary()` shelled out to `meet label --auto --no-audio
   --summary-preset <preset>`, but `meet label --auto` always runs voice
-  identification from scratch. When the speaker label (e.g. "Kemal") was
+  identification from scratch. When the speaker label (e.g. "Alice") was
   assigned via the Android/web UI rather than a voiceprint auto-match,
   the speaker appeared as "unrecognized" and meetscribe dropped into an
   interactive `click.prompt()` which immediately aborted on the piped
@@ -4574,7 +4589,7 @@ Tags `v0.1.9`, `v0.1.10`, and `v0.1.12` (later) were created in git but never pu
 
 ## 0.1.2 — OGG/Opus compression by default + upload integrity ([commit 0f15122](https://github.com/pretyflaco/vezir/commit/0f15122))
 
-A real Blink meeting recording (~233 MB raw WAV) exposed slow uploads over Tailscale and a silent partial-upload failure mode. This release moves to OGG/Opus by default and adds end-to-end size verification.
+A real Team A meeting recording (~233 MB raw WAV) exposed slow uploads over Tailscale and a silent partial-upload failure mode. This release moves to OGG/Opus by default and adds end-to-end size verification.
 
 ### Added
 
@@ -4603,7 +4618,7 @@ First post-0.1.0 follow-up addressing onboarding feedback.
 
 ### Added
 
-* **`vezir upload AUDIO_FILE --title "..."`** — upload an existing recording (`.wav` / `.ogg`) without recording live. Closes the gap reported by `@openoms`: "what I think is lacking the most is being able to upload the previous recordings".
+* **`vezir upload AUDIO_FILE --title "..."`** — upload an existing recording (`.wav` / `.ogg`) without recording live. Closes the gap reported by a teammate: "what I think is lacking the most is being able to upload the previous recordings".
 
 * **Server-side upload size/type limits.**
 
@@ -4661,4 +4676,4 @@ Self-hosted scribe service for team meetings: a designated scribe records on a l
 ### Known limitations at 0.1.0
 
 * macOS thin client deferred (Linux scribe clients fully supported).
-* Voiceprint enrollment for non-Blink-team external participants not yet a first-class flow.
+* Voiceprint enrollment for non-Team A-team external participants not yet a first-class flow.

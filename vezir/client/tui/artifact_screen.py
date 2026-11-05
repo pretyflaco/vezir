@@ -303,8 +303,8 @@ class ArtifactScreen(Screen):
         """Kick the OS opener off in a worker so the TUI never blocks on it.
 
         PR2 inlined ``subprocess.Popen(...)`` in this handler, which is
-        usually safe (DEVNULL'd FDs, start_new_session=True).  But on the
-        muscle smoke we hit a hang: pressing enter on a PDF row launched
+        usually safe (DEVNULL'd FDs, start_new_session=True).  But in a
+        smoke test we hit a hang: pressing enter on a PDF row launched
         xdg-open -> Evince on the local console's DISPLAY=:1, after which
         the TUI's keyboard input was no longer responsive.  Root cause
         unknown (likely Evince stealing focus on the local display), but

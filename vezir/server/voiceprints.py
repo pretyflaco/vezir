@@ -9,7 +9,7 @@ keyed by speaker name.
 
 Pre-v0.6.2 vezir kept a single central DB at
 ``~/vezir-data/speaker_profiles.json``.  The v0.6.2 migration moves
-that file under ``teams/blink/`` and seeds ``teams/twentyone/`` empty.
+that file under the first team's directory and seeds the others empty.
 
 Helper functions here are used to seed each team's DB and to inspect
 it from the web UI / CLI / labeling pipeline.  All accept ``team_id``

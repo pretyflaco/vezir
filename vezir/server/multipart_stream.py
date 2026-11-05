@@ -11,7 +11,7 @@ Two consequences (security audit 2026-10-30, H-4 / H-4b):
   only for ``MultiPartException``, and FastAPI registers ``body.close`` only
   after ``form()`` returns — so the partially written spool (up to the full
   body size) stays pinned in a ``raise … from e`` reference cycle until a
-  full GC, i.e. effectively until the process restarts.  Observed on saray:
+  full GC, i.e. effectively until the process restarts.  Observed in production:
   a 2.1 GB deleted ``O_TMPFILE`` held open at 0 % CPU.
 
 This module drives ``python-multipart``'s push parser over
