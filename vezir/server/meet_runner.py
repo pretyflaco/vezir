@@ -97,12 +97,12 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
             (shim_config / entry.name).symlink_to(entry)
 
     # 3. .config/meet: materialize as a real dir; symlink every file
-    #    EXCEPT speaker_profiles.json and sync_config.json (both
-    #    overridden below).
+    #    EXCEPT speaker_profiles.json, sync_config.json, and vocabulary.json
+    #    (all overridden per team below so operator files never leak across teams).
     real_meet = real_config / "meet"
     shim_meet = shim_config / "meet"
     config.secure_mkdir(shim_meet)
-    OVERRIDDEN = {"speaker_profiles.json", "sync_config.json"}
+    OVERRIDDEN = {"speaker_profiles.json", "sync_config.json", "vocabulary.json"}
     if real_meet.is_dir():
         for entry in real_meet.iterdir():
             if entry.name in OVERRIDDEN:
@@ -117,6 +117,12 @@ def build_home_shim(job_id: str, team_id: str) -> Path:
     else:
         config.secure_chmod_file(team_db)
     (shim_meet / "speaker_profiles.json").symlink_to(team_db)
+
+    # 4b. Override: vocabulary.json -> per-team vocabulary (when configured).
+    team_vocab = config.team_vocabulary_path(team_id)
+    if team_vocab.is_file():
+        config.secure_chmod_file(team_vocab)
+        (shim_meet / "vocabulary.json").symlink_to(team_vocab)
 
     # 5. Override: sync_config.json — per-team resolution (v0.6.2+).
     #    Order: per-team file (B2 escape hatch) > materialized from
@@ -388,14 +394,16 @@ def _env_for_meet(home: Path, team_id: str) -> dict:
     for key in (
         "MILLET_CONFIG_DIR",
         "MEET_CONFIG_DIR",
+        "MILLET_VOCABULARY_PATH",
+        "MEET_VOCABULARY_PATH",
         "XDG_CONFIG_HOME",
         "XDG_CONFIG_DIRS",
     ):
         env.pop(key, None)
-    # Belt-and-suspenders: explicitly tell millet where the profile DB
-    # lives, in addition to the symlink in the HOME shim.  The env var is
-    # respected by millet >=0.8.2's _default_profiles_path().
+    # Belt-and-suspenders: explicitly tell millet where the profile DB and
+    # team vocabulary live, in addition to the symlinks in the HOME shim.
     env["MEET_PROFILES_PATH"] = str(config.team_speaker_profiles_path(team_id))
+    env["MILLET_VOCABULARY_PATH"] = str(config.team_vocabulary_path(team_id))
     # Force offline use of the locally-cached HuggingFace models (the pyannote
     # diarization model is downloaded once and cached under ~/.cache).  Without
     # this, every diarization load makes a network HEAD request to
@@ -811,6 +819,7 @@ def apply_labels_json(
     summary_preset: str | None = None,
     summary_language: str | None = None,
     summary_template: str | None = None,
+    apply_vocabulary: bool = False,
 ) -> int:
     """Apply a speaker->name map via `millet label --apply-json` (subprocess).
 
@@ -855,6 +864,8 @@ def apply_labels_json(
         args.extend(["--summary-template", summary_template])
     if update_profiles:
         args.append("--update-profiles")
+    if apply_vocabulary and config.meet_label_supports_option("--apply-vocabulary"):
+        args.append("--apply-vocabulary")
     args.append(str(session_dir))
     try:
         return run_meet(args, job_id=job_id, team_id=team_id, log_path=log_path)
@@ -1103,6 +1114,29 @@ def sync(
             log_path=log_path,
         )
 
+    # Single-pass hybrid sync (millet-pipeline with --fallback-meeting-type):
+    # tries schedule matching first, and if no schedule matches, immediately
+    # pushes into the fallback folder in the SAME subprocess — eliminating a
+    # second `millet sync` spawn and log scraping on every unscheduled meeting.
+    if config.meet_sync_supports_option("--fallback-meeting-type"):
+        base = _title_slug_for_sync(title) or _meeting_type_base_for_team(team_id)
+        fallback_type = _meeting_type_for(job_id, base=base)
+        log.info(
+            "job %s: single-pass sync (fallback --fallback-meeting-type %s)",
+            job_id, fallback_type,
+        )
+        return run_meet(
+            [
+                *sync_base,
+                "--fallback-meeting-type", fallback_type,
+                str(session_dir),
+            ],
+            job_id=job_id,
+            team_id=team_id,
+            log_path=log_path,
+        )
+
+    # Legacy 2-pass fallback for older millet builds without --fallback-meeting-type.
     # Step 1: try schedule-matched sync.
     rc1 = run_meet(
         [*sync_base, str(session_dir)],

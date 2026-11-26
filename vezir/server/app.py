@@ -26,6 +26,7 @@ from . import (
     sessions,
     teams,
     uploads,
+    vocabulary,
     voiceprints,
     worker,
 )
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(labels.router)
     app.include_router(attachments.router)
     app.include_router(teams.router)
+    app.include_router(vocabulary.router)
     app.include_router(nostr_auth.router)
     app.include_router(google_auth.router)
     app.include_router(enroll.router)

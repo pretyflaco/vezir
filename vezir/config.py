@@ -264,6 +264,16 @@ def team_speaker_profiles_path(team_id: str) -> Path:
     return teams_dir() / team_id / "speaker_profiles.json"
 
 
+def team_vocabulary_path(team_id: str) -> Path:
+    """Per-team custom vocabulary/glossary file (``vocabulary.json``).
+
+    Each team maintains its own special terms, recurring ASR mishearing
+    aliases, and glossary descriptions.  Exposed to millet through the
+    per-job HOME shim so teams stay isolated.
+    """
+    return teams_dir() / team_id / "vocabulary.json"
+
+
 def team_sync_config_path(team_id: str) -> Path:
     """Per-team millet sync_config.json — operator-provided override (v0.6.2+).
 
@@ -626,6 +636,36 @@ def meet_label_supports_apply_json() -> bool:
     a confusing argv error.
     """
     return meet_label_supports_option("--apply-json")
+
+
+@lru_cache(maxsize=1)
+def _meet_sync_help() -> str:
+    """Return cached `millet sync --help` output."""
+    try:
+        meet = meet_binary()
+    except Exception:
+        return ""
+    try:
+        proc = subprocess.run(
+            [meet, "sync", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    return "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+
+
+def meet_sync_supports_option(option: str) -> bool:
+    """Return True if `millet sync --help` advertises an option."""
+    help_text = _meet_sync_help()
+    if not help_text:
+        return False
+    return any(
+        line.lstrip().startswith(option)
+        for line in help_text.splitlines()
+    )
 
 
 def millet_timeout_seconds() -> int | None:

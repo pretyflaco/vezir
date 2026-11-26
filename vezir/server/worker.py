@@ -55,8 +55,14 @@ POLL_INTERVAL_SEC = 2.0
 _TASKS: _pyqueue.Queue = _pyqueue.Queue()
 _ACTIVE_TASKS: set[tuple[str, str]] = set()
 _TASKS_LOCK = threading.Lock()
+_WAKE_EVENT = threading.Event()
 
 _TASK_KINDS = ("sync", "retry_summary", "finalize_labels", "auto_label")
+
+
+def wake_worker() -> None:
+    """Wake the background worker immediately when new work is queued."""
+    _WAKE_EVENT.set()
 
 
 def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
@@ -75,6 +81,7 @@ def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
             return False
         _ACTIVE_TASKS.add(key)
     _TASKS.put((kind, session_id, kwargs))
+    wake_worker()
     return True
 
 
@@ -97,12 +104,14 @@ def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
             if kind == "sync":
                 finalize_after_labeling(session_id, kwargs.get("meeting_type"))
             elif kind == "retry_summary":
-                retry_summary_for_session(
-                    session_id,
-                    preset_override=kwargs.get("preset_override"),
-                    language_override=kwargs.get("language_override"),
-                    template_override=kwargs.get("template_override"),
-                )
+                retry_kw: dict = {
+                    "preset_override": kwargs.get("preset_override"),
+                    "language_override": kwargs.get("language_override"),
+                    "template_override": kwargs.get("template_override"),
+                }
+                if kwargs.get("apply_vocabulary"):
+                    retry_kw["apply_vocabulary"] = True
+                retry_summary_for_session(session_id, **retry_kw)
             elif kind == "finalize_labels":
                 _finalize_labels_task(session_id, kwargs.get("label_map") or {})
             elif kind == "auto_label":
@@ -854,6 +863,10 @@ def _extract_video_audio(session_dir: Path, job_id: str, log_path: Path) -> None
 # coverage spans the whole recording instead of truncating the tail.
 
 _MAX_FRAMES = 45
+# Parallelize ffmpeg cue-frame extraction for larger cue sets while keeping
+# tiny jobs inline (zero thread-pool overhead, deterministic order).
+_FRAME_PARALLEL_THRESHOLD = 6
+_FRAME_MAX_WORKERS = 4
 
 
 def _cue_timestamps(session_dir: Path, job_id: str) -> list[float]:
@@ -958,30 +971,48 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
     written = 0
     with tempfile.TemporaryDirectory(prefix=".cue-frames-", dir=session_dir) as tmp:
         tmp_dir = Path(tmp)
+
+        def _extract_one(ts: float) -> tuple[str, Path, int, bytes]:
+            stamp = _hhmmss(ts)
+            name = f"cue_{stamp.replace(':', '-')}.png"
+            out = tmp_dir / name
+            cmd = [
+                "ffmpeg", "-y", "-ss", _hhmmss(offset + ts), "-i", str(video),
+                "-frames:v", "1", "-q:v", "2", str(out),
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            raw_out = getattr(proc, "stdout", None) or b""
+            if isinstance(raw_out, str):
+                raw_out = raw_out.encode("utf-8", errors="replace")
+            return stamp, out, proc.returncode, raw_out
+
+        if len(sampled) >= _FRAME_PARALLEL_THRESHOLD:
+            from concurrent.futures import ThreadPoolExecutor
+
+            workers = min(_FRAME_MAX_WORKERS, os.cpu_count() or 2, len(sampled))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(_extract_one, sampled))
+        else:
+            results = [_extract_one(ts) for ts in sampled]
+
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(
                 f"\n[frames] extracting {len(sampled)} cue frame(s) from {video.name}\n"
             )
-            lf.flush()
-            for ts in sampled:
-                stamp = _hhmmss(ts)
-                name = f"cue_{stamp.replace(':', '-')}.png"
-                out = tmp_dir / name
-                cmd = [
-                    "ffmpeg", "-y", "-ss", _hhmmss(offset + ts), "-i", str(video),
-                    "-frames:v", "1", "-q:v", "2", str(out),
-                ]
-                proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
-                if proc.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            for stamp, out, rc, raw_out in results:
+                if raw_out:
+                    lf.write(raw_out.decode("utf-8", errors="replace"))
+                if rc == 0 and out.exists() and out.stat().st_size > 0:
                     config.secure_chmod_file(out)
-                    out.replace(frames_dir / name)
+                    out.replace(frames_dir / out.name)
                     written += 1
                 else:
                     out.unlink(missing_ok=True)
                     log.warning(
                         "session %s: frame extraction failed at %s (rc=%s)",
-                        job_id, stamp, proc.returncode,
+                        job_id, stamp, rc,
                     )
+            lf.flush()
     log.info("session %s: %d cue frame(s) in %s", job_id, written, frames_dir)
     return written
 
@@ -1475,7 +1506,8 @@ def _loop() -> None:
             continue
 
         if job is None:
-            time.sleep(POLL_INTERVAL_SEC)
+            _WAKE_EVENT.wait(timeout=POLL_INTERVAL_SEC)
+            _WAKE_EVENT.clear()
             continue
 
         log.info("processing job %s (uploaded by %s)", job["id"], job["github"])
@@ -1489,6 +1521,7 @@ def start_background_worker() -> None:
     if _worker_thread is not None and _worker_thread.is_alive():
         return
     _stop_flag.clear()
+    _WAKE_EVENT.clear()
     _worker_thread = threading.Thread(
         target=_loop, name="vezir-worker", daemon=True
     )
@@ -1497,6 +1530,7 @@ def start_background_worker() -> None:
 
 def stop_background_worker() -> None:
     _stop_flag.set()
+    wake_worker()
 
 
 def retry_summary_for_session(
@@ -1505,6 +1539,7 @@ def retry_summary_for_session(
     preset_override: str | None = None,
     language_override: str | None = None,
     template_override: str | None = None,
+    apply_vocabulary: bool = False,
 ) -> None:
     """Re-run summary generation for a completed session.
 
@@ -1582,6 +1617,7 @@ def retry_summary_for_session(
                 summary_preset=requested_preset,
                 summary_language=language_override,
                 summary_template=requested_template,
+                apply_vocabulary=apply_vocabulary,
             )
             if rc != 0:
                 summary_err = _error_with_tail(

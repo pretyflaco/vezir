@@ -56,6 +56,7 @@ jobs:
             vezir/server/ratelimit.py \
             vezir/server/enroll.py \
             vezir/server/sessions_auth.py \
+            vezir/server/vocabulary.py \
             vezir/presets.py \
             vezir/speakers.py \
             vezir/client/local.py \
