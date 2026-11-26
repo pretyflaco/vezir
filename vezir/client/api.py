@@ -677,6 +677,7 @@ class VezirClient:
         self,
         path: str,
         *,
+        params: dict | None = None,
         timeout: httpx.Timeout | None = None,
     ) -> ApiResult:
         url = f"{self.base_url}{path}"
@@ -686,7 +687,9 @@ class VezirClient:
                 with httpx.Client(
                     timeout=timeout or self._timeout, verify=self._verify,
                 ) as c:
-                    r = c.request("DELETE", url, headers=self._headers())
+                    r = c.request(
+                        "DELETE", url, headers=self._headers(), params=params
+                    )
             except httpx.HTTPError as exc:
                 return ApiResult.network(exc)
             if not (200 <= r.status_code < 300):
@@ -863,6 +866,64 @@ class VezirClient:
     def remove_vocabulary_term(self, term: str) -> ApiResult:
         """Remove a term (and its aliases/glossary note) from the active team."""
         return self._delete(f"/api/vocabulary/terms/{quote(term, safe='')}")
+
+    def trigger_vocab_harvest(
+        self,
+        *,
+        since_days: int | None = 90,
+        max_sessions: int = 100,
+        min_occurrences: int = 3,
+        min_sessions: int = 2,
+        anchors: list[str] | None = None,
+    ) -> ApiResult:
+        """Queue a server-side vocabulary harvest for the active team."""
+        body: dict = {
+            "since_days": since_days,
+            "max_sessions": max_sessions,
+            "min_occurrences": min_occurrences,
+            "min_sessions": min_sessions,
+        }
+        if anchors is not None:
+            body["anchors"] = list(anchors)
+        return self._post("/api/vocabulary/harvest", json=body)
+
+    def get_vocab_harvest(self) -> ApiResult:
+        """Fetch latest vocabulary harvest status and pending candidates."""
+        return self._get("/api/vocabulary/harvest")
+
+    def decide_vocab_harvest(
+        self,
+        *,
+        approve: list[dict] | None = None,
+        reject: list[dict] | None = None,
+    ) -> ApiResult:
+        """Atomically submit approve/reject harvest decisions for the active team."""
+        return self._post(
+            "/api/vocabulary/harvest/decide",
+            json={"approve": list(approve or []), "reject": list(reject or [])},
+        )
+
+    def get_rejected_vocabulary(self) -> ApiResult:
+        """List dismissed harvest candidates for the active team."""
+        return self._get("/api/vocabulary/rejected")
+
+    def delete_rejected_vocabulary(
+        self,
+        *,
+        canonical: str | None = None,
+        observed: str | None = None,
+        clear_all: bool = False,
+    ) -> ApiResult:
+        """Remove one dismissed candidate pair (or clear all) for the active team."""
+        params: dict[str, str] = {}
+        if clear_all:
+            params["clear_all"] = "true"
+        else:
+            if canonical is not None:
+                params["canonical"] = canonical
+            if observed is not None:
+                params["observed"] = observed
+        return self._delete("/api/vocabulary/rejected", params=params)
 
     def auto_label(
         self, session_id: str, *, sync: bool = False
