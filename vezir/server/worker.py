@@ -55,8 +55,14 @@ POLL_INTERVAL_SEC = 2.0
 _TASKS: _pyqueue.Queue = _pyqueue.Queue()
 _ACTIVE_TASKS: set[tuple[str, str]] = set()
 _TASKS_LOCK = threading.Lock()
+_WAKE_EVENT = threading.Event()
 
 _TASK_KINDS = ("sync", "retry_summary", "finalize_labels", "auto_label")
+
+
+def wake_worker() -> None:
+    """Wake the background worker immediately when new work is queued."""
+    _WAKE_EVENT.set()
 
 
 def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
@@ -75,6 +81,7 @@ def enqueue_task(kind: str, session_id: str, **kwargs) -> bool:
             return False
         _ACTIVE_TASKS.add(key)
     _TASKS.put((kind, session_id, kwargs))
+    wake_worker()
     return True
 
 
@@ -97,12 +104,14 @@ def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
             if kind == "sync":
                 finalize_after_labeling(session_id, kwargs.get("meeting_type"))
             elif kind == "retry_summary":
-                retry_summary_for_session(
-                    session_id,
-                    preset_override=kwargs.get("preset_override"),
-                    language_override=kwargs.get("language_override"),
-                    template_override=kwargs.get("template_override"),
-                )
+                retry_kw: dict = {
+                    "preset_override": kwargs.get("preset_override"),
+                    "language_override": kwargs.get("language_override"),
+                    "template_override": kwargs.get("template_override"),
+                }
+                if kwargs.get("apply_vocabulary"):
+                    retry_kw["apply_vocabulary"] = True
+                retry_summary_for_session(session_id, **retry_kw)
             elif kind == "finalize_labels":
                 _finalize_labels_task(session_id, kwargs.get("label_map") or {})
             elif kind == "auto_label":
@@ -854,6 +863,10 @@ def _extract_video_audio(session_dir: Path, job_id: str, log_path: Path) -> None
 # coverage spans the whole recording instead of truncating the tail.
 
 _MAX_FRAMES = 45
+# Parallelize ffmpeg cue-frame extraction for larger cue sets while keeping
+# tiny jobs inline (zero thread-pool overhead, deterministic order).
+_FRAME_PARALLEL_THRESHOLD = 6
+_FRAME_MAX_WORKERS = 4
 
 
 def _cue_timestamps(session_dir: Path, job_id: str) -> list[float]:
@@ -954,34 +967,66 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
             job_id, offset,
         )
 
+    # Deduplicate cues that round to the same output second before dispatch so
+    # parallel ffmpeg workers never race on the same filename (e.g. cues at
+    # 0.1s and 0.2s both map to cue_00-00-00.png).  Keep the earliest cue.
+    unique_cues: list[tuple[int, float, str, str]] = []
+    seen_names: set[str] = set()
+    for ts in sampled:
+        stamp = _hhmmss(ts)
+        name = f"cue_{stamp.replace(':', '-')}.png"
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        unique_cues.append((len(unique_cues), ts, stamp, name))
+
     config.secure_mkdir(frames_dir)
     written = 0
     with tempfile.TemporaryDirectory(prefix=".cue-frames-", dir=session_dir) as tmp:
         tmp_dir = Path(tmp)
+
+        def _extract_one(
+            item: tuple[int, float, str, str],
+        ) -> tuple[str, str, Path, int, bytes]:
+            idx, ts, stamp, final_name = item
+            out = tmp_dir / f".{idx:04d}.{final_name}"
+            cmd = [
+                "ffmpeg", "-y", "-ss", _hhmmss(offset + ts), "-i", str(video),
+                "-frames:v", "1", "-q:v", "2", str(out),
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            raw_out = getattr(proc, "stdout", None) or b""
+            if isinstance(raw_out, str):
+                raw_out = raw_out.encode("utf-8", errors="replace")
+            return stamp, final_name, out, proc.returncode, raw_out
+
+        if len(unique_cues) >= _FRAME_PARALLEL_THRESHOLD:
+            from concurrent.futures import ThreadPoolExecutor
+
+            workers = min(_FRAME_MAX_WORKERS, os.cpu_count() or 2, len(unique_cues))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(_extract_one, unique_cues))
+        else:
+            results = [_extract_one(item) for item in unique_cues]
+
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(
-                f"\n[frames] extracting {len(sampled)} cue frame(s) from {video.name}\n"
+                f"\n[frames] extracting {len(unique_cues)} cue frame(s) from {video.name}\n"
             )
-            lf.flush()
-            for ts in sampled:
-                stamp = _hhmmss(ts)
-                name = f"cue_{stamp.replace(':', '-')}.png"
-                out = tmp_dir / name
-                cmd = [
-                    "ffmpeg", "-y", "-ss", _hhmmss(offset + ts), "-i", str(video),
-                    "-frames:v", "1", "-q:v", "2", str(out),
-                ]
-                proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
-                if proc.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            for stamp, final_name, out, rc, raw_out in results:
+                if raw_out:
+                    lf.write(raw_out.decode("utf-8", errors="replace"))
+                if rc == 0 and out.exists() and out.stat().st_size > 0:
                     config.secure_chmod_file(out)
-                    out.replace(frames_dir / name)
+                    out.replace(frames_dir / final_name)
                     written += 1
                 else:
                     out.unlink(missing_ok=True)
                     log.warning(
                         "session %s: frame extraction failed at %s (rc=%s)",
-                        job_id, stamp, proc.returncode,
+                        job_id, stamp, rc,
                     )
+            lf.flush()
     log.info("session %s: %d cue frame(s) in %s", job_id, written, frames_dir)
     return written
 
@@ -1399,7 +1444,7 @@ def _dns_warmup() -> None:
 
     deadline = time.monotonic() + _DNS_WARMUP_TIMEOUT
     for host in _DNS_WARMUP_HOSTS:
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not _stop_flag.is_set():
             try:
                 socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
                 log.debug("dns warmup: %s OK", host)
@@ -1410,8 +1455,11 @@ def _dns_warmup() -> None:
                     "dns warmup: %s not resolvable yet, retrying (%ds left)",
                     host, remaining,
                 )
-                time.sleep(_DNS_WARMUP_INTERVAL)
+                if _stop_flag.wait(timeout=_DNS_WARMUP_INTERVAL):
+                    return
         else:
+            if _stop_flag.is_set():
+                return
             log.warning(
                 "dns warmup: %s still unresolvable after %ds; proceeding anyway",
                 host, _DNS_WARMUP_TIMEOUT,
@@ -1447,9 +1495,16 @@ def _recover_orphaned_jobs() -> None:
 def _loop() -> None:
     log.info("vezir worker started")
     _dns_warmup()
+    if _stop_flag.is_set():
+        log.info("vezir worker stopped")
+        return
     _recover_orphaned_jobs()
     next_sweep = 0.0
     while not _stop_flag.is_set():
+        # Clear before polling so any enqueue/task arriving during poll or
+        # claim leaves the event set and wakes the next wait() immediately.
+        _WAKE_EVENT.clear()
+
         # Periodically sweep abandoned resumable-upload staging files.
         now = time.monotonic()
         if now >= next_sweep:
@@ -1467,19 +1522,25 @@ def _loop() -> None:
         except Exception:
             log.exception("task drain failed (non-fatal)")
 
+        if _stop_flag.is_set():
+            break
+
         try:
             job = queue.claim_next()
         except Exception:
             log.exception("error claiming job")
-            time.sleep(POLL_INTERVAL_SEC)
+            _stop_flag.wait(timeout=POLL_INTERVAL_SEC)
             continue
 
         if job is None:
-            time.sleep(POLL_INTERVAL_SEC)
+            if _stop_flag.is_set():
+                break
+            _WAKE_EVENT.wait(timeout=POLL_INTERVAL_SEC)
             continue
 
         log.info("processing job %s (uploaded by %s)", job["id"], job["github"])
         process_one(job)
+    queue.close_thread_connection()
     log.info("vezir worker stopped")
 
 
@@ -1489,14 +1550,22 @@ def start_background_worker() -> None:
     if _worker_thread is not None and _worker_thread.is_alive():
         return
     _stop_flag.clear()
+    _WAKE_EVENT.clear()
     _worker_thread = threading.Thread(
         target=_loop, name="vezir-worker", daemon=True
     )
     _worker_thread.start()
 
 
-def stop_background_worker() -> None:
+def stop_background_worker(timeout: float = 5.0) -> None:
+    global _worker_thread
     _stop_flag.set()
+    wake_worker()
+    t = _worker_thread
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=timeout)
+    if t is not None and not t.is_alive():
+        _worker_thread = None
 
 
 def retry_summary_for_session(
@@ -1505,6 +1574,7 @@ def retry_summary_for_session(
     preset_override: str | None = None,
     language_override: str | None = None,
     template_override: str | None = None,
+    apply_vocabulary: bool = False,
 ) -> None:
     """Re-run summary generation for a completed session.
 
@@ -1582,6 +1652,7 @@ def retry_summary_for_session(
                 summary_preset=requested_preset,
                 summary_language=language_override,
                 summary_template=requested_template,
+                apply_vocabulary=apply_vocabulary,
             )
             if rc != 0:
                 summary_err = _error_with_tail(
@@ -1590,13 +1661,12 @@ def retry_summary_for_session(
                 )
                 log.warning("retry-summary %s failed: %s", session_id, summary_err)
             # Belt-and-suspenders: verify the expected summary artifact
-            # appeared.  millet names it by run shape — a template session
-            # writes <base>.<template>[.<lang>].md, never .summary.*.md —
-            # so the template picks the family and the language only
-            # qualifies it.  (An 'en' retry on an
-            # iteration-plan session false-failed globbing for
-            # .summary.en.md while millet had actually succeeded.)
-            elif language_override or requested_template or requested_preset:
+            # appeared — unconditionally, including plain apply_vocabulary
+            # retries with no preset/template/language override.  millet names
+            # it by run shape — a template session writes
+            # <base>.<template>[.<lang>].md, never .summary.*.md — so the
+            # template picks the family and the language only qualifies it.
+            else:
                 globs = _summary_artifact_globs(requested_template, language_override)
                 if not any(list(sd.glob(g)) for g in globs):
                     summary_err = (

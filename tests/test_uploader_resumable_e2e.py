@@ -40,8 +40,12 @@ def live_server(monkeypatch):
     monkeypatch.setenv("VEZIR_DATA", d)
     monkeypatch.setenv("VEZIR_DISABLE_RATELIMIT", "1")
 
-    from vezir.server import auth
+    from vezir.server import auth, worker
     from vezir.server.app import create_app
+
+    # Upload E2E tests exercise the HTTP endpoints only; don't let the
+    # background worker spawn a real `millet` subprocess on synthetic WAVs.
+    monkeypatch.setattr(worker, "start_background_worker", lambda: None)
 
     token = auth.issue("alice")  # conftest shim memberships alice -> team-a
     app = create_app()

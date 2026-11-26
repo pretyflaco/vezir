@@ -35,6 +35,9 @@ class _RetrySummaryBody(BaseModel):
     # with the template's prompts and saves <base>.<template>.md alongside
     # the primary summary.
     template: str | None = None
+    # When True, apply deterministic team vocabulary aliases to the session
+    # transcript before regenerating the summary and PDF.
+    apply_vocabulary: bool = False
 
 
 # Preset names live in .presets (single source of truth since 0.20.0).
@@ -396,12 +399,19 @@ def retry_summary(
             raise HTTPException(400, f"invalid template: {body.template}")
         template_override = tpl
 
-    if not language_override and not template_override and not row.get("summary_error"):
+    apply_vocabulary = bool(body and body.apply_vocabulary)
+    if (
+        not language_override
+        and not template_override
+        and not apply_vocabulary
+        and not row.get("summary_error")
+    ):
         raise HTTPException(
             409,
             "session has no summary_error; summary already succeeded "
             "(pass a 'language' to generate an additional-language summary, "
-            "or a 'template' to generate a templated summary)",
+            "a 'template' to generate a templated summary, or "
+            "'apply_vocabulary: true' to normalize transcript terms and re-summarize)",
         )
 
     preset_override = None
@@ -420,6 +430,7 @@ def retry_summary(
         preset_override=preset_override,
         language_override=language_override,
         template_override=template_override,
+        apply_vocabulary=apply_vocabulary,
     )
     if not queued:
         log.info(

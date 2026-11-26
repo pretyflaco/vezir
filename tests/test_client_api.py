@@ -729,9 +729,10 @@ def live_server(monkeypatch):
 
     import uvicorn
 
-    from vezir.server import auth
+    from vezir.server import auth, worker
     from vezir.server.app import create_app
 
+    monkeypatch.setattr(worker, "start_background_worker", lambda: None)
     token = auth.issue("alice")
     app = create_app()
 

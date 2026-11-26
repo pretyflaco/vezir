@@ -3397,5 +3397,195 @@ def import_cmd(session_dir, title, team_id):
     )
 
 
+# ─── vocabulary management ───────────────────────────────────────────────────
+
+
+def _vocab_client(team_id: str | None):
+    from .client.api import VezirClient
+
+    server_url = config.server_url()
+    token = config.client_token()
+    resolved_team = team_id or config.client_team_id()
+    if not token:
+        click.echo(
+            "vezir vocab: error: no token configured. "
+            "Set VEZIR_TOKEN or run `vezir login`.",
+            err=True,
+        )
+        sys.exit(1)
+    if not resolved_team:
+        click.echo(
+            "vezir vocab: error: no team configured. "
+            "Set VEZIR_TEAM_ID / pass --team / configure a team.",
+            err=True,
+        )
+        sys.exit(1)
+    return VezirClient(server_url, token, team_id=resolved_team)
+
+
+@main.group()
+def vocab():
+    """Manage the team's custom ASR & summary vocabulary.
+
+    Terms bias Whisper decoding (initial_prompt + hotwords), aliases apply
+    deterministic post-ASR cleanup (e.g. vzr/vizier -> Vezir), and glossary
+    descriptions help the summarizer resolve phonetic errors.
+    """
+
+
+@vocab.command("list")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output raw JSON.")
+def vocab_list(team_id: str | None, as_json: bool):
+    """Show the active team's vocabulary."""
+    api = _vocab_client(team_id)
+    res = api.get_vocabulary()
+    if not res.is_ok():
+        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    data = res.ok or {}
+    if as_json:
+        import json as _json
+
+        click.echo(_json.dumps(data, indent=2, ensure_ascii=False))
+        return
+
+    terms = data.get("terms") or []
+    aliases = data.get("aliases") or {}
+    glossary = data.get("glossary") or {}
+    if not terms and not aliases and not glossary:
+        click.echo("Team vocabulary is empty.")
+        click.echo("  Add a term: vezir vocab add Vezir --alias vzr --alias vizier")
+        return
+
+    alias_by_key = {k.casefold(): v for k, v in aliases.items()}
+    glossary_by_key = {k.casefold(): v for k, v in glossary.items()}
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for src in (terms, list(aliases), list(glossary)):
+        for t in src:
+            if t.casefold() not in seen:
+                seen.add(t.casefold())
+                ordered.append(t)
+    for term in ordered:
+        k = term.casefold()
+        line = f"  {term}"
+        if k in alias_by_key:
+            line += f"  [aliases: {', '.join(alias_by_key[k])}]"
+        if k in glossary_by_key:
+            line += f"  — {glossary_by_key[k]}"
+        click.echo(line)
+
+
+@vocab.command("add")
+@click.argument("term")
+@click.option(
+    "--alias", "-a", "aliases", multiple=True,
+    help="Known ASR mishearing to replace with TERM (repeatable).",
+)
+@click.option(
+    "--desc", "-d", "description", default=None,
+    help="Short glossary note to help the summarizer disambiguate TERM.",
+)
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+def vocab_add(
+    term: str,
+    aliases: tuple[str, ...],
+    description: str | None,
+    team_id: str | None,
+):
+    """Add or update a term (with optional mishearing aliases and note)."""
+    api = _vocab_client(team_id)
+    res = api.add_vocabulary_term(
+        term,
+        aliases=list(aliases) if aliases else None,
+        description=description,
+    )
+    if not res.is_ok():
+        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    click.echo(f"Saved term {term!r} to team vocabulary.")
+
+
+@vocab.command("remove")
+@click.argument("term")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+def vocab_remove(term: str, team_id: str | None):
+    """Remove a term (and its aliases/glossary note) from the team vocabulary."""
+    api = _vocab_client(team_id)
+    res = api.remove_vocabulary_term(term)
+    if not res.is_ok():
+        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    click.echo(f"Removed term {term!r} from team vocabulary.")
+
+
+@vocab.command("export")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+def vocab_export(team_id: str | None):
+    """Print the active team's vocabulary as JSON (for editing/re-import)."""
+    api = _vocab_client(team_id)
+    res = api.get_vocabulary()
+    if not res.is_ok():
+        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    data = res.ok or {}
+    import json as _json
+
+    out = {
+        "terms": data.get("terms") or [],
+        "aliases": data.get("aliases") or {},
+        "glossary": data.get("glossary") or {},
+    }
+    click.echo(_json.dumps(out, indent=2, ensure_ascii=False))
+
+
+@vocab.command("import")
+@click.argument("vocab_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+def vocab_import(vocab_file: str, team_id: str | None):
+    """Replace the active team's vocabulary from a JSON file."""
+    import json as _json
+
+    try:
+        raw = _json.loads(Path(vocab_file).read_text(encoding="utf-8"))
+    except Exception as exc:
+        click.echo(f"vezir vocab: error: could not parse {vocab_file}: {exc}", err=True)
+        sys.exit(1)
+    if not isinstance(raw, dict):
+        click.echo("vezir vocab: error: JSON file must contain an object", err=True)
+        sys.exit(1)
+    api = _vocab_client(team_id)
+    res = api.set_vocabulary(
+        terms=raw.get("terms") or [],
+        aliases=raw.get("aliases") or {},
+        glossary=raw.get("glossary") or {},
+    )
+    if not res.is_ok():
+        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    saved = res.ok or {}
+    click.echo(
+        f"Imported {len(saved.get('terms') or [])} term(s), "
+        f"{len(saved.get('aliases') or {})} alias group(s), "
+        f"{len(saved.get('glossary') or {})} glossary note(s)."
+    )
+
+
+@vocab.command("apply")
+@click.argument("session_id")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+def vocab_apply(session_id: str, team_id: str | None):
+    """Apply team vocabulary aliases to an existing session and re-summarize."""
+    api = _vocab_client(team_id)
+    res = api.retry_summary(session_id, apply_vocabulary=True)
+    if not res.is_ok():
+        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Queued vocabulary cleanup + summary regeneration for session {session_id}."
+    )
+
+
 if __name__ == "__main__":
     main()

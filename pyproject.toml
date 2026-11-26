@@ -256,6 +256,7 @@ module = [
     "vezir.server.ratelimit",
     "vezir.server.enroll",
     "vezir.server.sessions_auth",
+    "vezir.server.vocabulary",
     "vezir.presets",
     "vezir.speakers",
     "vezir.client.local",

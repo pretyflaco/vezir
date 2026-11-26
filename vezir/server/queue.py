@@ -270,19 +270,41 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
 
 
-# DB paths whose schema bring-up has already run in this process.
-# v0.11.0: the DDL (CREATE TABLE/INDEX script + ~10 idempotent ALTERs)
-# used to run on EVERY connection — at least twice per authenticated
-# request, all while holding the global lock, and its blanket
-# ``except OperationalError`` masked genuine errors (e.g. disk full) as
-# ignored duplicates.  Now it runs once per (process, db-path); tests
-# that point config at fresh tmp DBs still get their schema.
+# DB paths whose schema bring-up has already run in this process, mapped to
+# their file inode so a deleted-and-recreated DB at the same path still gets
+# fresh schema bring-up.
 _SCHEMA_DONE: set[str] = set()
+_SCHEMA_INODES: dict[str, int] = {}
+# Per-thread cached SQLite connection: (db_path_str, inode, Connection).
+# Eliminates repeated connect() + ensure_dirs() + chmod + 4x PRAGMA on every
+# query while staying safe across tests that swap VEZIR_DATA or unlink the DB.
+_THREAD_LOCAL = threading.local()
 
 
-def _ensure_schema(conn: sqlite3.Connection, db_path: str) -> None:
-    """Run schema bring-up once per DB path per process (caller holds _LOCK)."""
-    if db_path in _SCHEMA_DONE:
+def close_thread_connection() -> None:
+    """Close this thread's cached SQLite connection, if any."""
+    cached = getattr(_THREAD_LOCAL, "conn_entry", None)
+    if cached is not None:
+        _THREAD_LOCAL.conn_entry = None
+        try:
+            cached[2].close()
+        except Exception:
+            pass
+
+
+def _ensure_schema(
+    conn: sqlite3.Connection,
+    db_path: str,
+    inode: int | None = None,
+    *,
+    force: bool = False,
+) -> None:
+    """Run schema bring-up once per (DB path, inode) per process (caller holds _LOCK)."""
+    if (
+        not force
+        and db_path in _SCHEMA_DONE
+        and (inode is None or _SCHEMA_INODES.get(db_path) == inode)
+    ):
         return
     conn.executescript(SCHEMA)
     # Idempotent column-add migrations for existing DBs predating
@@ -348,24 +370,77 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str) -> None:
         except sqlite3.OperationalError:
             pass
     _SCHEMA_DONE.add(db_path)
+    if inode is not None:
+        _SCHEMA_INODES[db_path] = inode
 
 
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
-    """Get a connection to the queue DB. Thread-safe via a global lock."""
-    config.ensure_dirs()
+    """Get a connection to the queue DB. Thread-safe via a global lock.
+
+    Reuses a per-thread SQLite connection keyed by ``(db_path, inode)`` so
+    repeated queries avoid ``ensure_dirs`` + ``connect`` + ``chmod`` + 4x
+    ``PRAGMA`` overhead while automatically reconnecting if the DB path or
+    file inode changes (e.g. across test fixtures).
+    """
     db_path = config.queue_db_path()
+    db_key = str(db_path)
     with _LOCK:
-        conn = sqlite3.connect(str(db_path))
-        config.secure_chmod_file(db_path)
-        conn.row_factory = sqlite3.Row
-        _apply_pragmas(conn)
         try:
-            _ensure_schema(conn, str(db_path))
+            st = db_path.stat()
+            cur_ino: int | None = st.st_ino
+            cur_size: int = st.st_size
+        except OSError:
+            cur_ino = None
+            cur_size = 0
+
+        cached = getattr(_THREAD_LOCAL, "conn_entry", None)
+        conn: sqlite3.Connection | None = None
+        if (
+            cached is not None
+            and cached[0] == db_key
+            and cur_ino is not None
+            and cur_size > 0
+            and cached[1] == cur_ino
+        ):
+            conn = cached[2]
+        else:
+            if cached is not None:
+                _THREAD_LOCAL.conn_entry = None
+                try:
+                    cached[2].close()
+                except Exception:
+                    pass
+            config.ensure_dirs()
+            # Force schema bring-up if the file did not exist or was empty
+            # before connect() — Linux tmpfs/ext4 can recycle an unlinked
+            # file's inode immediately after the old connection closes.
+            was_empty = cur_ino is None or cur_size == 0
+            conn = sqlite3.connect(db_key)
+            config.secure_chmod_file(db_path)
+            conn.row_factory = sqlite3.Row
+            _apply_pragmas(conn)
+            try:
+                new_ino: int | None = db_path.stat().st_ino
+            except OSError:
+                new_ino = None
+            _ensure_schema(conn, db_key, new_ino, force=was_empty)
+            if new_ino is not None:
+                _THREAD_LOCAL.conn_entry = (db_key, new_ino, conn)
+
+        try:
             yield conn
             conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
-            conn.close()
+            # If the DB somehow had no inode (not cached), close it cleanly.
+            if getattr(_THREAD_LOCAL, "conn_entry", None) is None:
+                conn.close()
 
 
 def enqueue(
@@ -437,6 +512,14 @@ def enqueue(
                 _now(), _now(),
             ),
         )
+    # Wake the background worker immediately so uploads don't sit for up to
+    # POLL_INTERVAL_SEC before transcription starts.
+    try:
+        from . import worker as _worker
+
+        _worker.wake_worker()
+    except Exception:
+        pass
 
 
 def import_session(

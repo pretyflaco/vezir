@@ -184,3 +184,8 @@ def _reset_v0_11_process_state():
     except Exception:  # pragma: no cover - defensive
         pass
     yield
+    try:
+        from vezir.server import queue
+        queue.close_thread_connection()
+    except Exception:  # pragma: no cover - defensive
+        pass

@@ -640,6 +640,39 @@ class VezirClient:
 
         return self._with_refresh(send)
 
+    def _put(
+        self,
+        path: str,
+        *,
+        json: dict | None = None,
+        timeout: httpx.Timeout | None = None,
+    ) -> ApiResult:
+        url = f"{self.base_url}{path}"
+
+        def send() -> ApiResult:
+            try:
+                with httpx.Client(
+                    timeout=timeout or self._timeout, verify=self._verify,
+                ) as c:
+                    r = c.put(
+                        url,
+                        headers={
+                            **self._headers(),
+                            "Content-Type": "application/json",
+                        },
+                        json=json if json is not None else {},
+                    )
+            except httpx.HTTPError as exc:
+                return ApiResult.network(exc)
+            if not (200 <= r.status_code < 300):
+                return ApiResult.http(r.status_code, r.text[:200])
+            try:
+                return ApiResult.success(r.json())
+            except Exception:
+                return ApiResult.success(True)
+
+        return self._with_refresh(send)
+
     def _delete(
         self,
         path: str,
@@ -768,6 +801,7 @@ class VezirClient:
         preset: str | None = None,
         language: str | None = None,
         template: str | None = None,
+        apply_vocabulary: bool = False,
     ) -> ApiResult:
         body: dict = {}
         if preset:
@@ -781,10 +815,54 @@ class VezirClient:
         # primary summary.
         if template:
             body["template"] = template
+        if apply_vocabulary:
+            body["apply_vocabulary"] = True
         return self._post(
             f"/api/sessions/{quote(session_id, safe='')}/retry-summary",
             json=body,
         )
+
+    # ── vocabulary ──
+
+    def get_vocabulary(self) -> ApiResult:
+        """Fetch the active team's custom vocabulary (terms, aliases, glossary)."""
+        return self._get("/api/vocabulary")
+
+    def set_vocabulary(
+        self,
+        *,
+        terms: list[str],
+        aliases: dict[str, list[str]] | None = None,
+        glossary: dict[str, str] | None = None,
+    ) -> ApiResult:
+        """Replace the active team's custom vocabulary."""
+        return self._put(
+            "/api/vocabulary",
+            json={
+                "terms": terms,
+                "aliases": aliases or {},
+                "glossary": glossary or {},
+            },
+        )
+
+    def add_vocabulary_term(
+        self,
+        term: str,
+        *,
+        aliases: list[str] | None = None,
+        description: str | None = None,
+    ) -> ApiResult:
+        """Add or update a single term in the active team's vocabulary."""
+        body: dict = {"term": term}
+        if aliases:
+            body["aliases"] = list(aliases)
+        if description is not None:
+            body["description"] = description
+        return self._post("/api/vocabulary/terms", json=body)
+
+    def remove_vocabulary_term(self, term: str) -> ApiResult:
+        """Remove a term (and its aliases/glossary note) from the active team."""
+        return self._delete(f"/api/vocabulary/terms/{quote(term, safe='')}")
 
     def auto_label(
         self, session_id: str, *, sync: bool = False
