@@ -166,7 +166,7 @@ server = [
     # mono diarization, and a tiny cluster holding a real sentence is no
     # longer folded into the dominant speaker.  vezir 0.29.1's needs_labeling
     # gate expects the latter (worker._is_tiny_speaker).
-    "millet-pipeline>=0.24.0",
+    "millet-pipeline>=0.25.0",
     # Pure-Python QR generation (~76 KB) for the device enrollment page.
     # See vezir/server/enroll.py.
     "segno>=1.5",

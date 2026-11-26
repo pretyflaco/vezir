@@ -3,6 +3,38 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.31.0 — human-reviewed historical vocabulary harvesting
+
+**Dependency floor:** requires `millet-pipeline>=0.25.0` for
+`millet vocab harvest`; older builds return HTTP 501 without queueing work.
+
+### Added
+
+- Add team-scoped harvest trigger/status/decision/rejected routes and the
+  `vezir vocab harvest`, `vezir vocab review`, and `vezir vocab rejected`
+  commands.
+- Scan only the active team's completed, non-personal sessions through the
+  per-job HOME shim, passing session paths, anchors, rejected pairs, and output
+  through private 0600 temporary files.
+- Cache per-team harvest reports and rejection memory in atomic 0600 files.
+- Review candidates interactively with real transcript examples, held-out
+  badges, and alias/term/glossary/edit/reject/skip actions.
+- Validate complete resulting vocabularies before writing, reject same-batch
+  approve/reject conflicts without partial writes, and clear stale rejection
+  entries on explicit approval.
+- Suppress already-satisfied term/glossary layers on subsequent harvests while
+  keeping genuinely new aliases for existing canonical terms.
+- Mark total LLM outage as an error instead of returning a false-success empty
+  report.
+
+### Tests
+
+- Full matrix: **1682 passed**, with Ruff and all 16 strict-mypy allowlist
+  modules clean.
+- Covers older-millet failure, team/personal isolation, report and rejection
+  permissions, invalid-batch rollback, total backend outage, second-harvest
+  filtering, and interactive/offline review.
+
 ## 0.30.0 — per-team vocabulary and server performance
 
 **Dependency floor:** the server now requires `millet-pipeline>=0.24.0` for
