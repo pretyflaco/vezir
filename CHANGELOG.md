@@ -3,6 +3,25 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.31.1 — harvest enqueue and CLI error-rendering hotfix
+
+### Fixed
+
+- Register `vocab_harvest` in `worker._TASK_KINDS`, so
+  `POST /api/vocabulary/harvest` returns 202 and the worker drains the task
+  instead of raising `ValueError: unknown task kind` / HTTP 500.
+- Replace the nonexistent `ApiResult.error_summary()` calls in all vocabulary
+  CLI error paths with `error_message()`, so HTTP/backend failures are shown
+  instead of raising `AttributeError` and hiding the real response.
+
+### Tests
+
+- Full matrix: **1684 passed**, with Ruff and all 16 strict-mypy allowlist
+  modules clean.
+- New regression coverage drives the real harvest endpoint through enqueue and
+  drain, and checks that the CLI prints the server's error response instead of
+  raising an error-rendering exception.
+
 ## 0.31.0 — human-reviewed historical vocabulary harvesting
 
 **Dependency floor:** requires `millet-pipeline>=0.25.0` for

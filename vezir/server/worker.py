@@ -57,7 +57,7 @@ _ACTIVE_TASKS: set[tuple[str, str]] = set()
 _TASKS_LOCK = threading.Lock()
 _WAKE_EVENT = threading.Event()
 
-_TASK_KINDS = ("sync", "retry_summary", "finalize_labels", "auto_label")
+_TASK_KINDS = ("sync", "retry_summary", "finalize_labels", "auto_label", "vocab_harvest")
 
 
 def wake_worker() -> None:

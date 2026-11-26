@@ -3441,7 +3441,7 @@ def vocab_list(team_id: str | None, as_json: bool):
     api = _vocab_client(team_id)
     res = api.get_vocabulary()
     if not res.is_ok():
-        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab: error: {res.error_message()}", err=True)
         sys.exit(1)
     data = res.ok or {}
     if as_json:
@@ -3502,7 +3502,7 @@ def vocab_add(
         description=description,
     )
     if not res.is_ok():
-        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab: error: {res.error_message()}", err=True)
         sys.exit(1)
     click.echo(f"Saved term {term!r} to team vocabulary.")
 
@@ -3515,7 +3515,7 @@ def vocab_remove(term: str, team_id: str | None):
     api = _vocab_client(team_id)
     res = api.remove_vocabulary_term(term)
     if not res.is_ok():
-        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab: error: {res.error_message()}", err=True)
         sys.exit(1)
     click.echo(f"Removed term {term!r} from team vocabulary.")
 
@@ -3527,7 +3527,7 @@ def vocab_export(team_id: str | None):
     api = _vocab_client(team_id)
     res = api.get_vocabulary()
     if not res.is_ok():
-        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab: error: {res.error_message()}", err=True)
         sys.exit(1)
     data = res.ok or {}
     import json as _json
@@ -3562,7 +3562,7 @@ def vocab_import(vocab_file: str, team_id: str | None):
         glossary=raw.get("glossary") or {},
     )
     if not res.is_ok():
-        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab: error: {res.error_message()}", err=True)
         sys.exit(1)
     saved = res.ok or {}
     click.echo(
@@ -3580,7 +3580,7 @@ def vocab_apply(session_id: str, team_id: str | None):
     api = _vocab_client(team_id)
     res = api.retry_summary(session_id, apply_vocabulary=True)
     if not res.is_ok():
-        click.echo(f"vezir vocab: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab: error: {res.error_message()}", err=True)
         sys.exit(1)
     click.echo(
         f"Queued vocabulary cleanup + summary regeneration for session {session_id}."
@@ -3633,7 +3633,7 @@ def vocab_harvest(
         anchors=anchors,
     )
     if not res.is_ok():
-        click.echo(f"vezir vocab harvest: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab harvest: error: {res.error_message()}", err=True)
         sys.exit(1)
 
     click.echo("Queued vocabulary harvest on server.")
@@ -3644,7 +3644,7 @@ def vocab_harvest(
     while True:
         poll = api.get_vocab_harvest()
         if not poll.is_ok():
-            click.echo(f"vezir vocab harvest: error: {poll.error_summary()}", err=True)
+            click.echo(f"vezir vocab harvest: error: {poll.error_message()}", err=True)
             sys.exit(1)
         data = poll.ok or {}
         st = data.get("status")
@@ -3689,7 +3689,7 @@ def vocab_review(team_id: str | None, from_file: str | None):
     else:
         res = api.get_vocab_harvest()
         if not res.is_ok():
-            click.echo(f"vezir vocab review: error: {res.error_summary()}", err=True)
+            click.echo(f"vezir vocab review: error: {res.error_message()}", err=True)
             sys.exit(1)
         data = res.ok or {}
         st = data.get("status")
@@ -3792,7 +3792,7 @@ def vocab_review(team_id: str | None, from_file: str | None):
 
     dec = api.decide_vocab_harvest(approve=approvals, reject=rejections)
     if not dec.is_ok():
-        click.echo(f"vezir vocab review: error saving decisions: {dec.error_summary()}", err=True)
+        click.echo(f"vezir vocab review: error saving decisions: {dec.error_message()}", err=True)
         sys.exit(1)
     out = dec.ok or {}
     click.echo(
@@ -3827,14 +3827,14 @@ def vocab_rejected(
             clear_all=clear_all,
         )
         if not res.is_ok():
-            click.echo(f"vezir vocab rejected: error: {res.error_summary()}", err=True)
+            click.echo(f"vezir vocab rejected: error: {res.error_message()}", err=True)
             sys.exit(1)
         click.echo(f"Removed {(res.ok or {}).get('removed', 0)} rejected pair(s).")
         return
 
     res = api.get_rejected_vocabulary()
     if not res.is_ok():
-        click.echo(f"vezir vocab rejected: error: {res.error_summary()}", err=True)
+        click.echo(f"vezir vocab rejected: error: {res.error_message()}", err=True)
         sys.exit(1)
     items = (res.ok or {}).get("rejected") or []
     if not items:

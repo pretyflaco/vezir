@@ -537,3 +537,52 @@ def test_harvest_decide_rejects_same_batch_conflict_and_clears_stale_rejection(
     assert r_app.status_code == 200
     assert vocabulary.load_team_vocabulary(team_uuid)["aliases"] == {"Vezir": ["vzr"]}
     assert vocabulary.load_team_rejected(team_uuid) == []
+
+
+def test_harvest_trigger_enqueues_and_drains_vocab_harvest_task(
+    client: TestClient, monkeypatch
+):
+    """The real endpoint accepts and drains the harvest task kind."""
+    token = auth.issue("alice", team_id="team-a")
+    monkeypatch.setattr(config, "meet_supports_vocab_harvest", lambda: True)
+
+    resp = client.post(
+        "/api/vocabulary/harvest",
+        headers=_headers(token, "team-a"),
+        json={"max_sessions": 1, "min_occurrences": 1, "min_sessions": 1},
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["queued"] is True
+
+    kind, session_id, kwargs = worker._TASKS.get_nowait()
+    assert kind == "vocab_harvest"
+    assert session_id
+    assert kwargs["max_sessions"] == 1
+    worker._TASKS.put((kind, session_id, kwargs))
+
+    # No matching sessions: the worker completes with an empty report and does
+    # not require an LLM backend.
+    worker._drain_tasks()
+    state = vocabulary.load_team_harvest_state(session_id)
+    assert state["status"] == "ready"
+    assert state["report"]["sessions_scanned"] == 0
+
+
+def test_cli_harvest_error_displays_server_response_instead_of_raising(
+    tmp_path: Path, monkeypatch
+):
+    from vezir.client.api import ApiResult, VezirClient
+
+    monkeypatch.setenv("VEZIR_URL", "https://vezir.example.com")
+    monkeypatch.setenv("VEZIR_TOKEN", "vzr_" + "c" * 32)
+    monkeypatch.setenv("VEZIR_TEAM_ID", "team-a")
+    monkeypatch.setattr(
+        VezirClient,
+        "trigger_vocab_harvest",
+        lambda self, **_kw: ApiResult.http(500, "unknown task kind: 'vocab_harvest'"),
+    )
+
+    result = CliRunner().invoke(main, ["vocab", "harvest"])
+    assert result.exit_code == 1
+    assert "server returned 500: unknown task kind: 'vocab_harvest'" in result.output
+    assert "AttributeError" not in result.output
