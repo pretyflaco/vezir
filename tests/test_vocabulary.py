@@ -311,3 +311,118 @@ def test_cli_vocab_commands(tmp_path: Path, monkeypatch):
     res = runner.invoke(main, ["vocab", "remove", "millet"])
     assert res.exit_code == 0, res.output
     assert store["terms"] == []
+
+
+def test_apply_labels_json_fails_loudly_when_millet_lacks_apply_vocabulary(
+    tmp_path: Path, monkeypatch
+):
+    import pytest
+
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(config, "meet_label_supports_apply_json", lambda: True)
+    monkeypatch.setattr(config, "meet_label_supports_option", lambda _opt: False)
+
+    sdir = tmp_path / "sess"
+    sdir.mkdir()
+    with pytest.raises(RuntimeError, match="--apply-vocabulary"):
+        meet_runner.apply_labels_json(
+            sdir,
+            "job1",
+            "team-a",
+            tmp_path / "job1.log",
+            {},
+            regenerate_summary=True,
+            apply_vocabulary=True,
+        )
+
+
+def test_retry_summary_apply_vocabulary_surfaces_unsupported_millet_and_missing_artifact(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_path / "data"))
+    queue.create_team("team-a", "Team A")
+    team_uuid = queue.resolve_team_uuid("team-a")
+    assert team_uuid is not None
+
+    sid1 = "01J000000000000000000VOCU1"
+    queue.enqueue(sid1, "alice", team_id=team_uuid)
+    queue.update_status(sid1, "done")
+    sd1 = config.sessions_dir() / sid1
+    sd1.mkdir(parents=True)
+
+    # Case 1: older millet without --apply-vocabulary must record summary_error.
+    monkeypatch.setattr(config, "meet_label_supports_apply_json", lambda: True)
+    monkeypatch.setattr(config, "meet_label_supports_option", lambda _opt: False)
+    monkeypatch.setattr(meet_runner, "cleanup_home_shim", lambda _jid: None)
+    monkeypatch.setattr(meet_runner, "team_has_sync_target", lambda _tid: False)
+
+    worker.retry_summary_for_session(sid1, apply_vocabulary=True)
+    row1 = queue.get(sid1)
+    assert row1 is not None
+    assert row1["summary_error"] is not None
+    assert "--apply-vocabulary" in row1["summary_error"]
+
+    # Case 2: millet exits 0 without producing a summary artifact on plain
+    # apply_vocabulary=True (no preset/template/language) -> must record summary_error.
+    sid2 = "01J000000000000000000VOCU2"
+    queue.enqueue(sid2, "alice", team_id=team_uuid)
+    queue.update_status(sid2, "done")
+    sd2 = config.sessions_dir() / sid2
+    sd2.mkdir(parents=True)
+
+    monkeypatch.setattr(meet_runner, "apply_labels_json", lambda *a, **k: 0)
+    worker.retry_summary_for_session(sid2, apply_vocabulary=True)
+    row2 = queue.get(sid2)
+    assert row2 is not None
+    assert row2["summary_error"] is not None
+    assert "produced no" in row2["summary_error"]
+
+
+def test_vocabulary_api_rejects_chained_cyclic_and_conflicting_aliases(
+    client: TestClient,
+):
+    from vezir.server import auth
+
+    token = auth.issue("alice", team_id="team-a")
+    headers = {"Authorization": f"Bearer {token}", "X-Team-Id": "team-a"}
+
+    # Chain: alias a -> Canonical B -> Canonical C
+    r_chain = client.put(
+        "/api/vocabulary",
+        headers=headers,
+        json={
+            "terms": [],
+            "aliases": {
+                "Canonical B": ["alias a"],
+                "Canonical C": ["canonical b"],
+            },
+            "glossary": {},
+        },
+    )
+    assert r_chain.status_code == 400
+    assert "chained or cyclic" in r_chain.text
+
+    # Cycle: Alpha <-> Beta
+    r_cycle = client.put(
+        "/api/vocabulary",
+        headers=headers,
+        json={
+            "terms": [],
+            "aliases": {"Alpha": ["Beta"], "Beta": ["Alpha"]},
+            "glossary": {},
+        },
+    )
+    assert r_cycle.status_code == 400
+
+    # Conflicting alias pointing to two different canonicals
+    r_conflict = client.put(
+        "/api/vocabulary",
+        headers=headers,
+        json={
+            "terms": [],
+            "aliases": {"Vezir": ["vzr"], "Vizier": ["VZR"]},
+            "glossary": {},
+        },
+    )
+    assert r_conflict.status_code == 400
+    assert "cannot map to both" in r_conflict.text

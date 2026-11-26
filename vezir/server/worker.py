@@ -967,15 +967,29 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
             job_id, offset,
         )
 
+    # Deduplicate cues that round to the same output second before dispatch so
+    # parallel ffmpeg workers never race on the same filename (e.g. cues at
+    # 0.1s and 0.2s both map to cue_00-00-00.png).  Keep the earliest cue.
+    unique_cues: list[tuple[int, float, str, str]] = []
+    seen_names: set[str] = set()
+    for ts in sampled:
+        stamp = _hhmmss(ts)
+        name = f"cue_{stamp.replace(':', '-')}.png"
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        unique_cues.append((len(unique_cues), ts, stamp, name))
+
     config.secure_mkdir(frames_dir)
     written = 0
     with tempfile.TemporaryDirectory(prefix=".cue-frames-", dir=session_dir) as tmp:
         tmp_dir = Path(tmp)
 
-        def _extract_one(ts: float) -> tuple[str, Path, int, bytes]:
-            stamp = _hhmmss(ts)
-            name = f"cue_{stamp.replace(':', '-')}.png"
-            out = tmp_dir / name
+        def _extract_one(
+            item: tuple[int, float, str, str],
+        ) -> tuple[str, str, Path, int, bytes]:
+            idx, ts, stamp, final_name = item
+            out = tmp_dir / f".{idx:04d}.{final_name}"
             cmd = [
                 "ffmpeg", "-y", "-ss", _hhmmss(offset + ts), "-i", str(video),
                 "-frames:v", "1", "-q:v", "2", str(out),
@@ -984,27 +998,27 @@ def _extract_frames(session_dir: Path, job_id: str, log_path: Path) -> int:
             raw_out = getattr(proc, "stdout", None) or b""
             if isinstance(raw_out, str):
                 raw_out = raw_out.encode("utf-8", errors="replace")
-            return stamp, out, proc.returncode, raw_out
+            return stamp, final_name, out, proc.returncode, raw_out
 
-        if len(sampled) >= _FRAME_PARALLEL_THRESHOLD:
+        if len(unique_cues) >= _FRAME_PARALLEL_THRESHOLD:
             from concurrent.futures import ThreadPoolExecutor
 
-            workers = min(_FRAME_MAX_WORKERS, os.cpu_count() or 2, len(sampled))
+            workers = min(_FRAME_MAX_WORKERS, os.cpu_count() or 2, len(unique_cues))
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                results = list(pool.map(_extract_one, sampled))
+                results = list(pool.map(_extract_one, unique_cues))
         else:
-            results = [_extract_one(ts) for ts in sampled]
+            results = [_extract_one(item) for item in unique_cues]
 
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(
-                f"\n[frames] extracting {len(sampled)} cue frame(s) from {video.name}\n"
+                f"\n[frames] extracting {len(unique_cues)} cue frame(s) from {video.name}\n"
             )
-            for stamp, out, rc, raw_out in results:
+            for stamp, final_name, out, rc, raw_out in results:
                 if raw_out:
                     lf.write(raw_out.decode("utf-8", errors="replace"))
                 if rc == 0 and out.exists() and out.stat().st_size > 0:
                     config.secure_chmod_file(out)
-                    out.replace(frames_dir / out.name)
+                    out.replace(frames_dir / final_name)
                     written += 1
                 else:
                     out.unlink(missing_ok=True)
@@ -1430,7 +1444,7 @@ def _dns_warmup() -> None:
 
     deadline = time.monotonic() + _DNS_WARMUP_TIMEOUT
     for host in _DNS_WARMUP_HOSTS:
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not _stop_flag.is_set():
             try:
                 socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
                 log.debug("dns warmup: %s OK", host)
@@ -1441,8 +1455,11 @@ def _dns_warmup() -> None:
                     "dns warmup: %s not resolvable yet, retrying (%ds left)",
                     host, remaining,
                 )
-                time.sleep(_DNS_WARMUP_INTERVAL)
+                if _stop_flag.wait(timeout=_DNS_WARMUP_INTERVAL):
+                    return
         else:
+            if _stop_flag.is_set():
+                return
             log.warning(
                 "dns warmup: %s still unresolvable after %ds; proceeding anyway",
                 host, _DNS_WARMUP_TIMEOUT,
@@ -1478,9 +1495,16 @@ def _recover_orphaned_jobs() -> None:
 def _loop() -> None:
     log.info("vezir worker started")
     _dns_warmup()
+    if _stop_flag.is_set():
+        log.info("vezir worker stopped")
+        return
     _recover_orphaned_jobs()
     next_sweep = 0.0
     while not _stop_flag.is_set():
+        # Clear before polling so any enqueue/task arriving during poll or
+        # claim leaves the event set and wakes the next wait() immediately.
+        _WAKE_EVENT.clear()
+
         # Periodically sweep abandoned resumable-upload staging files.
         now = time.monotonic()
         if now >= next_sweep:
@@ -1498,20 +1522,25 @@ def _loop() -> None:
         except Exception:
             log.exception("task drain failed (non-fatal)")
 
+        if _stop_flag.is_set():
+            break
+
         try:
             job = queue.claim_next()
         except Exception:
             log.exception("error claiming job")
-            time.sleep(POLL_INTERVAL_SEC)
+            _stop_flag.wait(timeout=POLL_INTERVAL_SEC)
             continue
 
         if job is None:
+            if _stop_flag.is_set():
+                break
             _WAKE_EVENT.wait(timeout=POLL_INTERVAL_SEC)
-            _WAKE_EVENT.clear()
             continue
 
         log.info("processing job %s (uploaded by %s)", job["id"], job["github"])
         process_one(job)
+    queue.close_thread_connection()
     log.info("vezir worker stopped")
 
 
@@ -1528,9 +1557,15 @@ def start_background_worker() -> None:
     _worker_thread.start()
 
 
-def stop_background_worker() -> None:
+def stop_background_worker(timeout: float = 5.0) -> None:
+    global _worker_thread
     _stop_flag.set()
     wake_worker()
+    t = _worker_thread
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=timeout)
+    if t is not None and not t.is_alive():
+        _worker_thread = None
 
 
 def retry_summary_for_session(
@@ -1626,13 +1661,12 @@ def retry_summary_for_session(
                 )
                 log.warning("retry-summary %s failed: %s", session_id, summary_err)
             # Belt-and-suspenders: verify the expected summary artifact
-            # appeared.  millet names it by run shape — a template session
-            # writes <base>.<template>[.<lang>].md, never .summary.*.md —
-            # so the template picks the family and the language only
-            # qualifies it.  (An 'en' retry on an
-            # iteration-plan session false-failed globbing for
-            # .summary.en.md while millet had actually succeeded.)
-            elif language_override or requested_template or requested_preset:
+            # appeared — unconditionally, including plain apply_vocabulary
+            # retries with no preset/template/language override.  millet names
+            # it by run shape — a template session writes
+            # <base>.<template>[.<lang>].md, never .summary.*.md — so the
+            # template picks the family and the language only qualifies it.
+            else:
                 globs = _summary_artifact_globs(requested_template, language_override)
                 if not any(list(sd.glob(g)) for g in globs):
                     summary_err = (

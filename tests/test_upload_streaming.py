@@ -65,9 +65,10 @@ def server(tmp_data, private_tmp, monkeypatch):
     chunked streaming, and the leak under test lives in the ASGI body path."""
     import uvicorn
 
-    from vezir.server import auth
+    from vezir.server import auth, worker
     from vezir.server.app import create_app
 
+    monkeypatch.setattr(worker, "start_background_worker", lambda: None)
     monkeypatch.setenv("VEZIR_MAX_UPLOAD_BYTES", str(256 * 1024))
     token = auth.issue("alice")
     app = create_app()

@@ -864,7 +864,12 @@ def apply_labels_json(
         args.extend(["--summary-template", summary_template])
     if update_profiles:
         args.append("--update-profiles")
-    if apply_vocabulary and config.meet_label_supports_option("--apply-vocabulary"):
+    if apply_vocabulary:
+        if not config.meet_label_supports_option("--apply-vocabulary"):
+            raise RuntimeError(
+                "the installed millet CLI does not support `label --apply-vocabulary`; "
+                "upgrade millet-pipeline and restart vezir"
+            )
         args.append("--apply-vocabulary")
     args.append(str(session_dir))
     try:

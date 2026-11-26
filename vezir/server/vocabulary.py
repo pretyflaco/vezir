@@ -105,6 +105,27 @@ def normalize_vocabulary(data: Mapping[str, Any]) -> dict[str, Any]:
         if not bucket:
             aliases.pop(target, None)
 
+    # Reject alias/canonical chains and cycles case-insensitively (e.g.
+    # `a -> B` and `B -> C`, or `A <-> B`), and reject one alias claiming two
+    # different canonical targets so repeated vocabulary application is always
+    # deterministic and idempotent.
+    active_canon_keys = {k.casefold(): k for k in aliases}
+    claimed_aliases: dict[str, str] = {}
+    for canon, variants in aliases.items():
+        for v in variants:
+            v_key = v.casefold()
+            if v_key in active_canon_keys:
+                raise ValueError(
+                    f"alias {v!r} for {canon!r} is also a canonical term "
+                    f"({active_canon_keys[v_key]!r}); chained or cyclic aliases are not allowed"
+                )
+            prev = claimed_aliases.get(v_key)
+            if prev is not None and prev != canon:
+                raise ValueError(
+                    f"alias {v!r} cannot map to both {prev!r} and {canon!r}"
+                )
+            claimed_aliases[v_key] = canon
+
     glossary: dict[str, str] = {}
     glossary_keys: dict[str, str] = {}
     raw_glossary = data.get("glossary", {})

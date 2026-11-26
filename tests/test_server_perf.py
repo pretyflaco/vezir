@@ -135,3 +135,127 @@ def test_meet_runner_sync_single_pass_with_fallback_option(tmp_path: Path, monke
     fb_idx = calls[0].index("--fallback-meeting-type")
     assert calls[0][fb_idx + 1].startswith("design-review-")
     assert "--force" not in calls[0]
+
+
+def test_extract_frames_parallel_deduplicates_colliding_subsecond_cues(
+    tmp_path: Path, monkeypatch
+):
+    """Sub-second cues rounding to the same second must not race on one PNG."""
+    import threading
+
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_path / "data"))
+    sid = "01J000000000000000000COLL1"
+    sdir = config.sessions_dir() / sid
+    sdir.mkdir(parents=True)
+    (sdir / f"{sid}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    # 0.1 and 0.2 both round to 00:00:00 -> 6 total cues, 5 unique rounded stamps.
+    # Add 2 more cues so len(unique_cues) == 7 >= _FRAME_PARALLEL_THRESHOLD (6).
+    cues = [0.1, 0.2, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+    (sdir / f"{sid}.json").write_text(
+        json.dumps({"segments": [{"start": s, "end": s + 2.0, "text": "x"} for s in cues]})
+    )
+
+    monkeypatch.setattr(worker, "_video_start_time", lambda _v: 0.0)
+    seen_targets: list[str] = []
+    lock = threading.Lock()
+
+    def fake_run(cmd, stdout=None, stderr=None):
+        out_path = Path(cmd[-1])
+        with lock:
+            assert str(out_path) not in seen_targets, f"collision on {out_path}"
+            seen_targets.append(str(out_path))
+        out_path.write_bytes(b"\x89PNG\r\n\x1a\n" + out_path.name.encode())
+
+        class _R:
+            returncode = 0
+            stdout = b""
+
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    log_path = config.logs_dir() / f"{sid}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    written = worker._extract_frames(sdir, sid, log_path)
+    assert written == 7
+    assert len(seen_targets) == 7
+    pngs = sorted(p.name for p in (sdir / "attachments").glob("cue_*.png"))
+    assert len(pngs) == 7
+    assert pngs[0] == "cue_00-00-00.png"
+
+
+def test_queue_replacement_under_concurrent_threads(tmp_path: Path, monkeypatch):
+    """Concurrent threads reconnect cleanly when the SQLite DB is replaced."""
+    import threading
+
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_path / "data"))
+    queue.close_thread_connection()
+    queue.create_team("team-a", "Team A")
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(4)
+
+    def _reader():
+        try:
+            assert queue.get_team("team-a") is not None
+            barrier.wait(timeout=5)
+            # After main thread replaces the DB, every thread must reconnect cleanly.
+            barrier.wait(timeout=5)
+            assert queue.get_team("team-b") is not None
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            queue.close_thread_connection()
+
+    threads = [threading.Thread(target=_reader) for _ in range(3)]
+    for t in threads:
+        t.start()
+
+    barrier.wait(timeout=5)
+    db_path = config.queue_db_path()
+    for p in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        p.unlink(missing_ok=True)
+    queue.create_team("team-b", "Team B")
+    barrier.wait(timeout=5)
+
+    for t in threads:
+        t.join(timeout=5)
+    assert not errors
+
+
+def test_worker_enqueue_wakeup_race_stress(tmp_path: Path, monkeypatch):
+    """Rapid enqueues wake the background worker without losing jobs, and stop joins cleanly."""
+    import threading
+    import time
+
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_path / "data"))
+    queue.create_team("team-a", "Team A")
+    monkeypatch.setattr(worker, "_dns_warmup", lambda: None)
+    monkeypatch.setattr(worker, "_recover_orphaned_jobs", lambda: None)
+    monkeypatch.setattr(worker, "POLL_INTERVAL_SEC", 30.0)  # would stall if wakeup lost
+
+    processed: list[str] = []
+    done_ev = threading.Event()
+    expected = 8
+
+    def fake_process_one(job: dict) -> None:
+        queue.update_status(job["id"], "done")
+        processed.append(job["id"])
+        if len(processed) >= expected:
+            done_ev.set()
+
+    monkeypatch.setattr(worker, "process_one", fake_process_one)
+
+    worker.start_background_worker()
+    try:
+        t0 = time.monotonic()
+        for i in range(expected):
+            queue.enqueue(f"01J00000000000000000STR{i:02d}", "alice", team_id="team-a")
+            time.sleep(0.01)
+        assert done_ev.wait(timeout=5.0), f"Only processed {len(processed)}/{expected}"
+        assert time.monotonic() - t0 < 5.0
+    finally:
+        worker.stop_background_worker(timeout=5.0)
+
+    assert worker._worker_thread is None or not worker._worker_thread.is_alive()
+    assert len(processed) == expected
