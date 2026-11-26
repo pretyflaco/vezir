@@ -3,6 +3,46 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.30.0 — per-team vocabulary and server performance
+
+**Dependency floor:** the server now requires `millet-pipeline>=0.24.0` for
+`millet label --apply-vocabulary`. An explicit vocabulary retry against an older
+millet fails loudly rather than silently regenerating unchanged artifacts. The
+single-pass sync fallback remains feature-probed and backward-compatible.
+
+### Added
+
+- Per-team `vocabulary.json` management with authenticated, team-scoped
+  `GET/PUT /api/vocabulary`, term add/remove routes, and
+  `vezir vocab list|add|remove|export|import|apply`.
+- Schema and size validation, case-insensitive deduplication, control-character
+  rejection, conflicting/chained-alias rejection, and atomic 0600 writes.
+- Per-job HOME-shim and environment isolation for vocabulary, matching the
+  existing per-team voiceprint and sync-config boundaries.
+- `apply_vocabulary` on summary retry: correct transcript aliases and regenerate
+  the summary/PDF, with unconditional expected-artifact verification.
+- Per-thread SQLite WAL connection reuse with path/inode/size-aware reconnect on
+  DB replacement, plus `Event`-based worker wakeup on job/task enqueue.
+- Bounded parallel cue-frame extraction with unique temporary files and
+  deduplicated rounded timestamps.
+- Single-pass schedule-first `millet sync --fallback-meeting-type` when supported;
+  the legacy two-pass path remains available for older millet releases.
+
+### Improved
+
+- Worker stop now wakes and joins the background thread; DNS warmup is
+  interruptible, wakeup ordering is race-safe, and the worker closes its SQLite
+  connection on exit.
+
+### Tests
+
+- Full matrix: **1674 passed**, with Ruff and all 16 strict-mypy allowlist modules
+  clean.
+- A live localhost recording completed upload, transcription, diarization,
+  summary/PDF generation, voiceprint finalization, and vocabulary retry. Canonical
+  aliases were preserved in text and word timings, and the already-corrected
+  transcript was byte-identical after retry.
+
 ## 0.29.2 — fresh installs seed no teams; no built-in Google domain; tunnel route health check
 
 **Operator action:** `VEZIR_GOOGLE_ALLOWED_DOMAIN` no longer has a built-in

@@ -424,6 +424,9 @@ def test_sync_forces_when_skipped(monkeypatch, tmp_path):
     monkeypatch.setattr(meet_runner, "team_sync_slug", lambda *a, **k: "team-a")
     monkeypatch.setattr(meet_runner, "ensure_session_json", lambda *a, **k: None)
     monkeypatch.setattr(meet_runner, "_get_job_title", lambda jid: "Dev Sync")
+    # Exercise the legacy two-pass path even when the installed millet
+    # advertises the newer single-pass fallback option.
+    monkeypatch.setattr(meet_runner.config, "meet_sync_supports_option", lambda _opt: False)
     calls = []
 
     def fake_run_meet(args, **kwargs):
