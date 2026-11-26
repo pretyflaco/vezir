@@ -3,6 +3,17 @@
 Notable changes per release. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.31.2 — harvest default-model dependency floor
+
+**Dependency floor:** requires `millet-pipeline>=0.25.1`, which fixes empty-model
+requests during vocabulary harvesting when no `--summary-model` override is
+provided.  This release contains no application-code changes beyond the floor.
+
+### Tests
+
+- Full matrix: **1684 passed**, with Ruff and all 16 strict-mypy allowlist
+  modules clean.
+
 ## 0.31.1 — harvest enqueue and CLI error-rendering hotfix
 
 ### Fixed
