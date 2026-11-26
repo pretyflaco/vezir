@@ -373,3 +373,167 @@ def test_cli_vocab_harvest_review_and_rejected(tmp_path: Path, monkeypatch):
 
     r_rm = runner.invoke(main, ["vocab", "rejected", "--remove", "Vezir", "easier"])
     assert r_rm.exit_code == 0 and "Removed 1 rejected pair(s)." in r_rm.output
+
+
+def test_harvest_worker_records_error_on_total_llm_outage(tmp_path: Path, monkeypatch):
+    """Total LLM failure (non-zero rc or zero-success report) must set status='error'."""
+    monkeypatch.setenv("VEZIR_DATA", str(tmp_path / "data"))
+    queue.create_team("team-a", "Team A")
+    team_a = queue.resolve_team_uuid("team-a")
+    assert team_a
+
+    sid = "01JHARV000000000000000E1"
+    queue.enqueue(sid, "alice", team_id=team_a)
+    queue.update_status(sid, "done")
+    sd = config.sessions_dir() / sid
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / f"{sid}.json").write_text('{"segments": []}', encoding="utf-8")
+
+    # Case 1: millet fails loudly with non-zero exit code on TEE outage.
+    def fake_fail_rc(_team_id, _dirs, *, output_path, log_path=None, **_kw):
+        if log_path is not None:
+            log_path.write_text("Error: vocabulary harvest failed: simulated TEE outage\n")
+        return 1
+
+    monkeypatch.setattr(meet_runner, "harvest_vocabulary", fake_fail_rc)
+    worker.harvest_vocabulary_for_team(team_a)
+    st1 = vocabulary.load_team_harvest_state(team_a)
+    assert st1["status"] == "error"
+    assert st1["error"] and "simulated TEE outage" in st1["error"]
+
+    # Case 2: belt-and-suspenders guard if a report returns 0 successes + unknown backend.
+    def fake_zero_success(_team_id, _dirs, *, output_path, **_kw):
+        config.secure_write_text(
+            output_path,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "backend": "unknown",
+                    "seed_sessions": 2,
+                    "llm_errors": 2,
+                    "candidates": [],
+                }
+            ),
+        )
+        return 0
+
+    monkeypatch.setattr(meet_runner, "harvest_vocabulary", fake_zero_success)
+    worker.harvest_vocabulary_for_team(team_a)
+    st2 = vocabulary.load_team_harvest_state(team_a)
+    assert st2["status"] == "error"
+    assert st2["error"] and "LLM error" in st2["error"]
+
+
+def test_second_harvest_filters_satisfied_term_and_glossary_but_keeps_new_alias(
+    client: TestClient,
+):
+    token = auth.issue("alice", team_id="team-a")
+    team_uuid = queue.resolve_team_uuid("team-a")
+    assert team_uuid is not None
+    hdrs = _headers(token, "team-a")
+
+    # Existing vocabulary already has WhisperX (terms + glossary), Caddy (terms only),
+    # and Vezir (terms + one alias).
+    vocabulary.save_team_vocabulary(
+        team_uuid,
+        {
+            "terms": ["WhisperX", "Caddy", "Vezir"],
+            "aliases": {"Vezir": ["vzr"]},
+            "glossary": {"WhisperX": "ASR alignment engine"},
+        },
+    )
+
+    # Simulate a brand-new second harvest report containing all four shapes.
+    vocabulary.save_team_harvest_state(
+        team_uuid,
+        {
+            "status": "ready",
+            "error": None,
+            "updated_at": "2026-11-26T16:00:00Z",
+            "report": {
+                "schema_version": 1,
+                "sessions_scanned": 4,
+                "candidates": [
+                    {
+                        "canonical": "WhisperX",
+                        "observed": "whisper",
+                        "suggested_layer": "term_and_glossary",
+                    },
+                    {
+                        "canonical": "Caddy",
+                        "observed": "caddy",
+                        "suggested_layer": "term_and_glossary",
+                    },
+                    {
+                        "canonical": "Vezir",
+                        "observed": "vizier",
+                        "suggested_layer": "term_only",
+                    },
+                    {
+                        "canonical": "Vezir",
+                        "observed": "the zeer",
+                        "suggested_layer": "alias",
+                    },
+                ],
+            },
+        },
+    )
+
+    resp = client.get("/api/vocabulary/harvest", headers=hdrs)
+    assert resp.status_code == 200
+    pending = resp.json()["pending_candidates"]
+    obs_set = {c["observed"] for c in pending}
+    assert "whisper" not in obs_set  # term_and_glossary satisfied
+    assert "vizier" not in obs_set  # term_only satisfied
+    assert "caddy" in obs_set  # glossary entry still missing
+    assert "the zeer" in obs_set  # genuinely new alias for existing canonical term
+
+
+def test_harvest_decide_rejects_same_batch_conflict_and_clears_stale_rejection(
+    client: TestClient,
+):
+    token = auth.issue("alice", team_id="team-a")
+    team_uuid = queue.resolve_team_uuid("team-a")
+    assert team_uuid is not None
+    hdrs = _headers(token, "team-a")
+
+    # Case 1: same-batch approve + reject of ("Vezir", "vzr") (case-insensitive)
+    # must fail with 400 and leave both files untouched.
+    r_conflict = client.post(
+        "/api/vocabulary/harvest/decide",
+        headers=hdrs,
+        json={
+            "approve": [{"canonical": "Vezir", "observed": "vzr", "layer": "alias"}],
+            "reject": [{"canonical": "vezir", "observed": "VZR"}],
+        },
+    )
+    assert r_conflict.status_code == 400
+    assert "cannot both approve and reject" in r_conflict.text
+    assert vocabulary.load_team_vocabulary(team_uuid) == {
+        "terms": [],
+        "aliases": {},
+        "glossary": {},
+    }
+    assert vocabulary.load_team_rejected(team_uuid) == []
+
+    # Case 2: reject ("Vezir", "vzr") first, then explicitly approve it later ->
+    # approval succeeds and clears the contradictory rejection entry.
+    r_rej = client.post(
+        "/api/vocabulary/harvest/decide",
+        headers=hdrs,
+        json={"approve": [], "reject": [{"canonical": "Vezir", "observed": "vzr"}]},
+    )
+    assert r_rej.status_code == 200
+    assert len(vocabulary.load_team_rejected(team_uuid)) == 1
+
+    r_app = client.post(
+        "/api/vocabulary/harvest/decide",
+        headers=hdrs,
+        json={
+            "approve": [{"canonical": "Vezir", "observed": "vzr", "layer": "alias"}],
+            "reject": [],
+        },
+    )
+    assert r_app.status_code == 200
+    assert vocabulary.load_team_vocabulary(team_uuid)["aliases"] == {"Vezir": ["vzr"]}
+    assert vocabulary.load_team_rejected(team_uuid) == []

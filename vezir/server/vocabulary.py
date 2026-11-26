@@ -491,20 +491,35 @@ def filter_pending_candidates(
     vocab: Mapping[str, Any],
     rejected: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
-    """Return report candidates not yet approved or rejected."""
+    """Return report candidates whose suggested layer is not yet satisfied or rejected."""
     if not report:
         return []
     raw_cands = report.get("candidates")
     if not isinstance(raw_cands, list):
         return []
 
+    existing_terms: set[str] = set()
+    raw_terms = vocab.get("terms")
+    if isinstance(raw_terms, list):
+        for t in raw_terms:
+            existing_terms.add(str(t).casefold())
+
     existing_aliases: set[tuple[str, str]] = set()
     aliases_map = vocab.get("aliases")
     if isinstance(aliases_map, Mapping):
         for canon, variants in aliases_map.items():
+            existing_terms.add(str(canon).casefold())
             if isinstance(variants, list):
                 for v in variants:
                     existing_aliases.add((str(canon).casefold(), str(v).casefold()))
+
+    existing_glossary: set[str] = set()
+    glossary_map = vocab.get("glossary")
+    if isinstance(glossary_map, Mapping):
+        for term, desc in glossary_map.items():
+            if str(desc).strip():
+                existing_terms.add(str(term).casefold())
+                existing_glossary.add(str(term).casefold())
 
     rejected_keys: set[tuple[str, str]] = {
         (e["canonical"].casefold(), e["observed"].casefold()) for e in rejected
@@ -518,8 +533,18 @@ def filter_pending_candidates(
         obs = str(item.get("observed") or "").strip()
         if not canon or not obs:
             continue
-        key = (canon.casefold(), obs.casefold())
+        canon_cf = canon.casefold()
+        key = (canon_cf, obs.casefold())
         if key in existing_aliases or key in rejected_keys:
+            continue
+        suggested = str(item.get("suggested_layer") or "alias").strip().lower()
+        if suggested == "term_only" and canon_cf in existing_terms:
+            continue
+        if (
+            suggested == "term_and_glossary"
+            and canon_cf in existing_terms
+            and canon_cf in existing_glossary
+        ):
             continue
         pending.append(dict(item))
     return pending
@@ -546,6 +571,7 @@ def apply_harvest_decisions(
         }
         glossary: dict[str, str] = dict(current["glossary"])
 
+        approved_pairs: set[tuple[str, str]] = set()
         for item in approve:
             canon = _validate_piece(
                 str(item.get("canonical") or ""), field="canonical", max_len=MAX_TERM_LEN
@@ -557,6 +583,14 @@ def apply_harvest_decisions(
                 )
 
             c_key = canon.casefold()
+            obs_raw = item.get("observed")
+            obs_clean: str | None = None
+            if obs_raw is not None and str(obs_raw).strip():
+                obs_clean = _validate_piece(
+                    str(obs_raw), field="observed", max_len=MAX_TERM_LEN
+                )
+                approved_pairs.add((c_key, obs_clean.casefold()))
+
             existing_term_idx = next(
                 (i for i, t in enumerate(terms) if t.casefold() == c_key), None
             )
@@ -567,8 +601,9 @@ def apply_harvest_decisions(
 
             if layer == "alias":
                 obs = _validate_piece(
-                    str(item.get("observed") or ""), field="observed", max_len=MAX_TERM_LEN
+                    str(obs_clean or ""), field="observed", max_len=MAX_TERM_LEN
                 )
+                approved_pairs.add((c_key, obs.casefold()))
                 prev_key = next((k for k in aliases if k.casefold() == c_key), None)
                 bucket = aliases.pop(prev_key, []) if prev_key else []
                 bucket.append(obs)
@@ -593,8 +628,17 @@ def apply_harvest_decisions(
             {"terms": terms, "aliases": aliases, "glossary": glossary}
         )
 
-        # Validate and build updated rejection list.
-        rejected_entries = load_team_rejected(team_id)
+        # Validate rejections and check for same-batch approve/reject conflicts
+        # BEFORE mutating disk.  Explicitly approving a previously rejected pair
+        # clears its stale rejection so active vocab and rejection memory stay
+        # consistent.
+        existing_rejected = load_team_rejected(team_id)
+        rejected_entries = [
+            e
+            for e in existing_rejected
+            if (e["canonical"].casefold(), e["observed"].casefold()) not in approved_pairs
+        ]
+        cleared_stale_rejects = len(rejected_entries) != len(existing_rejected)
         seen_rej = {
             (e["canonical"].casefold(), e["observed"].casefold()) for e in rejected_entries
         }
@@ -608,6 +652,10 @@ def apply_harvest_decisions(
                 str(item.get("observed") or ""), field="observed", max_len=MAX_TERM_LEN
             )
             key = (canon.casefold(), obs.casefold())
+            if key in approved_pairs:
+                raise ValueError(
+                    f"cannot both approve and reject ({canon!r}, {obs!r}) in the same batch"
+                )
             if key in seen_rej:
                 continue
             seen_rej.add(key)
@@ -632,7 +680,7 @@ def apply_harvest_decisions(
             config.secure_write_text(
                 vpath, json.dumps(normalized, indent=2, ensure_ascii=False) + "\n"
             )
-        if added_rejects:
+        if added_rejects or cleared_stale_rejects:
             _write_team_rejected_locked(team_id, rejected_entries)
 
         # Remove decided non-alias approvals from the cached harvest report so

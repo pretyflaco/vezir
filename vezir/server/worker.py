@@ -2140,6 +2140,27 @@ def harvest_vocabulary_for_team(
                 return
             report = json.loads(raw_out.read_text(encoding="utf-8"))
 
+        # Belt-and-suspenders: never treat a zero-success LLM outage report as ready.
+        if (
+            int(report.get("llm_errors") or 0) > 0
+            and int(report.get("seed_sessions") or 0) > 0
+            and not report.get("candidates")
+            and str(report.get("backend") or "unknown") in ("", "unknown")
+        ):
+            vocab_mod.save_team_harvest_state(
+                team_id,
+                {
+                    "status": "error",
+                    "error": (
+                        f"vocabulary harvest encountered {report['llm_errors']} LLM error(s) "
+                        "with no successful backend response"
+                    ),
+                    "updated_at": now_iso(),
+                    "report": prev_report,
+                },
+            )
+            return
+
         vocab_mod.save_team_harvest_state(
             team_id,
             {
