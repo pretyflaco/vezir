@@ -120,6 +120,15 @@ def _run_task(kind: str, session_id: str, kwargs: dict) -> None:
                     sync=kwargs.get("sync", False),
                     force=kwargs.get("force", False),
                 )
+            elif kind == "vocab_harvest":
+                harvest_vocabulary_for_team(
+                    session_id,
+                    since_days=kwargs.get("since_days"),
+                    max_sessions=kwargs.get("max_sessions", 100),
+                    min_occurrences=kwargs.get("min_occurrences", 3),
+                    min_sessions=kwargs.get("min_sessions", 2),
+                    anchors=kwargs.get("anchors"),
+                )
     except Exception:
         log.exception("task %s failed for session %s", kind, session_id)
     finally:
@@ -2009,3 +2018,172 @@ def finalize_after_labeling(
         queue.update_status(session_id, "error", error=str(exc))
     finally:
         meet_runner.cleanup_home_shim(session_id)
+
+
+def harvest_vocabulary_for_team(
+    team_id: str,
+    *,
+    since_days: int | None = None,
+    max_sessions: int = 100,
+    min_occurrences: int = 3,
+    min_sessions: int = 2,
+    anchors: list[str] | None = None,
+) -> None:
+    """Run ``millet vocab harvest`` over a team's completed non-personal sessions.
+
+    Excludes ``personal=1`` recordings so private transcripts never leak into a
+    team-shared harvest report.  Updates ``vocabulary_harvest.json`` atomically
+    with ``status`` (``running`` -> ``ready`` or ``error``).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from . import vocabulary as vocab_mod
+
+    now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    prev = vocab_mod.load_team_harvest_state(team_id)
+    prev_report = prev.get("report")
+
+    vocab_mod.save_team_harvest_state(
+        team_id,
+        {
+            "status": "running",
+            "error": None,
+            "updated_at": now_iso(),
+            "report": prev_report,
+        },
+    )
+
+    since_iso: str | None = None
+    if since_days is not None and since_days > 0:
+        since_iso = (
+            datetime.now(timezone.utc) - timedelta(days=since_days)
+        ).strftime("%Y-%m-%d")
+
+    log_path = config.logs_dir() / f"vocab-harvest-{team_id}.log"
+    config.secure_mkdir(log_path.parent)
+
+    try:
+        jobs = queue.list_recent(
+            limit=max(1, max_sessions) * 2,
+            team_id=team_id,
+            status="done",
+            since=since_iso,
+        )
+        session_dirs: list[Path] = []
+        for j in jobs:
+            # Never expose personal recordings in a shared team harvest report.
+            if j.get("personal"):
+                continue
+            sid = str(j.get("id") or "")
+            if not sid:
+                continue
+            sd = _session_dir(sid)
+            if sd.is_dir():
+                session_dirs.append(sd)
+            if len(session_dirs) >= max_sessions:
+                break
+
+        if not session_dirs:
+            empty_report = {
+                "schema_version": 1,
+                "generated_at": now_iso(),
+                "backend": "none",
+                "sessions_scanned": 0,
+                "seed_sessions": 0,
+                "holdout_sessions": 0,
+                "anchor_count": 0,
+                "llm_errors": 0,
+                "candidates": [],
+            }
+            vocab_mod.save_team_harvest_state(
+                team_id,
+                {
+                    "status": "ready",
+                    "error": None,
+                    "updated_at": now_iso(),
+                    "report": empty_report,
+                },
+            )
+            return
+
+        team_dir = config.teams_dir() / team_id
+        config.secure_mkdir(team_dir)
+        with tempfile.TemporaryDirectory(
+            prefix=".harvest-out-", dir=team_dir
+        ) as tmp:
+            raw_out = Path(tmp) / "report.json"
+            rc = meet_runner.harvest_vocabulary(
+                team_id,
+                session_dirs,
+                output_path=raw_out,
+                since=since_iso,
+                max_sessions=max_sessions,
+                min_occurrences=min_occurrences,
+                min_sessions=min_sessions,
+                anchors=anchors,
+                rejected_path=config.team_vocabulary_rejected_path(team_id),
+                log_path=log_path,
+            )
+            if rc != 0 or not raw_out.is_file():
+                err = _error_with_tail(
+                    f"millet vocab harvest exited {rc}", log_path
+                )
+                vocab_mod.save_team_harvest_state(
+                    team_id,
+                    {
+                        "status": "error",
+                        "error": err,
+                        "updated_at": now_iso(),
+                        "report": prev_report,
+                    },
+                )
+                return
+            report = json.loads(raw_out.read_text(encoding="utf-8"))
+
+        # Belt-and-suspenders: never treat a zero-success LLM outage report as ready.
+        if (
+            int(report.get("llm_errors") or 0) > 0
+            and int(report.get("seed_sessions") or 0) > 0
+            and not report.get("candidates")
+            and str(report.get("backend") or "unknown") in ("", "unknown")
+        ):
+            vocab_mod.save_team_harvest_state(
+                team_id,
+                {
+                    "status": "error",
+                    "error": (
+                        f"vocabulary harvest encountered {report['llm_errors']} LLM error(s) "
+                        "with no successful backend response"
+                    ),
+                    "updated_at": now_iso(),
+                    "report": prev_report,
+                },
+            )
+            return
+
+        vocab_mod.save_team_harvest_state(
+            team_id,
+            {
+                "status": "ready",
+                "error": None,
+                "updated_at": now_iso(),
+                "report": report,
+            },
+        )
+        log.info(
+            "vocab harvest for team %s ready (%d candidate(s) from %d session(s))",
+            team_id,
+            len(report.get("candidates") or []),
+            int(report.get("sessions_scanned") or 0),
+        )
+    except Exception as exc:
+        log.warning("vocab harvest for team %s failed: %s", team_id, exc)
+        vocab_mod.save_team_harvest_state(
+            team_id,
+            {
+                "status": "error",
+                "error": str(exc),
+                "updated_at": now_iso(),
+                "report": prev_report,
+            },
+        )

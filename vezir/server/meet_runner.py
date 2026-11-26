@@ -1269,3 +1269,82 @@ def _meeting_type_base_for_team(team_id: str) -> str:
         if mtype:
             return mtype
     return "meeting"
+
+
+def harvest_vocabulary(
+    team_id: str,
+    session_dirs: list[Path],
+    *,
+    output_path: Path,
+    since: str | None = None,
+    max_sessions: int = 100,
+    min_occurrences: int = 3,
+    min_sessions: int = 2,
+    anchors: list[str] | None = None,
+    rejected_path: Path | None = None,
+    log_path: Path | None = None,
+) -> int:
+    """Invoke ``millet vocab harvest`` for *team_id* via the per-job HOME shim.
+
+    Passes the team's session paths and optional anchor list via private 0600
+    temporary files rather than argv so long session lists never hit ARG_MAX or
+    leak paths into ``/proc``.  Raises ``RuntimeError`` when the installed
+    millet lacks ``vocab harvest``.
+    """
+    import tempfile
+
+    if not config.meet_supports_vocab_harvest():
+        raise RuntimeError(
+            "the installed millet CLI does not support `millet vocab harvest`; "
+            "upgrade millet-pipeline and restart vezir"
+        )
+
+    team_dir = config.teams_dir() / team_id
+    config.secure_mkdir(team_dir)
+    job_id = f"vocab-harvest-{team_id}"
+
+    with tempfile.TemporaryDirectory(prefix=".vocab-harvest-", dir=team_dir) as tmp:
+        tmp_dir = Path(tmp)
+        sessions_file = tmp_dir / "sessions.json"
+        config.secure_write_text(
+            sessions_file,
+            json.dumps([str(p) for p in session_dirs], ensure_ascii=False),
+        )
+        tmp_out = tmp_dir / "report.json"
+
+        args: list[str] = [
+            "vocab",
+            "harvest",
+            "--sessions-file",
+            str(sessions_file),
+            "--output",
+            str(tmp_out),
+            "--max-sessions",
+            str(max_sessions),
+            "--min-occurrences",
+            str(min_occurrences),
+            "--min-sessions",
+            str(min_sessions),
+        ]
+        if since:
+            args.extend(["--since", since])
+        if rejected_path is not None and rejected_path.is_file():
+            args.extend(["--rejected", str(rejected_path)])
+        if anchors:
+            anchors_file = tmp_dir / "anchors.json"
+            config.secure_write_text(
+                anchors_file,
+                json.dumps(list(anchors), ensure_ascii=False),
+            )
+            args.extend(["--anchors", str(anchors_file)])
+
+        try:
+            rc = run_meet(args, job_id=job_id, team_id=team_id, log_path=log_path)
+        finally:
+            cleanup_home_shim(job_id)
+
+        if rc == 0 and tmp_out.is_file():
+            raw = tmp_out.read_text(encoding="utf-8")
+            config.secure_mkdir(output_path.parent)
+            config.secure_write_text(output_path, raw)
+        return rc

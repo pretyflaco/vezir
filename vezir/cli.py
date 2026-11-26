@@ -3587,5 +3587,265 @@ def vocab_apply(session_id: str, team_id: str | None):
     )
 
 
+@vocab.command("harvest")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+@click.option("--since-days", type=int, default=90, show_default=True)
+@click.option("--max-sessions", type=int, default=100, show_default=True)
+@click.option("--min-occurrences", type=int, default=3, show_default=True)
+@click.option("--min-sessions", type=int, default=2, show_default=True)
+@click.option(
+    "--anchors-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Optional plain-text file (one term per line) of extra canonical anchors.",
+)
+@click.option(
+    "--wait/--no-wait",
+    default=False,
+    help="Poll until the server harvest completes and print a candidate summary.",
+)
+def vocab_harvest(
+    team_id: str | None,
+    since_days: int,
+    max_sessions: int,
+    min_occurrences: int,
+    min_sessions: int,
+    anchors_file: str | None,
+    wait: bool,
+):
+    """Mine historical team transcripts for recurring ASR mishearings (read-only)."""
+    import time as _time
+
+    anchors: list[str] | None = None
+    if anchors_file:
+        anchors = [
+            line.split("#", 1)[0].strip()
+            for line in Path(anchors_file).read_text(encoding="utf-8").splitlines()
+            if line.split("#", 1)[0].strip()
+        ]
+
+    api = _vocab_client(team_id)
+    res = api.trigger_vocab_harvest(
+        since_days=since_days if since_days > 0 else None,
+        max_sessions=max_sessions,
+        min_occurrences=min_occurrences,
+        min_sessions=min_sessions,
+        anchors=anchors,
+    )
+    if not res.is_ok():
+        click.echo(f"vezir vocab harvest: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+
+    click.echo("Queued vocabulary harvest on server.")
+    if not wait:
+        click.echo("  Review results once ready: vezir vocab review")
+        return
+
+    while True:
+        poll = api.get_vocab_harvest()
+        if not poll.is_ok():
+            click.echo(f"vezir vocab harvest: error: {poll.error_summary()}", err=True)
+            sys.exit(1)
+        data = poll.ok or {}
+        st = data.get("status")
+        if st == "ready":
+            pending = data.get("pending_candidates") or []
+            click.echo(f"Harvest ready: {len(pending)} pending candidate(s).")
+            for c in pending[:20]:
+                click.echo(
+                    f"  {c.get('observed')} -> {c.get('canonical')} "
+                    f"[{c.get('suggested_layer')}] "
+                    f"({c.get('total_occurrences')} hits / {c.get('distinct_sessions')} sessions)"
+                )
+            if pending:
+                click.echo("Run `vezir vocab review` to approve or reject candidates.")
+            return
+        if st == "error":
+            click.echo(f"Harvest failed: {data.get('error')}", err=True)
+            sys.exit(1)
+        _time.sleep(2.0)
+
+
+@vocab.command("review")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+@click.option(
+    "--from-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Review candidates from a local `millet vocab harvest` report JSON.",
+)
+def vocab_review(team_id: str | None, from_file: str | None):
+    """Interactively approve or reject harvested vocabulary candidates."""
+    import json as _json
+
+    api = _vocab_client(team_id)
+    if from_file:
+        try:
+            raw_rep = _json.loads(Path(from_file).read_text(encoding="utf-8"))
+        except Exception as exc:
+            click.echo(f"vezir vocab review: could not read {from_file}: {exc}", err=True)
+            sys.exit(1)
+        candidates = list((raw_rep or {}).get("candidates") or [])
+    else:
+        res = api.get_vocab_harvest()
+        if not res.is_ok():
+            click.echo(f"vezir vocab review: error: {res.error_summary()}", err=True)
+            sys.exit(1)
+        data = res.ok or {}
+        st = data.get("status")
+        if st in ("queued", "running"):
+            click.echo(f"Harvest is currently {st}. Try again shortly.")
+            return
+        if st == "error":
+            click.echo(f"Last harvest failed: {data.get('error')}", err=True)
+        candidates = list(data.get("pending_candidates") or [])
+
+    if not candidates:
+        click.echo("No pending vocabulary candidates to review.")
+        return
+
+    approvals: list[dict] = []
+    rejections: list[dict] = []
+    click.echo(
+        f"Reviewing {len(candidates)} candidate(s). "
+        "Actions: [a]lias, [t]erm-only, [g]lossary, [e]dit canonical, "
+        "[r]eject, [s]kip, [q]uit & save\n"
+    )
+
+    for idx, cand in enumerate(candidates, 1):
+        canonical = str(cand.get("canonical") or "")
+        observed = str(cand.get("observed") or "")
+        suggested = str(cand.get("suggested_layer") or "alias")
+        total_occ = cand.get("total_occurrences", 0)
+        distinct_sess = cand.get("distinct_sessions", 0)
+        holdout_occ = cand.get("holdout_occurrences", 0)
+
+        click.echo(
+            f"[{idx}/{len(candidates)}] {observed!r} -> {canonical!r}  "
+            f"(suggested: {suggested}; {total_occ} hits across {distinct_sess} sessions, "
+            f"{holdout_occ} held-out)"
+        )
+        if cand.get("chain_conflict"):
+            click.echo(f"  ! chain conflict: {cand['chain_conflict']}")
+        if cand.get("alias_conflict"):
+            click.echo(f"  ! alias conflict: {cand['alias_conflict']}")
+        for ex in (cand.get("examples") or [])[:3]:
+            tag = " [holdout]" if ex.get("holdout") else ""
+            click.echo(f"  ({ex.get('session_id')} @ {ex.get('start')}s{tag})")
+            click.echo(f"    - {ex.get('before')}")
+            click.echo(f"    + {ex.get('after')}")
+
+        while True:
+            default_act = "a" if suggested == "alias" else "t"
+            choice = (
+                click.prompt(
+                    "  Action [a/t/g/e/r/s/q]",
+                    default=default_act,
+                    show_default=True,
+                )
+                .strip()
+                .lower()
+            )
+            if choice == "e":
+                canonical = click.prompt("  New canonical spelling", default=canonical).strip()
+                continue
+            if choice == "a":
+                approvals.append(
+                    {"canonical": canonical, "observed": observed, "layer": "alias"}
+                )
+                break
+            if choice == "t":
+                approvals.append(
+                    {"canonical": canonical, "observed": observed, "layer": "term"}
+                )
+                break
+            if choice == "g":
+                desc = click.prompt("  Short factual glossary note").strip()
+                if not desc:
+                    click.echo("  Glossary note cannot be empty.")
+                    continue
+                approvals.append(
+                    {
+                        "canonical": canonical,
+                        "observed": observed,
+                        "layer": "glossary",
+                        "description": desc,
+                    }
+                )
+                break
+            if choice == "r":
+                rejections.append({"canonical": canonical, "observed": observed})
+                break
+            if choice == "s":
+                break
+            if choice == "q":
+                break
+            click.echo("  Unknown action; choose one of a, t, g, e, r, s, q.")
+
+        click.echo()
+        if choice == "q":
+            break
+
+    if not approvals and not rejections:
+        click.echo("No decisions made.")
+        return
+
+    dec = api.decide_vocab_harvest(approve=approvals, reject=rejections)
+    if not dec.is_ok():
+        click.echo(f"vezir vocab review: error saving decisions: {dec.error_summary()}", err=True)
+        sys.exit(1)
+    out = dec.ok or {}
+    click.echo(
+        f"Saved: {out.get('approved_count', len(approvals))} approved, "
+        f"{out.get('rejected_count', len(rejections))} rejected "
+        f"({out.get('pending_count', 0)} pending)."
+    )
+
+
+@vocab.command("rejected")
+@click.option("--team", "team_id", default=None, help="Team slug or UUID.")
+@click.option(
+    "--remove",
+    nargs=2,
+    type=str,
+    default=None,
+    metavar="CANONICAL OBSERVED",
+    help="Un-reject a specific (canonical, observed) pair.",
+)
+@click.option("--clear-all", is_flag=True, default=False, help="Clear all rejected pairs.")
+def vocab_rejected(
+    team_id: str | None,
+    remove: tuple[str, str] | None,
+    clear_all: bool,
+):
+    """Inspect or clear dismissed harvest candidates for the active team."""
+    api = _vocab_client(team_id)
+    if clear_all or remove:
+        res = api.delete_rejected_vocabulary(
+            canonical=remove[0] if remove else None,
+            observed=remove[1] if remove else None,
+            clear_all=clear_all,
+        )
+        if not res.is_ok():
+            click.echo(f"vezir vocab rejected: error: {res.error_summary()}", err=True)
+            sys.exit(1)
+        click.echo(f"Removed {(res.ok or {}).get('removed', 0)} rejected pair(s).")
+        return
+
+    res = api.get_rejected_vocabulary()
+    if not res.is_ok():
+        click.echo(f"vezir vocab rejected: error: {res.error_summary()}", err=True)
+        sys.exit(1)
+    items = (res.ok or {}).get("rejected") or []
+    if not items:
+        click.echo("No rejected vocabulary candidates.")
+        return
+    for item in items:
+        click.echo(
+            f"  {item.get('observed')} -> {item.get('canonical')} "
+            f"(by {item.get('rejected_by') or '?'} at {item.get('rejected_at') or '?'})"
+        )
+
+
 if __name__ == "__main__":
     main()

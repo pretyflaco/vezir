@@ -274,6 +274,16 @@ def team_vocabulary_path(team_id: str) -> Path:
     return teams_dir() / team_id / "vocabulary.json"
 
 
+def team_vocabulary_rejected_path(team_id: str) -> Path:
+    """Per-team dismissed harvest candidates (``vocabulary_rejected.json``)."""
+    return teams_dir() / team_id / "vocabulary_rejected.json"
+
+
+def team_vocabulary_harvest_path(team_id: str) -> Path:
+    """Per-team latest vocabulary harvest state/report (``vocabulary_harvest.json``)."""
+    return teams_dir() / team_id / "vocabulary_harvest.json"
+
+
 def team_sync_config_path(team_id: str) -> Path:
     """Per-team millet sync_config.json — operator-provided override (v0.6.2+).
 
@@ -666,6 +676,33 @@ def meet_sync_supports_option(option: str) -> bool:
         line.lstrip().startswith(option)
         for line in help_text.splitlines()
     )
+
+
+@lru_cache(maxsize=1)
+def _meet_vocab_harvest_help() -> str:
+    """Return cached `millet vocab harvest --help` output."""
+    try:
+        meet = meet_binary()
+    except Exception:
+        return ""
+    try:
+        proc = subprocess.run(
+            [meet, "vocab", "harvest", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+
+
+def meet_supports_vocab_harvest() -> bool:
+    """Return True if the installed millet CLI provides `millet vocab harvest`."""
+    help_text = _meet_vocab_harvest_help()
+    return "--sessions-file" in help_text
 
 
 def millet_timeout_seconds() -> int | None:
